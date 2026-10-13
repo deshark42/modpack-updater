@@ -87,6 +87,20 @@ public final class S3Store {
         return response.body();
     }
 
+    /** Whether an object is there, asked with a HEAD request so no content moves. */
+    public boolean exists(String relative) {
+        String objectKey = key(relative);
+        HttpRequest request = request("HEAD", objectKey, SigV4.EMPTY_PAYLOAD, HttpRequest.BodyPublishers.noBody());
+        HttpResponse<Void> response = send(request, HttpResponse.BodyHandlers.discarding());
+        if (response.statusCode() == 404) {
+            return false;
+        }
+        if (!isSuccess(response)) {
+            throw failure("read", objectKey, response.statusCode(), "");
+        }
+        return true;
+    }
+
     /** Fetches an object into {@code target}, which is replaced only once the download is complete. */
     public void download(String relative, Path target) {
         String objectKey = key(relative);

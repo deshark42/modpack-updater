@@ -1,11 +1,13 @@
 package io.github.deshark42.modpackupdater;
 
+import io.github.deshark42.modpackupdater.cli.Cli;
+import java.nio.file.Path;
+
 public final class Main {
     private Main() {
     }
 
     public static void main(String[] args) {
-        System.err.println("usage: modpack-updater <publish|update> [options]");
-        System.exit(2);
+        System.exit(Cli.run(args, Path.of("").toAbsolutePath(), System.out, System.err));
     }
 }
