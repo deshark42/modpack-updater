@@ -33,16 +33,21 @@ public final class AtomicFile {
             Path temp = Files.createTempFile(parent, file.getFileName().toString(), ".tmp");
             try {
                 Files.writeString(temp, content, StandardCharsets.UTF_8);
-                try {
-                    Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                    Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
-                }
+                move(temp, file);
             } finally {
                 Files.deleteIfExists(temp);
             }
         } catch (IOException e) {
             throw new UserError("cannot write " + file + ": " + e.getMessage(), e);
+        }
+    }
+
+    /** Moves a fully written temporary file into place; the target is never half written. */
+    public static void move(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 }
