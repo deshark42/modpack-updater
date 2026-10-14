@@ -48,14 +48,32 @@ class InitTest {
     void keepsWhatIsAlreadyThere(@TempDir Path workspace) throws IOException {
         Path config = Layout.configFile(workspace);
         Files.createDirectories(config.getParent());
-        Files.writeString(config, "{\"endpoint\": \"https://mine\", \"bucket\": \"b\"}");
+        Files.writeString(config, "{\"endpoint\": \"https://mine\", \"bucket\": \"b\", \"region\": \"eu-west-1\","
+                + " \"prefix\": \"\", \"path_style\": true, \"concurrency\": 8}");
         Files.createDirectories(Layout.baseDir(workspace, "client"));
 
         Init.run(workspace, "client", log);
 
-        assertEquals("{\"endpoint\": \"https://mine\", \"bucket\": \"b\"}", Files.readString(config));
+        Config kept = Config.load(workspace);
+        assertEquals("https://mine", kept.endpoint());
+        assertEquals("eu-west-1", kept.region());
+        assertTrue(kept.pathStyle());
+        assertEquals(8, kept.concurrency());
         assertTrue(printed.toString().contains("kept    .modpack-updater/config.json"), printed.toString());
         assertFalse(printed.toString().contains("created "), printed.toString());
+    }
+
+    @Test
+    void fillsInTheDefaultsAConfigIsMissing(@TempDir Path workspace) throws IOException {
+        Path config = Layout.configFile(workspace);
+        Files.createDirectories(config.getParent());
+        Files.writeString(config, "{\"endpoint\": \"https://mine\", \"bucket\": \"b\"}");
+
+        Init.run(workspace, null, log);
+
+        assertEquals(4, Config.load(workspace).concurrency());
+        assertTrue(Files.readString(config).contains("\"concurrency\": 4"), Files.readString(config));
+        assertTrue(printed.toString().contains("filled in the defaults missing from"), printed.toString());
     }
 
     @Test

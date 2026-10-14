@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -90,6 +92,42 @@ class ConfigTest {
     void loadsFromWorkspace(@TempDir Path root) {
         AtomicFile.write(Layout.configFile(root), "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\"}");
         assertEquals("pack", Config.load(root).bucket());
+    }
+
+    @Test
+    void writesBackTheDefaultsAnOlderConfigIsMissing(@TempDir Path root) throws IOException {
+        Path file = Layout.configFile(root);
+        AtomicFile.write(file, """
+                {
+                  "endpoint": "https://s3.example.com",
+                  "bucket": "pack",
+                  "access_key": "",
+                  "secret_key": ""
+                }
+                """);
+
+        assertTrue(Config.fillMissing(root), "region, prefix, path_style and concurrency were missing");
+        assertFalse(Config.fillMissing(root), "the second look finds nothing to add");
+
+        Config config = Config.load(root);
+        assertEquals("us-east-1", config.region());
+        assertEquals("", config.prefix());
+        assertFalse(config.pathStyle());
+        assertEquals(4, config.concurrency());
+        String written = Files.readString(file);
+        assertTrue(written.contains("\"endpoint\": \"https://s3.example.com\""), written);
+        assertTrue(written.contains("\"concurrency\": 4"), written);
+        assertTrue(written.contains("\n  \"region\": \"us-east-1\",\n"), written);
+    }
+
+    @Test
+    void keepsKeysItDoesNotKnow(@TempDir Path root) throws IOException {
+        Path file = Layout.configFile(root);
+        AtomicFile.write(file, "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\", \"note\": \"mine\"}");
+
+        assertTrue(Config.fillMissing(root));
+
+        assertTrue(Files.readString(file).contains("\"note\": \"mine\""), Files.readString(file));
     }
 
     @Test

@@ -48,7 +48,7 @@ public final class Publish {
             return;
         }
 
-        Config config = Config.load(workspace);
+        Config config = Workspace.load(workspace, log);
         S3Store store = new S3Store(config);
         String releaseKey = ObjectKeys.release(tag, releaseId);
         if (store.exists(releaseKey)) {

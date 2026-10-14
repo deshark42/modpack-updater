@@ -34,7 +34,8 @@ public final class Update {
 
     public static void run(Path workspace, String tag, boolean dryRun, Log log) {
         Names.requireTag(tag);
-        Config config = Config.load(workspace);
+        // a dry run writes nothing at all, not even the defaults this file is missing
+        Config config = dryRun ? Config.load(workspace) : Workspace.load(workspace, log);
         S3Store store = new S3Store(config);
 
         String latestKey = ObjectKeys.latest(tag);

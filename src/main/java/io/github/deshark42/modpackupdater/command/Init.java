@@ -36,6 +36,7 @@ public final class Init {
         String shown = Log.relativeTo(workspace, config);
         if (Files.exists(config)) {
             log.step("kept", shown);
+            Workspace.fillIn(workspace, log);
         } else {
             AtomicFile.write(config, TEMPLATE);
             log.step("created", shown);

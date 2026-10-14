@@ -5,6 +5,7 @@ import io.github.deshark42.modpackupdater.fs.AtomicFile;
 import io.github.deshark42.modpackupdater.json.Json;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /** Connection settings, shared by publisher and subscriber and kept in .modpack-updater/config.json. */
@@ -14,6 +15,18 @@ public record Config(String endpoint, String region, String bucket, String prefi
     /** Transfers that run at the same time unless config.json says otherwise. */
     public static final int DEFAULT_CONCURRENCY = 4;
     public static final int MAX_CONCURRENCY = 64;
+
+    /** The fields a config may leave out, and the values the tool uses and writes back for them. */
+    private static final Map<String, Object> DEFAULTS = defaults();
+
+    private static Map<String, Object> defaults() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("region", "us-east-1");
+        out.put("prefix", "");
+        out.put("path_style", false);
+        out.put("concurrency", DEFAULT_CONCURRENCY);
+        return out;
+    }
 
     public Config {
         if (endpoint == null || !(endpoint.startsWith("http://") || endpoint.startsWith("https://"))) {
@@ -45,6 +58,28 @@ public record Config(String endpoint, String region, String bucket, String prefi
             throw new UserError("no " + file + ": a workspace needs a .modpack-updater/config.json");
         }
         return parse(AtomicFile.read(file), file.toString());
+    }
+
+    /**
+     * Writes back the fields the file does not carry yet, so a config written before a field existed
+     * gains its default without being asked. Every value and unknown key already in the file is kept.
+     *
+     * @return whether the file was written
+     */
+    public static boolean fillMissing(Path workspaceRoot) {
+        Path file = Layout.configFile(workspaceRoot);
+        Map<String, Object> object = Json.asObject(Json.parse(AtomicFile.read(file)), file.toString());
+        boolean wrote = false;
+        for (Map.Entry<String, Object> entry : DEFAULTS.entrySet()) {
+            if (!object.containsKey(entry.getKey())) {
+                object.put(entry.getKey(), entry.getValue());
+                wrote = true;
+            }
+        }
+        if (wrote) {
+            AtomicFile.write(file, Json.writePretty(object));
+        }
+        return wrote;
     }
 
     public static Config parse(String text, String what) {

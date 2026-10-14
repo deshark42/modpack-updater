@@ -33,6 +33,14 @@ class JsonTest {
     }
 
     @Test
+    void writesPrettyObjectsOneFieldPerLine() {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("hash", "abc");
+        entry.put("size", 2048L);
+        assertEquals("{\n  \"hash\": \"abc\",\n  \"size\": 2048\n}\n", Json.writePretty(entry));
+    }
+
+    @Test
     void writesNestedObjectsWithIndentation() {
         Map<String, Object> inner = new LinkedHashMap<>();
         inner.put("size", 1L);

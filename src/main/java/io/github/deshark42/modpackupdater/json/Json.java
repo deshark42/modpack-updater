@@ -20,8 +20,17 @@ public final class Json {
     }
 
     public static String write(Object value) {
+        return write(value, false);
+    }
+
+    /** Like {@link #write}, but every object and array gets a line of its own: for the files people edit. */
+    public static String writePretty(Object value) {
+        return write(value, true);
+    }
+
+    private static String write(Object value, boolean pretty) {
         StringBuilder out = new StringBuilder();
-        writeValue(value, out, 0);
+        writeValue(value, out, 0, pretty);
         return out.append('\n').toString();
     }
 
@@ -46,7 +55,7 @@ public final class Json {
         return new ArrayList<>(list);
     }
 
-    private static void writeValue(Object value, StringBuilder out, int depth) {
+    private static void writeValue(Object value, StringBuilder out, int depth, boolean pretty) {
         if (value == null) {
             out.append("null");
         } else if (value instanceof String string) {
@@ -56,34 +65,35 @@ public final class Json {
         } else if (value instanceof Number number) {
             writeNumber(number, out);
         } else if (value instanceof Map<?, ?> map) {
-            writeObject(map, out, depth);
+            writeObject(map, out, depth, pretty);
         } else if (value instanceof List<?> list) {
-            writeArray(list, out, depth);
+            writeArray(list, out, depth, pretty);
         } else {
             throw new IllegalArgumentException("unsupported json value: " + value.getClass().getName());
         }
     }
 
-    private static void writeObject(Map<?, ?> map, StringBuilder out, int depth) {
+    private static void writeObject(Map<?, ?> map, StringBuilder out, int depth, boolean pretty) {
         if (map.isEmpty()) {
             out.append("{}");
             return;
         }
-        boolean inline = allScalars(map.values());
+        boolean inline = !pretty && allScalars(map.values());
         if (inline) {
             out.append("{ ");
-            appendEntries(map, out, depth, true);
+            appendEntries(map, out, depth, true, pretty);
             out.append(" }");
             return;
         }
         out.append("{\n");
-        appendEntries(map, out, depth, false);
+        appendEntries(map, out, depth, false, pretty);
         out.append('\n');
         indent(out, depth);
         out.append('}');
     }
 
-    private static void appendEntries(Map<?, ?> map, StringBuilder out, int depth, boolean inline) {
+    private static void appendEntries(Map<?, ?> map, StringBuilder out, int depth, boolean inline,
+                                      boolean pretty) {
         boolean first = true;
         for (Map.Entry<?, ?> entry : map.entrySet()) {
             if (!first) {
@@ -95,16 +105,16 @@ public final class Json {
             }
             writeString((String) entry.getKey(), out);
             out.append(": ");
-            writeValue(entry.getValue(), out, depth + 1);
+            writeValue(entry.getValue(), out, depth + 1, pretty);
         }
     }
 
-    private static void writeArray(List<?> list, StringBuilder out, int depth) {
+    private static void writeArray(List<?> list, StringBuilder out, int depth, boolean pretty) {
         if (list.isEmpty()) {
             out.append("[]");
             return;
         }
-        boolean inline = allScalars(list);
+        boolean inline = !pretty && allScalars(list);
         if (inline) {
             out.append("[ ");
             boolean first = true;
@@ -113,7 +123,7 @@ public final class Json {
                     out.append(", ");
                 }
                 first = false;
-                writeValue(item, out, depth + 1);
+                writeValue(item, out, depth + 1, pretty);
             }
             out.append(" ]");
             return;
@@ -126,7 +136,7 @@ public final class Json {
             }
             first = false;
             indent(out, depth + 1);
-            writeValue(item, out, depth + 1);
+            writeValue(item, out, depth + 1, pretty);
         }
         out.append('\n');
         indent(out, depth);
