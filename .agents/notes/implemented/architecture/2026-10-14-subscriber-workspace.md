@@ -1,31 +1,34 @@
 # Agent Note: 订阅者工作区与更新流程
 
-Status: proposed
+Status: implemented
 
 ## 问题
 
 实例目录里混着两类东西：上游发布的内容（mods/、config/ 等）与玩家自己的数据（存档、地图、日志、自己加的模组）。更新只能动前者，并且必须留出退路。发布者一侧已经定好[工作区](2026-10-13-publisher-workspace.md)与[云端布局](2026-10-13-object-storage-layout.md)，订阅者本地还缺一份约定：怎么记住"我当前是哪个版本"、拿什么与新的发布比较、被换下来的旧文件放到哪里。
 
-## 提案
+## 决策
 
 订阅者的工作区就是客户端实例目录（例如 GT_New_Horizons_2.9.0-RC1）：
 
-    <workspace>/                       # 即客户端实例目录
-    ├── .minecraft/
-    ├── libraries/
-    ├── patches/
-    ├── gtnh_icon.png
-    ├── instance.cfg
-    ├── mmc-pack.json
-    ├── .modpack-updater/
-    │   ├── config.json              # 与发布者共用同一份字段定义
-    │   └── <tag>/
-    │       ├── current.json         # 当前版本标识
-    │       ├── releases/
-    │       │   └── <版本标识>.json   # 已应用过的 release 清单
-    │       └── backup/<旧版本标识>/  # 本次更新中移走的旧文件
-    └── modpack-updater-<version>.jar
+```
+<workspace>/                       # 即客户端实例目录
+├── .minecraft/
+├── libraries/
+├── patches/
+├── gtnh_icon.png
+├── instance.cfg
+├── mmc-pack.json
+├── .modpack-updater/
+│   ├── config.json              # 与发布者共用同一份字段定义
+│   └── <tag>/
+│       ├── current.json         # 当前版本标识
+│       ├── releases/
+│       │   └── <版本标识>.json   # 已应用过的 release 清单
+│       └── backup/<旧版本标识>/  # 本次更新中移走的旧文件
+└── modpack-updater-<version>.jar
+```
 
+- 订阅者只需要 config.json，可以用 modpack-updater init（不带 --tag）生成；它同样只写缺失的部分，不覆盖已有内容。
 - config.json 与发布者共用同一份字段定义，tag 不进 config。
 - 被追踪的是整棵实例目录，不只是 .minecraft/：清单路径相对工作区根解析。按 MultiMC 规范打包的整合包通常在 .minecraft/ 之外还带 libraries/、patches/、instance.cfg、mmc-pack.json 与图标等实例级文件，它们和 .minecraft/ 内的文件一样可能出现在清单里。
 - 本地状态按 tag 分目录：.modpack-updater/<tag>/ 下放 current.json、releases/ 与 backup/。同一个实例被不同 tag 更新时，各自的"当前版本"互不干扰，指针里也就不必再记 tag。
@@ -38,9 +41,9 @@ Status: proposed
 1. 取该 tag 的 latest.json 与本地当前版本比对，不同则取新的 release 清单。
 2. 比较本地清单与目标清单，得出新增、删除、修改三类差异。比较只发生在两份清单之间，不检查本地文件——这样只有清单真的变化时才会覆盖文件：玩家自定义的内容得以保留，游戏运行时自行改写的文件也不会每次更新都被无意义地覆盖一遍。
 3. 应用差异：新增的文件下载后放入；删除与修改的文件先移入 <tag>/backup/<旧版本标识>/，修改的文件再下载新文件放入。
-4. 写回本地状态：<tag>/current.json 与 <tag>/releases/ 下的目标清单。
+4. 写回本地状态：先写 <tag>/releases/ 下的目标清单，最后写 <tag>/current.json。
 
-订阅者命令：update --tag <tag> 应用更新；update --tag <tag> --dry-run 只打印将要发生的变更，不写盘。
+订阅者命令：update --tag <tag> 应用更新；update --tag <tag> --dry-run 只打印将要发生的变更，不写盘、不改本地状态。
 
 ## 曾考虑的替代方案
 
@@ -48,18 +51,15 @@ Status: proposed
 
 **删除或替换时直接丢弃旧文件。** 不采用：删除与修改的文件都先移入 backup/，保留回滚余地，代价是实例目录会持续多占一份空间。
 
-## 验收标准
+## 后果
 
-- 执行更新后，目标清单里新增的路径出现在工作区的对应位置（.minecraft/ 内，或 libraries/、patches/、mmc-pack.json 等实例级位置），删除的路径从原位置消失并出现在 <tag>/backup/<旧版本标识>/ 下，修改的路径换成目标版本的内容且旧内容进入同一备份目录。
-- 更新只改动清单里出现的路径：清单之外的文件（存档、日志、玩家自己加的模组）位置与内容不变。
-- 更新结束后 <tag>/current.json 指向目标版本，该版本的清单留在 <tag>/releases/ 下，可用于下一次比较。
-- 上游没有改动的路径，即使玩家在本地改过，也不会被更新触碰。
+- 更新只改动清单里出现的路径：新增的路径出现在工作区的对应位置（.minecraft/ 内，或 libraries/、patches/、mmc-pack.json 等实例级位置），删除的路径从原位置消失并出现在 <tag>/backup/<旧版本标识>/ 下，修改的路径换成目标版本的内容且旧内容进入同一备份目录。
+- 清单之外的文件——存档、日志、地图、设置、玩家自己加的模组——位置与内容不变。
+- 上游没有改动的路径，即使玩家在本地改过，也不会被更新触碰；这是"只比较两份清单"的直接结果。
+- 更新结束后 <tag>/current.json 指向目标版本，该版本的清单留在 <tag>/releases/ 下，可用于下一次比较。current.json 最后写入，是本地状态的提交点：中途失败时本地仍指向旧版本。
 - 同一个实例上先后用两个 tag 更新时，各自的状态目录互不影响：后者的 update 不会改动前者的 current.json、releases/ 与 backup/。
-
-## 风险
-
-- 不校验本地文件是刻意的取舍：只有上游本次也改动了同一路径时，玩家的修改才会被覆盖（原件进 backup，不合并）。真正的缺口在另一个方向——玩家本地删掉的上游文件不会被补回来。
+- 真正的缺口在另一个方向：玩家本地删掉的上游文件不会被补回来——工具只看清单，不看本地。
 - 多 tag 共用一个实例时，树上留下的是最后写入者的内容：先运行的 tag 的 current.json 可能与树不一致，它删掉的文件也不会被后来者补回。这是接受的语义——工具不保证树上文件与任一 tag 的清单逐项一致。
 - backup/ 只增不减，实例随每次更新变大，目前没有清理策略。
-- 本地状态是更新唯一依据：<tag>/current.json 或该 tag 的 releases/ 清单被删除、损坏后，工具无法知道这个 tag 上一次是什么版本，只能重置或人工对齐。
+- 本地状态是更新唯一依据：<tag>/current.json 或该 tag 的 releases/ 清单被删除、损坏后，工具无法知道这个 tag 上一次是什么版本，只能重置或人工对齐；指针存在而 releases/<旧 id>.json 缺失时 update 直接报错，不猜。
 - 清单之外的路径永远不进同步范围：玩家把自建内容放进 mods/ 之类的目录不会被删，这是保护也是边界——它同样意味着工具不会替你收拾清单外的任何东西。
