@@ -228,6 +228,7 @@ class UpdateTest {
             String text = Files.readString(logs.get(0));
             assertTrue(text.contains("update client -> 2.9.0"), text);
             assertTrue(text.contains("add     mods/a.jar"), text);
+            assertTrue(text.contains("download 1 file"), text);
             assertTrue(text.contains("done: client is now at 2.9.0"), text);
 
             printed.reset();

@@ -70,6 +70,13 @@ public final class Publish {
         });
 
         int total = pending.size();
+        int skipped = distinct.size() - total;
+        long pendingBytes = 0;
+        for (String path : pending.values()) {
+            pendingBytes += files.get(path).size();
+        }
+        log.step("plan", Log.count(total, "blob") + " to upload, " + Log.count(skipped, "blob") + " already there",
+                Sizes.human(pendingBytes) + " to upload");
         AtomicInteger uploaded = new AtomicInteger();
         AtomicLong uploadedBytes = new AtomicLong();
         Parallel.forEach(pending.entrySet(), config.concurrency(), entry -> {
@@ -82,7 +89,7 @@ public final class Publish {
             }
         });
         log.step("upload", Log.count(uploaded.get(), "blob"), Sizes.human(uploadedBytes.get()));
-        log.step("reuse", Log.count(distinct.size() - total, "blob"), "already in the bucket");
+        log.step("skip", Log.count(skipped, "blob"), "already in the bucket");
 
         log.step("write", releaseKey, write(store, releaseKey, manifest.toJson()));
         String latestKey = ObjectKeys.latest(tag);

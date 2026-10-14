@@ -107,6 +107,10 @@ public final class Update {
             }
         });
 
+        if (total > 0) {
+            log.step("download", Log.count(downloaded.get(), "file"), Sizes.human(bytes.get()));
+        }
+
         Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
         target.write(releaseFile);
         new Pointer(target.releaseId()).write(currentFile);

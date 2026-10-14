@@ -166,6 +166,25 @@ class PublishTest {
     }
 
     @Test
+    void reportsWhatItUploadedAndWhatItSkipped(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            write(workspace, "client/base/mods/b.jar", "B");
+            Publish.run(workspace, "client", "2.9.0", false, log);
+            printed.reset();
+
+            write(workspace, "client/base/mods/c.jar", "C");
+            Publish.run(workspace, "client", "2.9.1", false, log);
+
+            String text = printed.toString();
+            assertTrue(text.contains("plan    1 blob to upload, 2 blobs already there"), text);
+            assertTrue(text.contains("upload  1 blob"), text);
+            assertTrue(text.contains("skip    2 blobs"), text);
+        }
+    }
+
+    @Test
     void writesNoTranscriptForADryRun(@TempDir Path workspace) throws IOException {
         write(workspace, "client/base/mods/a.jar", "A");
 
