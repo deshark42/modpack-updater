@@ -18,6 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -206,6 +207,55 @@ class UpdateTest {
             assertEquals("1.0", applied(player, "client-extra"));
             assertEquals("A", Files.readString(player.resolve("mods/a.jar")));
             assertEquals("S", Files.readString(player.resolve("shaderpacks/s.zip")));
+        }
+    }
+
+    @Test
+    void keepsTheTranscriptOfARunThatTransferred(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            configure(publisher, s3);
+            publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", "A"));
+            Path player = root.resolve("player");
+            configure(player, s3);
+
+            Update.run(player, "client", false, log);
+
+            List<Path> logs = logs(player);
+            assertEquals(1, logs.size(), logs.toString());
+            assertTrue(logs.get(0).getFileName().toString().endsWith("-update-client.log"),
+                    logs.get(0).toString());
+            String text = Files.readString(logs.get(0));
+            assertTrue(text.contains("update client -> 2.9.0"), text);
+            assertTrue(text.contains("add     mods/a.jar"), text);
+            assertTrue(text.contains("done: client is now at 2.9.0"), text);
+
+            printed.reset();
+            Update.run(player, "client", false, log);
+            assertEquals(1, logs(player).size(), "a run with nothing to transfer leaves no second log");
+        }
+    }
+
+    @Test
+    void writesNoTranscriptForADryRun(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            configure(publisher, s3);
+            publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", "A"));
+            Path player = root.resolve("player");
+            configure(player, s3);
+            Update.run(player, "client", false, log);
+
+            publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", "A2"));
+            Update.run(player, "client", true, log);
+
+            assertEquals(1, logs(player).size(), "a dry run adds no log");
+        }
+    }
+
+    private static List<Path> logs(Path workspace) throws IOException {
+        try (var files = Files.list(Layout.logsDir(workspace))) {
+            return files.toList();
         }
     }
 }

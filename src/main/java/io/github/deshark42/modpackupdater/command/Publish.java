@@ -4,6 +4,7 @@ import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.Sizes;
 import io.github.deshark42.modpackupdater.fs.Tree;
 import io.github.deshark42.modpackupdater.log.Log;
+import io.github.deshark42.modpackupdater.log.LogFile;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.FileEntry;
 import io.github.deshark42.modpackupdater.model.Layout;
@@ -77,7 +78,7 @@ public final class Publish {
             int done = uploaded.incrementAndGet();
             long bytes = uploadedBytes.addAndGet(files.get(entry.getValue()).size());
             if (log.progressDue()) {
-                log.step("upload", done + "/" + total + " blobs", Sizes.human(bytes));
+                log.progress("upload", done + "/" + total + " blobs", Sizes.human(bytes));
             }
         });
         log.step("upload", Log.count(uploaded.get(), "blob"), Sizes.human(uploadedBytes.get()));
@@ -87,6 +88,7 @@ public final class Publish {
         String latestKey = ObjectKeys.latest(tag);
         log.step("write", latestKey, write(store, latestKey, new Pointer(releaseId).toJson()));
         log.done(tag + " " + releaseId + " is now the latest");
+        LogFile.keep(workspace, "publish-" + tag, log);
     }
 
     private static String write(S3Store store, String key, String json) {

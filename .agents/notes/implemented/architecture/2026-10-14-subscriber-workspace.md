@@ -20,6 +20,7 @@ Status: implemented
 ├── mmc-pack.json
 ├── .modpack-updater/
 │   ├── config.json              # 与发布者共用同一份字段定义
+│   ├── logs/                    # 真正应用了变更的那次运行的日志
 │   └── <tag>/
 │       ├── current.json         # 当前版本标识
 │       ├── releases/
@@ -29,6 +30,7 @@ Status: implemented
 ```
 
 - 订阅者只需要 config.json，可以用 modpack-updater init（不带 --tag）生成；它同样只写缺失的部分，不覆盖已有内容。
+- 只有应用了变更的 update 才在 .modpack-updater/logs/ 下留一份运行日志，名字带时间、命令与 tag；"已经是最新"与 --dry-run 都不留文件。日志记的是逐文件的过程，比终端默认显示的多，但只在终端闪过的下载进度行不进日志。
 - config.json 与发布者共用同一份字段定义，tag 不进 config。
 - 被追踪的是整棵实例目录，不只是 .minecraft/：清单路径相对工作区根解析。按 MultiMC 规范打包的整合包通常在 .minecraft/ 之外还带 libraries/、patches/、instance.cfg、mmc-pack.json 与图标等实例级文件，它们和 .minecraft/ 内的文件一样可能出现在清单里。
 - 本地状态按 tag 分目录：.modpack-updater/<tag>/ 下放 current.json、releases/ 与 backup/。同一个实例被不同 tag 更新时，各自的"当前版本"互不干扰，指针里也就不必再记 tag。
@@ -60,6 +62,6 @@ Status: implemented
 - 同一个实例上先后用两个 tag 更新时，各自的状态目录互不影响：后者的 update 不会改动前者的 current.json、releases/ 与 backup/。
 - 真正的缺口在另一个方向：玩家本地删掉的上游文件不会被补回来——工具只看清单，不看本地。
 - 多 tag 共用一个实例时，树上留下的是最后写入者的内容：先运行的 tag 的 current.json 可能与树不一致，它删掉的文件也不会被后来者补回。这是接受的语义——工具不保证树上文件与任一 tag 的清单逐项一致。
-- backup/ 只增不减，实例随每次更新变大，目前没有清理策略。
+- backup/ 与 .modpack-updater/logs/ 都只增不减，实例随每次更新变大，目前没有清理策略。
 - 本地状态是更新唯一依据：<tag>/current.json 或该 tag 的 releases/ 清单被删除、损坏后，工具无法知道这个 tag 上一次是什么版本，只能重置或人工对齐；指针存在而 releases/<旧 id>.json 缺失时 update 直接报错，不猜。
 - 清单之外的路径永远不进同步范围：玩家把自建内容放进 mods/ 之类的目录不会被删，这是保护也是边界——它同样意味着工具不会替你收拾清单外的任何东西。

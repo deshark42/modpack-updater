@@ -2,6 +2,9 @@ package io.github.deshark42.modpackupdater.log;
 
 import java.io.PrintStream;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.function.LongSupplier;
 
@@ -12,6 +15,10 @@ import java.util.function.LongSupplier;
  *
  * <p>Every line is built as {@code indent + verb padded to 8 + subject + note}: the verb column can
  * be read down a log, and a note is pushed out past the longest subject it has to line up with.
+ *
+ * <p>Everything that records what the run did is also kept as plain text in a transcript, whatever
+ * the console was asked to show, so a run that moved data can leave the detail behind in a file.
+ * The progress lines that only report work in flight stay on the console.
  */
 public final class Log {
 
@@ -41,6 +48,7 @@ public final class Log {
     private final boolean color;
     private final LongSupplier clock;
     private final long startedAt;
+    private final List<String> transcript = Collections.synchronizedList(new ArrayList<>());
     private long lastProgress;
 
     public Log(PrintStream out) {
@@ -82,8 +90,16 @@ public final class Log {
         return level;
     }
 
+    /** Every line of this run as plain text, including the ones the console was not shown. */
+    public List<String> transcript() {
+        synchronized (transcript) {
+            return List.copyOf(transcript);
+        }
+    }
+
     /** What the command is about to do, e.g. "publish client 2.9.0". */
     public void headline(String text) {
+        transcript.add(text);
         if (level != Level.QUIET) {
             out.println(text);
         }
@@ -95,15 +111,24 @@ public final class Log {
     }
 
     public void step(String verb, String subject, String note) {
+        transcript.add(line(1, verb, subject, note, false));
         if (level != Level.QUIET) {
-            out.println(line(1, verb, subject, note));
+            out.println(line(1, verb, subject, note, true));
         }
     }
 
     /** One file the run touches; printed only at {@link Level#VERBOSE}. */
     public void item(String verb, String path) {
+        transcript.add(line(2, verb, path, "", false));
         if (level == Level.VERBOSE) {
-            out.println(line(2, verb, path, ""));
+            out.println(line(2, verb, path, "", true));
+        }
+    }
+
+    /** Work in flight, e.g. "upload 12/40 blobs": the console and nothing else. */
+    public void progress(String verb, String subject, String note) {
+        if (level != Level.QUIET) {
+            out.println(line(1, verb, subject, note, true));
         }
     }
 
@@ -124,17 +149,22 @@ public final class Log {
 
     /** The closing line of a run that did something. */
     public void done(String text) {
-        out.println(paint("done", BOLD) + ": " + text + ", " + elapsed());
+        String took = elapsed();
+        transcript.add("done: " + text + ", " + took);
+        out.println(paint("done", BOLD) + ": " + text + ", " + took);
     }
 
     /** The closing line of a dry run: the same shape, but nothing was written. */
     public void dryRun() {
-        out.println("dry run: nothing was written, " + elapsed());
+        String closing = "dry run: nothing was written, " + elapsed();
+        transcript.add(closing);
+        out.println(closing);
     }
 
-    private String line(int indent, String verb, String subject, String note) {
+    private String line(int indent, String verb, String subject, String note, boolean painted) {
         StringBuilder text = new StringBuilder("  ".repeat(indent));
-        text.append(paint(verbColumn(verb), colorOf(verb))).append(subject);
+        String column = verbColumn(verb);
+        text.append(painted ? paint(column, colorOf(verb)) : column).append(subject);
         if (!note.isEmpty()) {
             text.append(" ".repeat(Math.max(2, SUBJECT_WIDTH - subject.length()))).append(note);
         }

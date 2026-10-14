@@ -13,7 +13,8 @@ Status: implemented
 ```
 <workspace>/
 ├── .modpack-updater/
-│   └── config.json              # S3 协议所需的配置
+│   ├── config.json              # S3 协议所需的配置
+│   └── logs/                    # 每次真正发布的运行日志
 ├── <tag>/
 │   └── base/                    # 要追踪的文件，保留目录结构
 └── modpack-updater-<version>.jar
@@ -24,6 +25,7 @@ Status: implemented
 - <tag>/base/ 里的文件就是该 tag 发布内容的全部来源，保留目录结构。它的更新由发布者手工负责，工具不参与。
 - tag 与 release_id 都由命令行指定，工作区不记录它们：publish --tag <tag> --id <release_id>，例如 --id 2.9.0-RC1。
 - publish --tag <tag> --id <release_id> 发布；加 --dry-run 时只计算将要发生的事，不读 config.json、不联网、不写入任何对象。
+- 每次真正发布都在 .modpack-updater/logs/ 下留一份运行日志，名字带时间、命令与 tag（例如 2026-10-14T05-55-23Z-publish-client.log）。日志记的是逐文件的过程，比终端默认显示的多，但只在终端闪过的上传进度行不进日志；只有发布成功时才写，--dry-run 与被拒绝的发布都不留文件。
 - 发布不做与上一次 release 的比较：base/ 里有就进本次清单，没有就不进。因此"路径消失"不会在发布侧被推断出来，只会在订阅者拿自己的清单与本次清单对比时显形；订阅者如何处理消失的路径见[订阅者工作区与更新流程](2026-10-14-subscriber-workspace.md)。
 - 同一个 --id 已经存在时 publish 直接报错退出：releases/ 只增不改，修正内容必须换一个 release_id。
 
@@ -39,3 +41,4 @@ Status: implemented
 - release_id 由人手输入，容易拼写不一致或重发同一个 id；重发同一个 id 会被拒绝，而 releases/<id>.json 只增不改意味着发布者只能换 id 来修正内容。
 - 发布侧不比较上一次 release，发布者不会得到"某个路径消失了"的提示；这类变化只在订阅者侧显形，一旦订阅者按删除处理，误删很难回收。
 - base/ 完全由发布者手工维护，工具不校验它是否真的来自官方包：多放、少放、误把用户数据放进 base/ 都会被原样发布出去。
+- .modpack-updater/logs/ 只增不减：发布越频繁，工作区里留下的日志越多，目前没有清理策略。

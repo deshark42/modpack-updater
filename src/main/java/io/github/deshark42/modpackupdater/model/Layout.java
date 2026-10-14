@@ -10,6 +10,7 @@ public final class Layout {
     public static final String CURRENT = "current.json";
     public static final String RELEASES = "releases";
     public static final String BACKUP = "backup";
+    public static final String LOGS = "logs";
     public static final String BASE = "base";
 
     private Layout() {
@@ -21,6 +22,10 @@ public final class Layout {
 
     public static Path configFile(Path workspaceRoot) {
         return stateDir(workspaceRoot).resolve(CONFIG);
+    }
+
+    public static Path logsDir(Path workspaceRoot) {
+        return stateDir(workspaceRoot).resolve(LOGS);
     }
 
     public static Path tagDir(Path workspaceRoot, String tag) {

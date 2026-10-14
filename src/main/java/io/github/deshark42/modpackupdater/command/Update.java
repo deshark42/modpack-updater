@@ -4,6 +4,7 @@ import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
 import io.github.deshark42.modpackupdater.fs.Sizes;
 import io.github.deshark42.modpackupdater.log.Log;
+import io.github.deshark42.modpackupdater.log.LogFile;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.FileEntry;
 import io.github.deshark42.modpackupdater.model.Layout;
@@ -102,7 +103,7 @@ public final class Update {
             int done = downloaded.incrementAndGet();
             long sofar = bytes.addAndGet(entry.size());
             if (log.progressDue()) {
-                log.step("download", done + "/" + total + " files", Sizes.human(sofar));
+                log.progress("download", done + "/" + total + " files", Sizes.human(sofar));
             }
         });
 
@@ -112,6 +113,9 @@ public final class Update {
         log.step("write", Log.relativeTo(workspace, releaseFile));
         log.step("write", Log.relativeTo(workspace, currentFile));
         log.done(tag + " is now at " + target.releaseId());
+        if (!plan.isEmpty()) {
+            LogFile.keep(workspace, "update-" + tag, log);
+        }
     }
 
     private static boolean moveAside(Path workspace, Path backup, String path) {

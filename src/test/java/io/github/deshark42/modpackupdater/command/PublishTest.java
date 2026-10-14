@@ -1,6 +1,7 @@
 package io.github.deshark42.modpackupdater.command;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -9,6 +10,7 @@ import io.github.deshark42.modpackupdater.FakeS3;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.log.Log;
+import io.github.deshark42.modpackupdater.model.Layout;
 import io.github.deshark42.modpackupdater.model.Manifest;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -141,6 +143,40 @@ class PublishTest {
             String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
             assertNotNull(s3.object("/pack/gtnh/blobs/" + hash.substring(0, 2) + "/" + hash));
             assertEquals(5, s3.objectCount());
+        }
+    }
+
+    @Test
+    void keepsTheTranscriptOfARunThatUploaded(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+
+            Publish.run(workspace, "client", "2.9.0", false, log);
+
+            List<Path> logs = logs(workspace);
+            assertEquals(1, logs.size(), logs.toString());
+            assertTrue(logs.get(0).getFileName().toString().endsWith("-publish-client.log"),
+                    logs.get(0).toString());
+            String text = Files.readString(logs.get(0));
+            assertTrue(text.contains("publish client 2.9.0"), text);
+            assertTrue(text.contains("upload  mods/a.jar"), text);
+            assertTrue(text.contains("done: client 2.9.0 is now the latest"), text);
+        }
+    }
+
+    @Test
+    void writesNoTranscriptForADryRun(@TempDir Path workspace) throws IOException {
+        write(workspace, "client/base/mods/a.jar", "A");
+
+        Publish.run(workspace, "client", "2.9.0", true, log);
+
+        assertFalse(Files.exists(Layout.logsDir(workspace)));
+    }
+
+    private static List<Path> logs(Path workspace) throws IOException {
+        try (var files = Files.list(Layout.logsDir(workspace))) {
+            return files.toList();
         }
     }
 }
