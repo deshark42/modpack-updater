@@ -13,14 +13,16 @@ import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import io.github.deshark42.modpackupdater.model.Pointer;
 import io.github.deshark42.modpackupdater.model.SafePath;
 import io.github.deshark42.modpackupdater.s3.S3Store;
+import io.github.deshark42.modpackupdater.util.Parallel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Publish one complete release of a tag: hash the tag's base tree, upload the files that are not in
@@ -46,7 +48,8 @@ public final class Publish {
             return;
         }
 
-        S3Store store = new S3Store(Config.load(workspace));
+        Config config = Config.load(workspace);
+        S3Store store = new S3Store(config);
         String releaseKey = ObjectKeys.release(tag, releaseId);
         if (store.exists(releaseKey)) {
             throw new UserError("release " + releaseId + " of tag " + tag
@@ -54,34 +57,31 @@ public final class Publish {
         }
 
         // Ask which blobs are missing before uploading, so progress can count them.
-        Map<String, String> pending = new LinkedHashMap<>();
-        int present = 0;
-        Set<String> seen = new HashSet<>();
+        Map<String, String> distinct = new LinkedHashMap<>();
         for (Map.Entry<String, FileEntry> entry : files.entrySet()) {
-            String hash = entry.getValue().hash();
-            if (!seen.add(hash)) {
-                continue;
-            }
-            if (store.exists(ObjectKeys.blob(hash))) {
-                present++;
-            } else {
-                pending.put(hash, entry.getKey());
-            }
+            distinct.putIfAbsent(entry.getValue().hash(), entry.getKey());
         }
+        Map<String, String> pending = new ConcurrentHashMap<>();
+        Parallel.forEach(distinct.entrySet(), config.concurrency(), entry -> {
+            if (!store.exists(ObjectKeys.blob(entry.getKey()))) {
+                pending.put(entry.getKey(), entry.getValue());
+            }
+        });
 
-        int uploaded = 0;
-        long uploadedBytes = 0;
-        for (Map.Entry<String, String> entry : pending.entrySet()) {
+        int total = pending.size();
+        AtomicInteger uploaded = new AtomicInteger();
+        AtomicLong uploadedBytes = new AtomicLong();
+        Parallel.forEach(pending.entrySet(), config.concurrency(), entry -> {
             store.putFile(ObjectKeys.blob(entry.getKey()), SafePath.resolve(base, entry.getValue()));
             log.item("upload", entry.getValue());
-            uploaded++;
-            uploadedBytes += files.get(entry.getValue()).size();
+            int done = uploaded.incrementAndGet();
+            long bytes = uploadedBytes.addAndGet(files.get(entry.getValue()).size());
             if (log.progressDue()) {
-                log.step("upload", uploaded + "/" + pending.size() + " blobs", Sizes.human(uploadedBytes));
+                log.step("upload", done + "/" + total + " blobs", Sizes.human(bytes));
             }
-        }
-        log.step("upload", Log.count(uploaded, "blob"), Sizes.human(uploadedBytes));
-        log.step("reuse", Log.count(present, "blob"), "already in the bucket");
+        });
+        log.step("upload", Log.count(uploaded.get(), "blob"), Sizes.human(uploadedBytes.get()));
+        log.step("reuse", Log.count(distinct.size() - total, "blob"), "already in the bucket");
 
         log.step("write", releaseKey, write(store, releaseKey, manifest.toJson()));
         String latestKey = ObjectKeys.latest(tag);

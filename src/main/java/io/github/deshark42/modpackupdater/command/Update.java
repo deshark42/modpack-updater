@@ -14,11 +14,14 @@ import io.github.deshark42.modpackupdater.model.Plan;
 import io.github.deshark42.modpackupdater.model.Pointer;
 import io.github.deshark42.modpackupdater.model.SafePath;
 import io.github.deshark42.modpackupdater.s3.S3Store;
+import io.github.deshark42.modpackupdater.util.Parallel;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Update one tag to the release the bucket says is latest: diff the applied manifest against the
@@ -31,7 +34,8 @@ public final class Update {
 
     public static void run(Path workspace, String tag, boolean dryRun, Log log) {
         Names.requireTag(tag);
-        S3Store store = new S3Store(Config.load(workspace));
+        Config config = Config.load(workspace);
+        S3Store store = new S3Store(config);
 
         String latestKey = ObjectKeys.latest(tag);
         Pointer latest = Pointer.parse(new String(store.getBytes(latestKey), StandardCharsets.UTF_8),
@@ -88,17 +92,18 @@ public final class Update {
         }
 
         List<String> downloads = plan.downloads();
-        long downloaded = 0;
-        long bytes = 0;
-        for (String path : downloads) {
+        int total = downloads.size();
+        AtomicInteger downloaded = new AtomicInteger();
+        AtomicLong bytes = new AtomicLong();
+        Parallel.forEach(downloads, config.concurrency(), path -> {
             FileEntry entry = target.files().get(path);
             store.download(ObjectKeys.blob(entry.hash()), SafePath.resolve(workspace, path));
-            downloaded++;
-            bytes += entry.size();
+            int done = downloaded.incrementAndGet();
+            long sofar = bytes.addAndGet(entry.size());
             if (log.progressDue()) {
-                log.step("download", downloaded + "/" + downloads.size() + " files", Sizes.human(bytes));
+                log.step("download", done + "/" + total + " files", Sizes.human(sofar));
             }
-        }
+        });
 
         Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
         target.write(releaseFile);

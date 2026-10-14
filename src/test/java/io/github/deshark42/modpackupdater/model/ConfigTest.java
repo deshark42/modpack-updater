@@ -23,6 +23,27 @@ class ConfigTest {
     }
 
     @Test
+    void defaultsToFourTransfersAtATime() {
+        Config config = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\"}", "config.json");
+        assertEquals(4, config.concurrency());
+    }
+
+    @Test
+    void readsHowManyTransfersMayRunAtOnce() {
+        Config config = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
+                + " \"concurrency\": 8}", "config.json");
+        assertEquals(8, config.concurrency());
+    }
+
+    @Test
+    void rejectsAConcurrencyThatIsNotAUsableCount() {
+        String head = "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\", \"concurrency\": ";
+        assertThrows(UserError.class, () -> Config.parse(head + "0}", "config.json"));
+        assertThrows(UserError.class, () -> Config.parse(head + "1000}", "config.json"));
+        assertThrows(UserError.class, () -> Config.parse(head + "\"many\"}", "config.json"));
+    }
+
+    @Test
     void normalizesEndpointAndPrefix() {
         Config config = Config.parse(
                 "{\"endpoint\": \"https://s3.example.com/\", \"bucket\": \"pack\", \"prefix\": \"gtnh\"}", "config.json");

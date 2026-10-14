@@ -9,7 +9,11 @@ import java.util.Map;
 
 /** Connection settings, shared by publisher and subscriber and kept in .modpack-updater/config.json. */
 public record Config(String endpoint, String region, String bucket, String prefix, boolean pathStyle,
-                     String accessKey, String secretKey) {
+                     String accessKey, String secretKey, int concurrency) {
+
+    /** Transfers that run at the same time unless config.json says otherwise. */
+    public static final int DEFAULT_CONCURRENCY = 4;
+    public static final int MAX_CONCURRENCY = 64;
 
     public Config {
         if (endpoint == null || !(endpoint.startsWith("http://") || endpoint.startsWith("https://"))) {
@@ -29,6 +33,9 @@ public record Config(String endpoint, String region, String bucket, String prefi
         }
         if (!prefix.isEmpty() && !prefix.endsWith("/")) {
             prefix = prefix + "/";
+        }
+        if (concurrency < 1 || concurrency > MAX_CONCURRENCY) {
+            throw new UserError("\"concurrency\" must be between 1 and " + MAX_CONCURRENCY + ": " + concurrency);
         }
     }
 
@@ -54,7 +61,8 @@ public record Config(String endpoint, String region, String bucket, String prefi
                 Fields.optionalString(object, "prefix", "", what),
                 Fields.optionalBoolean(object, "path_style", false, what),
                 accessKey,
-                secretKey);
+                secretKey,
+                Fields.optionalInt(object, "concurrency", DEFAULT_CONCURRENCY, what));
     }
 
     public boolean anonymous() {

@@ -40,6 +40,20 @@ final class Fields {
         return bool.booleanValue();
     }
 
+    static int optionalInt(Map<String, Object> object, String key, int fallback, String what) {
+        Object value = object.get(key);
+        if (value == null) {
+            return fallback;
+        }
+        if (!(value instanceof Long number)) {
+            throw new UserError(what + ": \"" + key + "\" must be an integer");
+        }
+        if (number < Integer.MIN_VALUE || number > Integer.MAX_VALUE) {
+            throw new UserError(what + ": \"" + key + "\" is out of range: " + number);
+        }
+        return number.intValue();
+    }
+
     static long longValue(Map<String, Object> object, String key, String what) {
         Object value = object.get(key);
         if (!(value instanceof Long number)) {

@@ -113,7 +113,7 @@ public final class Log {
     }
 
     /** True at most once a second, so a long loop can report progress without flooding the log. */
-    public boolean progressDue() {
+    public synchronized boolean progressDue() {
         long now = clock.getAsLong();
         if (now - lastProgress < ONE_SECOND) {
             return false;
