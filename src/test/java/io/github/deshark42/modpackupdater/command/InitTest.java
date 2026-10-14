@@ -15,6 +15,7 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -25,15 +26,21 @@ class InitTest {
     private final Log log = new Log(out);
 
     @Test
-    void writesAConfigTemplateAndTheBaseDirectoryOfATag(@TempDir Path workspace) throws IOException {
+    void writesAConfigTemplateAndThePublishInputsOfATag(@TempDir Path workspace) throws IOException {
         Init.run(workspace, "client", log);
 
         Path config = Layout.configFile(workspace);
         assertTrue(Files.isRegularFile(config), printed.toString());
         assertTrue(Files.isDirectory(Layout.baseDir(workspace, "client")), printed.toString());
+        assertTrue(Files.isDirectory(Layout.overlayDir(workspace, "client")), printed.toString());
+        assertTrue(Files.isRegularFile(Layout.removeFile(workspace, "client")), printed.toString());
         assertTrue(printed.toString().contains("created .modpack-updater/config.json"), printed.toString());
         assertTrue(printed.toString().contains("created client/base"), printed.toString());
+        assertTrue(printed.toString().contains("created client/overlay"), printed.toString());
+        assertTrue(printed.toString().contains("created client/remove.txt"), printed.toString());
         assertTrue(printed.toString().contains("fill in \"endpoint\" and \"bucket\""), printed.toString());
+        assertTrue(rulesIn(Layout.removeFile(workspace, "client")).isEmpty(),
+                Files.readString(Layout.removeFile(workspace, "client")));
 
         // Pointing the template at a bucket is all a config needs to become loadable.
         String filled = Files.readString(config)
@@ -51,6 +58,8 @@ class InitTest {
         Files.writeString(config, "{\"endpoint\": \"https://mine\", \"bucket\": \"b\", \"region\": \"eu-west-1\","
                 + " \"prefix\": \"\", \"path_style\": true, \"concurrency\": 8}");
         Files.createDirectories(Layout.baseDir(workspace, "client"));
+        Files.createDirectories(Layout.overlayDir(workspace, "client"));
+        Files.writeString(Layout.removeFile(workspace, "client"), "example-mod-*.jar\n");
 
         Init.run(workspace, "client", log);
 
@@ -60,7 +69,11 @@ class InitTest {
         assertTrue(kept.pathStyle());
         assertEquals(8, kept.concurrency());
         assertTrue(printed.toString().contains("kept    .modpack-updater/config.json"), printed.toString());
+        assertTrue(printed.toString().contains("kept    client/base"), printed.toString());
+        assertTrue(printed.toString().contains("kept    client/overlay"), printed.toString());
+        assertTrue(printed.toString().contains("kept    client/remove.txt"), printed.toString());
         assertFalse(printed.toString().contains("created "), printed.toString());
+        assertEquals("example-mod-*.jar\n", Files.readString(Layout.removeFile(workspace, "client")));
     }
 
     @Test
@@ -89,5 +102,12 @@ class InitTest {
     @Test
     void rejectsATagThatWouldEscapeTheWorkspace(@TempDir Path workspace) {
         assertThrows(UserError.class, () -> Init.run(workspace, "../client", log));
+    }
+
+    private static List<String> rulesIn(Path file) throws IOException {
+        return Files.readAllLines(file).stream()
+                .map(String::strip)
+                .filter(line -> !line.isEmpty() && !line.startsWith("#"))
+                .toList();
     }
 }

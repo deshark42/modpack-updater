@@ -193,6 +193,121 @@ class PublishTest {
         assertFalse(Files.exists(Layout.logsDir(workspace)));
     }
 
+    @Test
+    void takesOverlayFilesAndPrefersThemOverBase(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "base");
+            write(workspace, "client/base/mods/b.jar", "B");
+            write(workspace, "client/overlay/mods/a.jar", "overlay");
+            write(workspace, "client/overlay/config/mine.json", "{}");
+
+            Publish.run(workspace, "client", "2.9.0", false, log);
+
+            Manifest manifest = Manifest.parse(s3.text("/pack/gtnh/metadata/client/releases/2.9.0.json"), "release");
+            assertEquals(List.of("config/mine.json", "mods/a.jar", "mods/b.jar"),
+                    List.copyOf(manifest.files().keySet()));
+            String hash = Sha256.ofFile(workspace.resolve("client/overlay/mods/a.jar"));
+            assertEquals(hash, manifest.files().get("mods/a.jar").hash(), "overlay wins the same path");
+            assertEquals("overlay", new String(s3.object(blobKey(hash)), StandardCharsets.UTF_8));
+            String text = printed.toString();
+            assertTrue(text.contains("replace mods/a.jar"), text);
+            assertTrue(text.contains("add     config/mine.json"), text);
+        }
+    }
+
+    @Test
+    void removesTheBaseFilesRemoveTxtMatches(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            write(workspace, "client/base/mods/example-mod-1.0.jar", "B");
+            write(workspace, "client/base/config/secret.cfg", "C");
+            write(workspace, "client/base/config/deep/other.cfg", "D");
+            Files.writeString(Layout.removeFile(workspace, "client"),
+                    "example-mod-*.jar\n/config/\nghost.jar\n");
+
+            Publish.run(workspace, "client", "2.9.0", false, log);
+
+            Manifest manifest = Manifest.parse(s3.text("/pack/gtnh/metadata/client/releases/2.9.0.json"), "release");
+            assertEquals(List.of("mods/a.jar"), List.copyOf(manifest.files().keySet()));
+            String text = printed.toString();
+            assertTrue(text.contains("remove  3 files"), text);
+            assertTrue(text.contains("stale   1 rule"), text);
+            assertTrue(text.contains("ghost.jar"), text);
+            assertTrue(text.contains("merge   0 files added, 0 files replaced"), text);
+        }
+    }
+
+    @Test
+    void removesNothingFromTheOverlay(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/example-mod.jar", "base");
+            write(workspace, "client/base/mods/other.jar", "B");
+            write(workspace, "client/overlay/mods/example-mod.jar", "mine");
+            Files.writeString(Layout.removeFile(workspace, "client"), "example-mod.jar\n");
+
+            Publish.run(workspace, "client", "2.9.0", false, log);
+
+            Manifest manifest = Manifest.parse(s3.text("/pack/gtnh/metadata/client/releases/2.9.0.json"), "release");
+            assertEquals(List.of("mods/example-mod.jar", "mods/other.jar"),
+                    List.copyOf(manifest.files().keySet()));
+            assertEquals(Sha256.ofFile(workspace.resolve("client/overlay/mods/example-mod.jar")),
+                    manifest.files().get("mods/example-mod.jar").hash());
+        }
+    }
+
+    @Test
+    void dryRunReportsTheSameMergeAsTheRealPublish(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            write(workspace, "client/base/mods/a.jar", "base");
+            write(workspace, "client/overlay/mods/a.jar", "overlay");
+            write(workspace, "client/overlay/config/mine.json", "{}");
+            Files.writeString(Layout.removeFile(workspace, "client"), "ghost.jar\n");
+
+            Log quiet = new Log(out, Log.Level.NORMAL);
+            Publish.run(workspace, "client", "2.9.0", true, quiet);
+            String dry = line(printed.toString(), "merge");
+            printed.reset();
+
+            configure(workspace, s3);
+            Publish.run(workspace, "client", "2.9.0", false, quiet);
+            String real = line(printed.toString(), "merge");
+
+            assertNotNull(dry, "a dry run reports the merge");
+            assertEquals(dry, real);
+        }
+    }
+
+    @Test
+    void refusesABadRemoveRuleBeforeTouchingTheBucket(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            Files.writeString(Layout.removeFile(workspace, "client"), "../escape.jar\n");
+
+            UserError error = assertThrows(UserError.class,
+                    () -> Publish.run(workspace, "client", "2.9.0", false, log));
+
+            assertTrue(error.getMessage().contains("leaves the tag directory"), error.getMessage());
+            assertTrue(s3.requests().isEmpty(), s3.requests().toString());
+        }
+    }
+
+    private static String blobKey(String hash) {
+        return "/pack/gtnh/blobs/" + hash.substring(0, 2) + "/" + hash;
+    }
+
+    private static String line(String text, String marker) {
+        for (String candidate : text.split("\n")) {
+            if (candidate.contains(marker)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
     private static List<Path> logs(Path workspace) throws IOException {
         try (var files = Files.list(Layout.logsDir(workspace))) {
             return files.toList();

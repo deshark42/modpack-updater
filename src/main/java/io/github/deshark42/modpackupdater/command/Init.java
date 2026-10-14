@@ -10,7 +10,8 @@ import java.nio.file.Path;
 
 /**
  * Lays out a workspace with the files the tool expects to find: the connection config every
- * workspace needs, and the base directory a tag is published from. Nothing here is overwritten.
+ * workspace needs, and the base/, overlay/ and remove.txt a tag is published from. Nothing here is
+ * overwritten.
  */
 public final class Init {
 
@@ -25,6 +26,13 @@ public final class Init {
               "access_key": "",
               "secret_key": ""
             }
+            """;
+
+    private static final String REMOVE_TEMPLATE = """
+            # One .gitignore-style rule per line: paths in base/ that must not be published.
+            # A rule that names a directory removes everything below it.
+            # .minecraft/config/
+            # example-mod-*.jar
             """;
 
     private Init() {
@@ -43,18 +51,30 @@ public final class Init {
             log.note("fill in \"endpoint\" and \"bucket\" in " + shown);
         }
         if (tag != null) {
-            Path base = Layout.baseDir(workspace, tag);
-            if (Files.isDirectory(base)) {
-                log.step("kept", Log.relativeTo(workspace, base));
+            directory(Layout.baseDir(workspace, tag), workspace, log);
+            directory(Layout.overlayDir(workspace, tag), workspace, log);
+            Path remove = Layout.removeFile(workspace, tag);
+            String ruleFile = Log.relativeTo(workspace, remove);
+            if (Files.exists(remove)) {
+                log.step("kept", ruleFile);
             } else {
-                try {
-                    Files.createDirectories(base);
-                } catch (IOException e) {
-                    throw new UserError("cannot create " + base + ": " + e.getMessage(), e);
-                }
-                log.step("created", Log.relativeTo(workspace, base));
+                AtomicFile.write(remove, REMOVE_TEMPLATE);
+                log.step("created", ruleFile);
             }
         }
         log.done("workspace is ready");
+    }
+
+    private static void directory(Path directory, Path workspace, Log log) {
+        if (Files.isDirectory(directory)) {
+            log.step("kept", Log.relativeTo(workspace, directory));
+            return;
+        }
+        try {
+            Files.createDirectories(directory);
+        } catch (IOException e) {
+            throw new UserError("cannot create " + directory + ": " + e.getMessage(), e);
+        }
+        log.step("created", Log.relativeTo(workspace, directory));
     }
 }

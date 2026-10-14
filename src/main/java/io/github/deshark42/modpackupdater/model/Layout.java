@@ -12,6 +12,8 @@ public final class Layout {
     public static final String BACKUP = "backup";
     public static final String LOGS = "logs";
     public static final String BASE = "base";
+    public static final String OVERLAY = "overlay";
+    public static final String REMOVE = "remove.txt";
 
     private Layout() {
     }
@@ -48,7 +50,20 @@ public final class Layout {
         return tagDir(workspaceRoot, tag).resolve(BACKUP).resolve(Names.requireReleaseId(releaseId));
     }
 
+    /** The directory a tag is published from: base/, overlay/ and remove.txt live side by side. */
+    public static Path tagRoot(Path workspaceRoot, String tag) {
+        return workspaceRoot.resolve(Names.requireTag(tag));
+    }
+
     public static Path baseDir(Path workspaceRoot, String tag) {
-        return workspaceRoot.resolve(Names.requireTag(tag)).resolve(BASE);
+        return tagRoot(workspaceRoot, tag).resolve(BASE);
+    }
+
+    public static Path overlayDir(Path workspaceRoot, String tag) {
+        return tagRoot(workspaceRoot, tag).resolve(OVERLAY);
+    }
+
+    public static Path removeFile(Path workspaceRoot, String tag) {
+        return tagRoot(workspaceRoot, tag).resolve(REMOVE);
     }
 }

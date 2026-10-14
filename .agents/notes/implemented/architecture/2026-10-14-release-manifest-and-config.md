@@ -79,7 +79,7 @@ Status: implemented
 
 ## 后果
 
-- 内容不变的同一份 base/ 用两个 release_id 各发布一次，两份清单除 release_id 与 published_at 外逐字节一致：序列化确定，不随目录遍历顺序漂移。
+- 内容不变的同一份发布内容（同一份 base/ 与 overlay/）用两个 release_id 各发布一次，两份清单除 release_id 与 published_at 外逐字节一致：序列化确定，不随目录遍历顺序漂移。
 - 订阅者只读 latest.json 就能判断本地是否落后；落后时用本地清单与目标清单相减，不读取任何 blob 即可列出新增、删除、修改三类路径，--dry-run 也就能报出将下载的文件数与总字节数而不写盘。
 - 遇到不认识的 version、越界的 tag 或 release_id，两端都在动手之前报错退出。
 - 公开桶（config.json 里没有密钥）下订阅者能完成更新；私有桶下 config.json 里的密钥足以完成读写。
