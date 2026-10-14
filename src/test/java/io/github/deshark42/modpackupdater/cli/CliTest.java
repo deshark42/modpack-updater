@@ -95,4 +95,16 @@ class CliTest {
             assertTrue(printed.toString().contains("is now at 2.9.0"), printed.toString());
         }
     }
+
+    @Test
+    void initLaysOutAWorkspace(@TempDir Path cwd) throws IOException {
+        assertEquals(Cli.OK, run(cwd, "init", "--tag", "client"), printedErrors.toString());
+
+        assertTrue(Files.isRegularFile(cwd.resolve(".modpack-updater/config.json")));
+        assertTrue(Files.isDirectory(cwd.resolve("client/base")));
+        assertTrue(printed.toString().contains("created "), printed.toString());
+
+        assertEquals(Cli.USAGE_ERROR, run(cwd, "init", "--dry-run"));
+        assertTrue(printedErrors.toString().contains("init does not take --dry-run"), printedErrors.toString());
+    }
 }

@@ -1,6 +1,7 @@
 package io.github.deshark42.modpackupdater.cli;
 
 import io.github.deshark42.modpackupdater.UserError;
+import io.github.deshark42.modpackupdater.command.Init;
 import io.github.deshark42.modpackupdater.command.Publish;
 import io.github.deshark42.modpackupdater.command.Update;
 import java.io.PrintStream;
@@ -8,7 +9,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
-/** The command line: two commands, a handful of options, usage errors kept apart from real ones. */
+/** The command line: three commands, a handful of options, usage errors kept apart from real ones. */
 public final class Cli {
 
     public static final int USAGE_ERROR = 2;
@@ -17,7 +18,8 @@ public final class Cli {
 
     private static final String USAGE = String.join(System.lineSeparator(),
             "usage: modpack-updater publish --tag <tag> --id <release-id> [--workspace <dir>] [--dry-run]",
-            "       modpack-updater update --tag <tag> [--workspace <dir>] [--dry-run]");
+            "       modpack-updater update --tag <tag> [--workspace <dir>] [--dry-run]",
+            "       modpack-updater init [--tag <tag>] [--workspace <dir>]");
 
     private Cli() {
     }
@@ -46,12 +48,12 @@ public final class Cli {
         }
         Path workspace = cwd.resolve(options.getOrDefault("workspace", ".")).toAbsolutePath().normalize();
         String tag = options.get("tag");
-        if (tag == null) {
-            return usage(err, command + " needs --tag <tag>");
-        }
         try {
             switch (command) {
                 case "publish" -> {
+                    if (tag == null) {
+                        return usage(err, "publish needs --tag <tag>");
+                    }
                     String releaseId = options.get("id");
                     if (releaseId == null) {
                         return usage(err, "publish needs --id <release-id>");
@@ -60,10 +62,23 @@ public final class Cli {
                     return OK;
                 }
                 case "update" -> {
+                    if (tag == null) {
+                        return usage(err, "update needs --tag <tag>");
+                    }
                     if (options.containsKey("id")) {
                         return usage(err, "update does not take --id");
                     }
                     Update.run(workspace, tag, dryRun, out);
+                    return OK;
+                }
+                case "init" -> {
+                    if (options.containsKey("id")) {
+                        return usage(err, "init does not take --id");
+                    }
+                    if (dryRun) {
+                        return usage(err, "init does not take --dry-run");
+                    }
+                    Init.run(workspace, tag, out);
                     return OK;
                 }
                 default -> {
