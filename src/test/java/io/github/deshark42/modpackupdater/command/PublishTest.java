@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.github.deshark42.modpackupdater.FakeS3;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.Sha256;
+import io.github.deshark42.modpackupdater.log.Log;
 import io.github.deshark42.modpackupdater.model.Manifest;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -16,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -23,6 +25,7 @@ class PublishTest {
 
     private final ByteArrayOutputStream printed = new ByteArrayOutputStream();
     private final PrintStream out = new PrintStream(printed, true, StandardCharsets.UTF_8);
+    private final Log log = new Log(out, Log.Level.VERBOSE);
 
     private static void write(Path root, String name, String content) throws IOException {
         Path file = root.resolve(name);
@@ -53,7 +56,7 @@ class PublishTest {
             write(workspace, "client/base/mods/b.jar", "A");
             write(workspace, "client/base/mmc-pack.json", "{}");
 
-            Publish.run(workspace, "client", "2.9.0", false, out);
+            Publish.run(workspace, "client", "2.9.0", false, log);
 
             String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
             String blob = "PUT /pack/gtnh/blobs/" + hash.substring(0, 2) + "/" + hash;
@@ -76,15 +79,31 @@ class PublishTest {
     }
 
     @Test
+    void reportsUploadProgressWhileItUploads(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            write(workspace, "client/base/mods/b.jar", "B");
+
+            AtomicLong clock = new AtomicLong();
+            Log ticking = new Log(out, Log.Level.NORMAL, false, () -> clock.addAndGet(2_000_000_000L));
+            Publish.run(workspace, "client", "2.9.0", false, ticking);
+
+            assertTrue(printed.toString().contains("1/2 blobs"), printed.toString());
+            assertTrue(printed.toString().contains("2/2 blobs"), printed.toString());
+        }
+    }
+
+    @Test
     void refusesToRewriteAPublishedRelease(@TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
-            Publish.run(workspace, "client", "2.9.0", false, out);
+            Publish.run(workspace, "client", "2.9.0", false, log);
             int before = s3.objectCount();
 
             write(workspace, "client/base/mods/a.jar", "changed");
-            UserError error = assertThrows(UserError.class, () -> Publish.run(workspace, "client", "2.9.0", false, out));
+            UserError error = assertThrows(UserError.class, () -> Publish.run(workspace, "client", "2.9.0", false, log));
 
             assertTrue(error.getMessage().contains("already exists"), error.getMessage());
             assertEquals(before, s3.objectCount());
@@ -95,7 +114,7 @@ class PublishTest {
     void dryRunUploadsNothingAndNeedsNoConnection(@TempDir Path workspace) throws IOException {
         write(workspace, "client/base/mods/a.jar", "A");
 
-        Publish.run(workspace, "client", "2.9.0", true, out);
+        Publish.run(workspace, "client", "2.9.0", true, log);
 
         assertTrue(printed.toString().contains("dry run"), printed.toString());
         assertTrue(printed.toString().contains("1 file,"), printed.toString());
@@ -103,7 +122,7 @@ class PublishTest {
 
     @Test
     void reportsATagWithoutABaseDirectory(@TempDir Path workspace) {
-        UserError error = assertThrows(UserError.class, () -> Publish.run(workspace, "client", "2.9.0", false, out));
+        UserError error = assertThrows(UserError.class, () -> Publish.run(workspace, "client", "2.9.0", false, log));
         assertTrue(error.getMessage().contains("no such directory"), error.getMessage());
     }
 
@@ -112,10 +131,10 @@ class PublishTest {
         try (FakeS3 s3 = new FakeS3()) {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
-            Publish.run(workspace, "client", "2.9.0", false, out);
+            Publish.run(workspace, "client", "2.9.0", false, log);
 
             write(workspace, "client/base/mods/b.jar", "B");
-            Publish.run(workspace, "client", "2.9.1", false, out);
+            Publish.run(workspace, "client", "2.9.1", false, log);
 
             long blobWrites = s3.requests().stream().filter(r -> r.startsWith("PUT /pack/gtnh/blobs/")).count();
             assertEquals(2, blobWrites, s3.requests().toString());

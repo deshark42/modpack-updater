@@ -3,6 +3,7 @@ package io.github.deshark42.modpackupdater.command;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
 import io.github.deshark42.modpackupdater.fs.Sizes;
+import io.github.deshark42.modpackupdater.log.Log;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.FileEntry;
 import io.github.deshark42.modpackupdater.model.Layout;
@@ -14,10 +15,10 @@ import io.github.deshark42.modpackupdater.model.Pointer;
 import io.github.deshark42.modpackupdater.model.SafePath;
 import io.github.deshark42.modpackupdater.s3.S3Store;
 import java.io.IOException;
-import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 /**
  * Update one tag to the release the bucket says is latest: diff the applied manifest against the
@@ -28,7 +29,7 @@ public final class Update {
     private Update() {
     }
 
-    public static void run(Path workspace, String tag, boolean dryRun, PrintStream out) {
+    public static void run(Path workspace, String tag, boolean dryRun, Log log) {
         Names.requireTag(tag);
         S3Store store = new S3Store(Config.load(workspace));
 
@@ -50,7 +51,7 @@ public final class Update {
         }
 
         if (latest.releaseId().equals(applied)) {
-            out.println("tag " + tag + " is already at " + applied);
+            log.done(tag + " is already at " + applied);
             return;
         }
 
@@ -58,44 +59,59 @@ public final class Update {
         Manifest target = Manifest.parse(new String(store.getBytes(targetKey), StandardCharsets.UTF_8),
                 store.key(targetKey));
         Plan plan = Plan.between(local, target);
-        out.println("tag " + tag + ": " + (applied == null ? "first update" : applied + " -> " + target.releaseId())
-                + " (" + plan.describe() + ", " + Sizes.human(plan.downloadSize()) + " to download)");
+        log.headline("update " + tag + (applied == null ? " -> " : " " + applied + " -> ") + target.releaseId());
+        log.step("plan", plan.describe(), Sizes.human(plan.downloadSize()) + " to download");
         for (String path : plan.added()) {
-            out.println("  add     " + path);
+            log.item("add", path);
         }
         for (String path : plan.replaced()) {
-            out.println("  replace " + path);
+            log.item("replace", path);
         }
         for (String path : plan.deleted()) {
-            out.println("  delete  " + path);
+            log.item("delete", path);
         }
         if (dryRun) {
-            out.println("dry run: nothing was written");
+            log.dryRun();
             return;
         }
 
         Path backup = applied == null ? null : Layout.backupDir(workspace, tag, applied);
+        int moved = 0;
         for (String path : plan.deleted()) {
-            moveAside(workspace, backup, path);
+            moved += moveAside(workspace, backup, path) ? 1 : 0;
         }
         for (String path : plan.replaced()) {
-            moveAside(workspace, backup, path);
+            moved += moveAside(workspace, backup, path) ? 1 : 0;
         }
-        for (String path : plan.downloads()) {
+        if (backup != null) {
+            log.step("backup", Log.count(moved, "file"), Log.relativeTo(workspace, backup));
+        }
+
+        List<String> downloads = plan.downloads();
+        long downloaded = 0;
+        long bytes = 0;
+        for (String path : downloads) {
             FileEntry entry = target.files().get(path);
             store.download(ObjectKeys.blob(entry.hash()), SafePath.resolve(workspace, path));
+            downloaded++;
+            bytes += entry.size();
+            if (log.progressDue()) {
+                log.step("download", downloaded + "/" + downloads.size() + " files", Sizes.human(bytes));
+            }
         }
 
-        target.write(Layout.releaseFile(workspace, tag, target.releaseId()));
+        Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
+        target.write(releaseFile);
         new Pointer(target.releaseId()).write(currentFile);
-        out.println("tag " + tag + " is now at " + target.releaseId()
-                + (backup == null ? "" : "; what it replaced is in " + backup));
+        log.step("write", Log.relativeTo(workspace, releaseFile));
+        log.step("write", Log.relativeTo(workspace, currentFile));
+        log.done(tag + " is now at " + target.releaseId());
     }
 
-    private static void moveAside(Path workspace, Path backup, String path) {
+    private static boolean moveAside(Path workspace, Path backup, String path) {
         Path source = SafePath.resolve(workspace, path);
         if (backup == null || !Files.exists(source)) {
-            return;
+            return false;
         }
         Path target = SafePath.resolve(backup, path);
         try {
@@ -107,5 +123,6 @@ public final class Update {
         } catch (IOException e) {
             throw new UserError("cannot move " + source + " to " + target + ": " + e.getMessage(), e);
         }
+        return true;
     }
 }

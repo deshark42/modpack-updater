@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.deshark42.modpackupdater.UserError;
+import io.github.deshark42.modpackupdater.log.Log;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.ByteArrayOutputStream;
@@ -21,15 +22,18 @@ class InitTest {
 
     private final ByteArrayOutputStream printed = new ByteArrayOutputStream();
     private final PrintStream out = new PrintStream(printed, true, StandardCharsets.UTF_8);
+    private final Log log = new Log(out);
 
     @Test
     void writesAConfigTemplateAndTheBaseDirectoryOfATag(@TempDir Path workspace) throws IOException {
-        Init.run(workspace, "client", out);
+        Init.run(workspace, "client", log);
 
         Path config = Layout.configFile(workspace);
         assertTrue(Files.isRegularFile(config), printed.toString());
         assertTrue(Files.isDirectory(Layout.baseDir(workspace, "client")), printed.toString());
-        assertTrue(printed.toString().contains("created " + config), printed.toString());
+        assertTrue(printed.toString().contains("created .modpack-updater/config.json"), printed.toString());
+        assertTrue(printed.toString().contains("created client/base"), printed.toString());
+        assertTrue(printed.toString().contains("fill in \"endpoint\" and \"bucket\""), printed.toString());
 
         // Pointing the template at a bucket is all a config needs to become loadable.
         String filled = Files.readString(config)
@@ -47,16 +51,16 @@ class InitTest {
         Files.writeString(config, "{\"endpoint\": \"https://mine\", \"bucket\": \"b\"}");
         Files.createDirectories(Layout.baseDir(workspace, "client"));
 
-        Init.run(workspace, "client", out);
+        Init.run(workspace, "client", log);
 
         assertEquals("{\"endpoint\": \"https://mine\", \"bucket\": \"b\"}", Files.readString(config));
-        assertTrue(printed.toString().contains("kept    " + config), printed.toString());
+        assertTrue(printed.toString().contains("kept    .modpack-updater/config.json"), printed.toString());
         assertFalse(printed.toString().contains("created "), printed.toString());
     }
 
     @Test
     void withoutATagOnlyTheConfigIsWritten(@TempDir Path workspace) throws IOException {
-        Init.run(workspace, null, out);
+        Init.run(workspace, null, log);
 
         assertTrue(Files.isRegularFile(Layout.configFile(workspace)));
         try (var entries = Files.list(workspace)) {
@@ -66,6 +70,6 @@ class InitTest {
 
     @Test
     void rejectsATagThatWouldEscapeTheWorkspace(@TempDir Path workspace) {
-        assertThrows(UserError.class, () -> Init.run(workspace, "../client", out));
+        assertThrows(UserError.class, () -> Init.run(workspace, "../client", log));
     }
 }

@@ -2,9 +2,9 @@ package io.github.deshark42.modpackupdater.command;
 
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
+import io.github.deshark42.modpackupdater.log.Log;
 import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.IOException;
-import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -29,28 +29,30 @@ public final class Init {
     private Init() {
     }
 
-    public static void run(Path workspace, String tag, PrintStream out) {
+    public static void run(Path workspace, String tag, Log log) {
+        log.headline("init " + workspace);
         Path config = Layout.configFile(workspace);
+        String shown = Log.relativeTo(workspace, config);
         if (Files.exists(config)) {
-            out.println("kept    " + config);
+            log.step("kept", shown);
         } else {
             AtomicFile.write(config, TEMPLATE);
-            out.println("created " + config);
-            out.println("fill in \"endpoint\" and \"bucket\" in " + config);
+            log.step("created", shown);
+            log.note("fill in \"endpoint\" and \"bucket\" in " + shown);
         }
-        if (tag == null) {
-            return;
+        if (tag != null) {
+            Path base = Layout.baseDir(workspace, tag);
+            if (Files.isDirectory(base)) {
+                log.step("kept", Log.relativeTo(workspace, base));
+            } else {
+                try {
+                    Files.createDirectories(base);
+                } catch (IOException e) {
+                    throw new UserError("cannot create " + base + ": " + e.getMessage(), e);
+                }
+                log.step("created", Log.relativeTo(workspace, base));
+            }
         }
-        Path base = Layout.baseDir(workspace, tag);
-        if (Files.isDirectory(base)) {
-            out.println("kept    " + base);
-            return;
-        }
-        try {
-            Files.createDirectories(base);
-        } catch (IOException e) {
-            throw new UserError("cannot create " + base + ": " + e.getMessage(), e);
-        }
-        out.println("created " + base);
+        log.done("workspace is ready");
     }
 }

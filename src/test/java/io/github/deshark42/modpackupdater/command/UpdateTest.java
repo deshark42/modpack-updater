@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.deshark42.modpackupdater.FakeS3;
 import io.github.deshark42.modpackupdater.UserError;
+import io.github.deshark42.modpackupdater.log.Log;
 import io.github.deshark42.modpackupdater.model.Layout;
 import io.github.deshark42.modpackupdater.model.Pointer;
 import java.io.ByteArrayOutputStream;
@@ -25,6 +26,7 @@ class UpdateTest {
 
     private final ByteArrayOutputStream printed = new ByteArrayOutputStream();
     private final PrintStream out = new PrintStream(printed, true, StandardCharsets.UTF_8);
+    private final Log log = new Log(out, Log.Level.VERBOSE);
 
     private static void write(Path root, String name, String content) throws IOException {
         Path file = root.resolve(name);
@@ -51,7 +53,7 @@ class UpdateTest {
         for (Map.Entry<String, String> file : files.entrySet()) {
             write(publisher, tag + "/base/" + file.getKey(), file.getValue());
         }
-        Publish.run(publisher, tag, releaseId, false, out);
+        Publish.run(publisher, tag, releaseId, false, log);
     }
 
     private static String applied(Path workspace, String tag) {
@@ -68,7 +70,7 @@ class UpdateTest {
             Path player = root.resolve("player");
             configure(player, s3);
 
-            Update.run(player, "client", false, out);
+            Update.run(player, "client", false, log);
 
             assertEquals("A", Files.readString(player.resolve("mods/a.jar")));
             assertEquals("L", Files.readString(player.resolve("libraries/lwjgl.jar")));
@@ -77,7 +79,7 @@ class UpdateTest {
             assertTrue(Files.isRegularFile(Layout.releaseFile(player, "client", "2.9.0")));
 
             printed.reset();
-            Update.run(player, "client", false, out);
+            Update.run(player, "client", false, log);
             assertTrue(printed.toString().contains("already at 2.9.0"), printed.toString());
         }
     }
@@ -91,12 +93,12 @@ class UpdateTest {
                     Map.of("mods/a.jar", "A", "mods/b.jar", "B", "config/x.cfg", "X"));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, out);
+            Update.run(player, "client", false, log);
             FileTime untouched = Files.getLastModifiedTime(player.resolve("config/x.cfg"));
 
             publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", "A2", "mods/c.jar", "C", "config/x.cfg", "X"));
             printed.reset();
-            Update.run(player, "client", false, out);
+            Update.run(player, "client", false, log);
 
             assertEquals("A2", Files.readString(player.resolve("mods/a.jar")));
             assertEquals("C", Files.readString(player.resolve("mods/c.jar")));
@@ -121,13 +123,13 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("config/x.cfg", "X", "mods/b.jar", "B"));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, out);
+            Update.run(player, "client", false, log);
 
             write(player, "config/x.cfg", "my own settings");
             Files.delete(player.resolve("mods/b.jar"));
 
             publish(publisher, "client", "2.9.1", Map.of("config/x.cfg", "X", "mods/b.jar", "B", "mods/c.jar", "C"));
-            Update.run(player, "client", false, out);
+            Update.run(player, "client", false, log);
 
             assertEquals("my own settings", Files.readString(player.resolve("config/x.cfg")));
             assertFalse(Files.exists(player.resolve("mods/b.jar")), "a file the player removed is not put back");
@@ -143,18 +145,18 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", "A"));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, out);
+            Update.run(player, "client", false, log);
 
             publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", "A2"));
             printed.reset();
-            Update.run(player, "client", true, out);
+            Update.run(player, "client", true, log);
 
             assertTrue(printed.toString().contains("dry run"), printed.toString());
             assertTrue(printed.toString().contains("replace mods/a.jar"), printed.toString());
             assertEquals("A", Files.readString(player.resolve("mods/a.jar")));
             assertEquals("2.9.0", applied(player, "client"));
 
-            Update.run(player, "client", false, out);
+            Update.run(player, "client", false, log);
             assertEquals("A2", Files.readString(player.resolve("mods/a.jar")));
             assertEquals("2.9.1", applied(player, "client"));
         }
@@ -168,10 +170,10 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", "A"));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, out);
+            Update.run(player, "client", false, log);
             Files.delete(Layout.releaseFile(player, "client", "2.9.0"));
 
-            UserError error = assertThrows(UserError.class, () -> Update.run(player, "client", false, out));
+            UserError error = assertThrows(UserError.class, () -> Update.run(player, "client", false, log));
             assertTrue(error.getMessage().contains("is missing"), error.getMessage());
         }
     }
@@ -182,7 +184,7 @@ class UpdateTest {
             Path player = root.resolve("player");
             configure(player, s3);
 
-            UserError error = assertThrows(UserError.class, () -> Update.run(player, "client", false, out));
+            UserError error = assertThrows(UserError.class, () -> Update.run(player, "client", false, log));
             assertTrue(error.getMessage().contains("not found"), error.getMessage());
         }
     }
@@ -197,8 +199,8 @@ class UpdateTest {
             Path player = root.resolve("player");
             configure(player, s3);
 
-            Update.run(player, "client", false, out);
-            Update.run(player, "client-extra", false, out);
+            Update.run(player, "client", false, log);
+            Update.run(player, "client-extra", false, log);
 
             assertEquals("1.0", applied(player, "client"));
             assertEquals("1.0", applied(player, "client-extra"));

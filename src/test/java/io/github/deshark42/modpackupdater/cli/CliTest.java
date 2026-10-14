@@ -107,4 +107,20 @@ class CliTest {
         assertEquals(Cli.USAGE_ERROR, run(cwd, "init", "--dry-run"));
         assertTrue(printedErrors.toString().contains("init does not take --dry-run"), printedErrors.toString());
     }
+
+    @Test
+    void verboseAndQuietChangeHowMuchIsPrinted(@TempDir Path cwd) throws IOException {
+        write(cwd, "client/base/mods/a.jar", "A");
+
+        assertEquals(Cli.OK, run(cwd, "publish", "--tag", "client", "--id", "2.9.0", "--dry-run", "--quiet"));
+        assertEquals(1, printed.toString().lines().count(), printed.toString());
+        assertTrue(printed.toString().startsWith("dry run: nothing was written"), printed.toString());
+
+        printed.reset();
+        assertEquals(Cli.OK, run(cwd, "publish", "--tag", "client", "--id", "2.9.0", "--dry-run", "--verbose"));
+        assertTrue(printed.toString().contains("  scan    client/base"), printed.toString());
+
+        assertEquals(Cli.USAGE_ERROR, run(cwd, "update", "--tag", "client", "--verbose", "--quiet"));
+        assertTrue(printedErrors.toString().contains("cannot be combined"), printedErrors.toString());
+    }
 }
