@@ -27,6 +27,9 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Update one tag to the release the bucket says is latest: diff the applied manifest against the
  * target one, move the files that change out of the way, download, then record the new state.
+ *
+ * <p>The run is reported in three stages: what the diff came to, what it does to the workspace,
+ * and what is written to record the new state.
  */
 public final class Update {
 
@@ -35,6 +38,8 @@ public final class Update {
 
     public static void run(Path workspace, String tag, boolean dryRun, Log log) {
         Names.requireTag(tag);
+        log.headline("update " + tag);
+        log.phase("plan");
         // a dry run writes nothing at all, not even the defaults this file is missing
         Config config = dryRun ? Config.load(workspace) : Workspace.load(workspace, log);
         S3Store store = new S3Store(config);
@@ -57,7 +62,9 @@ public final class Update {
         }
 
         if (latest.releaseId().equals(applied)) {
+            log.step("latest", tag + " is already at " + applied);
             log.done(tag + " is already at " + applied);
+            log.summary("version", applied + ", unchanged");
             return;
         }
 
@@ -65,8 +72,12 @@ public final class Update {
         Manifest target = Manifest.parse(new String(store.getBytes(targetKey), StandardCharsets.UTF_8),
                 store.key(targetKey));
         Plan plan = Plan.between(local, target);
-        log.headline("update " + tag + (applied == null ? " -> " : " " + applied + " -> ") + target.releaseId());
-        log.step("plan", plan.describe(), Sizes.human(plan.downloadSize()) + " to download");
+        log.step("latest", applied == null
+                ? tag + " -> " + target.releaseId()
+                : tag + " " + applied + " -> " + target.releaseId(),
+                applied == null ? "first update of this tag" : "");
+        log.step("files", plan.describe(),
+                plan.downloadSize() > 0 ? Sizes.human(plan.downloadSize()) + " to download" : "");
         for (String path : plan.added()) {
             log.item("add", path);
         }
@@ -76,8 +87,17 @@ public final class Update {
         for (String path : plan.deleted()) {
             log.item("delete", path);
         }
+        String version = applied == null
+                ? "first update -> " + target.releaseId()
+                : applied + " -> " + target.releaseId();
+        String changed = Log.count(plan.size(), "file") + " (" + plan.describe() + ")"
+                + (plan.downloadSize() > 0
+                        ? ", " + Sizes.human(plan.downloadSize()) + (dryRun ? " to download" : " downloaded")
+                        : "");
         if (dryRun) {
             log.dryRun();
+            log.summary("version", version);
+            log.summary("changed", changed);
             return;
         }
 
@@ -89,14 +109,19 @@ public final class Update {
         for (String path : plan.replaced()) {
             moved += moveAside(workspace, backup, path) ? 1 : 0;
         }
-        if (backup != null) {
-            log.step("backup", Log.count(moved, "file"), Log.relativeTo(workspace, backup));
-        }
 
         List<String> downloads = plan.downloads();
         int total = downloads.size();
+        if (moved > 0 || total > 0) {
+            log.phase("apply");
+        }
+        if (moved > 0) {
+            log.step("backup", Log.count(moved, "file"), Log.relativeTo(workspace, backup));
+        }
+
         AtomicInteger downloaded = new AtomicInteger();
         AtomicLong bytes = new AtomicLong();
+        long downloadStartedAt = System.nanoTime();
         Parallel.forEach(downloads, config.concurrency(), path -> {
             FileEntry entry = target.files().get(path);
             store.download(ObjectKeys.blob(entry.hash()), SafePath.resolve(workspace, path));
@@ -106,17 +131,28 @@ public final class Update {
                 log.progress("download", done + "/" + total + " files", Sizes.human(sofar));
             }
         });
+        long downloadNanos = System.nanoTime() - downloadStartedAt;
 
         if (total > 0) {
-            log.step("download", Log.count(downloaded.get(), "file"), Sizes.human(bytes.get()));
+            log.step("download", Log.count(downloaded.get(), "file"),
+                    Sizes.human(bytes.get()) + " in " + Log.duration(downloadNanos)
+                            + " (" + Sizes.rate(bytes.get(), downloadNanos) + ")");
         }
 
+        log.phase("commit");
         Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
         target.write(releaseFile);
         new Pointer(target.releaseId()).write(currentFile);
         log.step("write", Log.relativeTo(workspace, releaseFile));
         log.step("write", Log.relativeTo(workspace, currentFile));
         log.done(tag + " is now at " + target.releaseId());
+        log.summary("version", version);
+        log.summary("changed", changed);
+        if (moved > 0) {
+            log.summary("backup", Log.count(moved, "file") + " in " + Log.relativeTo(workspace, backup));
+        }
+        log.summary("release", Log.relativeTo(workspace, releaseFile));
+        log.summary("state", Log.relativeTo(workspace, currentFile) + " now points at " + target.releaseId());
         if (!plan.isEmpty()) {
             LogFile.keep(workspace, "update-" + tag, log);
         }

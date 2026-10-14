@@ -160,7 +160,7 @@ class PublishTest {
                     logs.get(0).toString());
             String text = Files.readString(logs.get(0));
             assertTrue(text.contains("publish client 2.9.0"), text);
-            assertTrue(text.contains("upload  mods/a.jar"), text);
+            assertTrue(text.contains("upload   mods/a.jar"), text);
             assertTrue(text.contains("done: client 2.9.0 is now the latest"), text);
         }
     }
@@ -178,9 +178,9 @@ class PublishTest {
             Publish.run(workspace, "client", "2.9.1", false, log);
 
             String text = printed.toString();
-            assertTrue(text.contains("plan    1 blob to upload, 2 blobs already there"), text);
-            assertTrue(text.contains("upload  1 blob"), text);
-            assertTrue(text.contains("skip    2 blobs"), text);
+            assertTrue(text.contains("plan     1 blob to upload, 2 blobs already there"), text);
+            assertTrue(text.contains("upload   1 blob"), text);
+            assertTrue(text.contains("skip     2 blobs"), text);
         }
     }
 
@@ -211,8 +211,8 @@ class PublishTest {
             assertEquals(hash, manifest.files().get("mods/a.jar").hash(), "overlay wins the same path");
             assertEquals("overlay", new String(s3.object(blobKey(hash)), StandardCharsets.UTF_8));
             String text = printed.toString();
-            assertTrue(text.contains("replace mods/a.jar"), text);
-            assertTrue(text.contains("add     config/mine.json"), text);
+            assertTrue(text.contains("replace  mods/a.jar"), text);
+            assertTrue(text.contains("add      config/mine.json"), text);
         }
     }
 
@@ -232,10 +232,10 @@ class PublishTest {
             Manifest manifest = Manifest.parse(s3.text("/pack/gtnh/metadata/client/releases/2.9.0.json"), "release");
             assertEquals(List.of("mods/a.jar"), List.copyOf(manifest.files().keySet()));
             String text = printed.toString();
-            assertTrue(text.contains("remove  3 files"), text);
-            assertTrue(text.contains("stale   1 rule"), text);
+            assertTrue(text.contains("remove   3 files"), text);
+            assertTrue(text.contains("stale    1 rule"), text);
             assertTrue(text.contains("ghost.jar"), text);
-            assertTrue(text.contains("merge   0 files added, 0 files replaced"), text);
+            assertTrue(text.contains("merge    0 files added, 0 files replaced"), text);
         }
     }
 
@@ -292,6 +292,26 @@ class PublishTest {
 
             assertTrue(error.getMessage().contains("leaves the tag directory"), error.getMessage());
             assertTrue(s3.requests().isEmpty(), s3.requests().toString());
+        }
+    }
+
+    @Test
+    void namesEachStageAndEndsWithASummary(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            Publish.run(workspace, "client", "2.9.0", false, log);
+
+            List<String> lines = printed.toString().lines().toList();
+            int inputs = lines.indexOf("inputs");
+            int transfer = lines.indexOf("transfer");
+            int commit = lines.indexOf("commit");
+            int done = lines.indexOf(lines.stream().filter(line -> line.startsWith("done: "))
+                    .findFirst().orElseThrow());
+            assertTrue(inputs > 0 && transfer > inputs && commit > transfer && done > commit, lines.toString());
+            assertTrue(lines.get(inputs - 1).isEmpty(), "a stage is set off by a blank line: " + lines);
+            assertTrue(lines.get(done + 1).startsWith("  contents  "), lines.toString());
+            assertTrue(lines.get(lines.size() - 1).startsWith("  log       "), lines.toString());
         }
     }
 

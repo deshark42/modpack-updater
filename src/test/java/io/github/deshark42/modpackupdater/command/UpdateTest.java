@@ -82,6 +82,7 @@ class UpdateTest {
             printed.reset();
             Update.run(player, "client", false, log);
             assertTrue(printed.toString().contains("already at 2.9.0"), printed.toString());
+            assertTrue(printed.toString().contains("  version   2.9.0, unchanged"), printed.toString());
         }
     }
 
@@ -110,9 +111,9 @@ class UpdateTest {
             assertEquals("A", Files.readString(backup.resolve("mods/a.jar")));
             assertEquals("B", Files.readString(backup.resolve("mods/b.jar")));
             assertEquals("2.9.1", applied(player, "client"));
-            assertTrue(printed.toString().contains("add     mods/c.jar"), printed.toString());
-            assertTrue(printed.toString().contains("replace mods/a.jar"), printed.toString());
-            assertTrue(printed.toString().contains("delete  mods/b.jar"), printed.toString());
+            assertTrue(printed.toString().contains("add      mods/c.jar"), printed.toString());
+            assertTrue(printed.toString().contains("replace  mods/a.jar"), printed.toString());
+            assertTrue(printed.toString().contains("delete   mods/b.jar"), printed.toString());
         }
     }
 
@@ -153,7 +154,7 @@ class UpdateTest {
             Update.run(player, "client", true, log);
 
             assertTrue(printed.toString().contains("dry run"), printed.toString());
-            assertTrue(printed.toString().contains("replace mods/a.jar"), printed.toString());
+            assertTrue(printed.toString().contains("replace  mods/a.jar"), printed.toString());
             assertEquals("A", Files.readString(player.resolve("mods/a.jar")));
             assertEquals("2.9.0", applied(player, "client"));
 
@@ -226,8 +227,9 @@ class UpdateTest {
             assertTrue(logs.get(0).getFileName().toString().endsWith("-update-client.log"),
                     logs.get(0).toString());
             String text = Files.readString(logs.get(0));
-            assertTrue(text.contains("update client -> 2.9.0"), text);
-            assertTrue(text.contains("add     mods/a.jar"), text);
+            assertTrue(text.contains("update client"), text);
+            assertTrue(text.contains("latest   client -> 2.9.0"), text);
+            assertTrue(text.contains("add      mods/a.jar"), text);
             assertTrue(text.contains("download 1 file"), text);
             assertTrue(text.contains("done: client is now at 2.9.0"), text);
 
@@ -251,6 +253,29 @@ class UpdateTest {
             Update.run(player, "client", true, log);
 
             assertEquals(1, logs(player).size(), "a dry run adds no log");
+        }
+    }
+
+    @Test
+    void namesEachStageAndEndsWithASummary(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            configure(publisher, s3);
+            publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", "A", "mods/b.jar", "B"));
+            Path player = root.resolve("player");
+            configure(player, s3);
+            printed.reset();
+
+            Update.run(player, "client", false, log);
+
+            List<String> lines = printed.toString().lines().toList();
+            int plan = lines.indexOf("plan");
+            int apply = lines.indexOf("apply");
+            int commit = lines.indexOf("commit");
+            assertTrue(plan > 0 && apply > plan && commit > apply, lines.toString());
+            assertTrue(lines.get(plan - 1).isEmpty(), "a stage is set off by a blank line: " + lines);
+            assertTrue(lines.contains("  version   first update -> 2.9.0"), lines.toString());
+            assertTrue(lines.get(lines.size() - 1).startsWith("  log       "), lines.toString());
         }
     }
 

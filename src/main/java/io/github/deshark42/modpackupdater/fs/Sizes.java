@@ -2,7 +2,7 @@ package io.github.deshark42.modpackupdater.fs;
 
 import java.util.Locale;
 
-/** Byte counts for the lines the commands print. */
+/** Byte counts and byte rates for the lines the commands print. */
 public final class Sizes {
 
     private static final String[] UNITS = {"KiB", "MiB", "GiB", "TiB"};
@@ -21,5 +21,11 @@ public final class Sizes {
             unit++;
         }
         return String.format(Locale.ROOT, "%.1f %s", value, UNITS[unit]);
+    }
+
+    /** "17.5 B/s": a byte count spread over the time it took to move it. */
+    public static String rate(long bytes, long nanos) {
+        double seconds = nanos / 1e9;
+        return human(seconds <= 0 ? bytes : (long) (bytes / seconds)) + "/s";
     }
 }

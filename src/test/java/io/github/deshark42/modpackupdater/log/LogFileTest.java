@@ -43,7 +43,25 @@ class LogFileTest {
 
         LogFile.keep(workspace, "publish-client", log);
 
-        assertTrue(printed.toString().contains("wrote .modpack-updater/logs/"), printed.toString());
+        assertTrue(printed.toString().contains("log       .modpack-updater/logs/"), printed.toString());
         assertTrue(printed.toString().contains("-publish-client.log"), printed.toString());
+    }
+
+    @Test
+    void namesItsOwnPathInTheSummaryItSaves(@TempDir Path workspace) throws IOException {
+        ByteArrayOutputStream printed = new ByteArrayOutputStream();
+        Log log = new Log(new PrintStream(printed, true, StandardCharsets.UTF_8), Log.Level.NORMAL);
+        log.headline("publish client 2.9.0");
+
+        LogFile.keep(workspace, "publish-client", log);
+
+        List<Path> files;
+        try (var listing = Files.list(Layout.logsDir(workspace))) {
+            files = listing.toList();
+        }
+        assertEquals(1, files.size(), files.toString());
+        String text = Files.readString(files.get(0));
+        assertTrue(text.contains("publish client 2.9.0"), text);
+        assertTrue(text.contains("-publish-client.log"), "the saved log says where it is: " + text);
     }
 }

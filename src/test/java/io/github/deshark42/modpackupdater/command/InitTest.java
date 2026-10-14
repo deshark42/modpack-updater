@@ -34,10 +34,10 @@ class InitTest {
         assertTrue(Files.isDirectory(Layout.baseDir(workspace, "client")), printed.toString());
         assertTrue(Files.isDirectory(Layout.overlayDir(workspace, "client")), printed.toString());
         assertTrue(Files.isRegularFile(Layout.removeFile(workspace, "client")), printed.toString());
-        assertTrue(printed.toString().contains("created .modpack-updater/config.json"), printed.toString());
-        assertTrue(printed.toString().contains("created client/base"), printed.toString());
-        assertTrue(printed.toString().contains("created client/overlay"), printed.toString());
-        assertTrue(printed.toString().contains("created client/remove.txt"), printed.toString());
+        assertTrue(printed.toString().contains("created  .modpack-updater/config.json"), printed.toString());
+        assertTrue(printed.toString().contains("created  client/base"), printed.toString());
+        assertTrue(printed.toString().contains("created  client/overlay"), printed.toString());
+        assertTrue(printed.toString().contains("created  client/remove.txt"), printed.toString());
         assertTrue(printed.toString().contains("fill in \"endpoint\" and \"bucket\""), printed.toString());
         assertTrue(rulesIn(Layout.removeFile(workspace, "client")).isEmpty(),
                 Files.readString(Layout.removeFile(workspace, "client")));
@@ -68,10 +68,10 @@ class InitTest {
         assertEquals("eu-west-1", kept.region());
         assertTrue(kept.pathStyle());
         assertEquals(8, kept.concurrency());
-        assertTrue(printed.toString().contains("kept    .modpack-updater/config.json"), printed.toString());
-        assertTrue(printed.toString().contains("kept    client/base"), printed.toString());
-        assertTrue(printed.toString().contains("kept    client/overlay"), printed.toString());
-        assertTrue(printed.toString().contains("kept    client/remove.txt"), printed.toString());
+        assertTrue(printed.toString().contains("kept     .modpack-updater/config.json"), printed.toString());
+        assertTrue(printed.toString().contains("kept     client/base"), printed.toString());
+        assertTrue(printed.toString().contains("kept     client/overlay"), printed.toString());
+        assertTrue(printed.toString().contains("kept     client/remove.txt"), printed.toString());
         assertFalse(printed.toString().contains("created "), printed.toString());
         assertEquals("example-mod-*.jar\n", Files.readString(Layout.removeFile(workspace, "client")));
     }
@@ -86,7 +86,7 @@ class InitTest {
 
         assertEquals(4, Config.load(workspace).concurrency());
         assertTrue(Files.readString(config).contains("\"concurrency\": 4"), Files.readString(config));
-        assertTrue(printed.toString().contains("filled in the defaults missing from"), printed.toString());
+        assertTrue(printed.toString().contains("filled in the defaults it was missing"), printed.toString());
     }
 
     @Test

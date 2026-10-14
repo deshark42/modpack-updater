@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.deshark42.modpackupdater.fs.Sizes;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -27,8 +28,8 @@ class LogTest {
 
         String[] lines = printed.toString().split(System.lineSeparator());
         assertEquals("update client 2.9.0 -> 2.9.1", lines[0]);
-        assertTrue(lines[1].startsWith("  plan    12 added, 3 replaced, 1 deleted"), lines[1]);
-        assertEquals(50, lines[1].indexOf("48.2 MiB to download"), lines[1]);
+        assertTrue(lines[1].startsWith("  plan     12 added, 3 replaced, 1 deleted"), lines[1]);
+        assertEquals(51, lines[1].indexOf("48.2 MiB to download"), lines[1]);
         assertEquals("  download 1234/5678 files", lines[2]);
         assertTrue(lines[3].startsWith("done: client is now at 2.9.1, "), lines[3]);
     }
@@ -42,8 +43,8 @@ class LogTest {
         verbose.item("add", "mods/a.jar");
         verbose.item("replace", "config/x.cfg");
         assertEquals(String.join(System.lineSeparator(),
-                "    add     mods/a.jar",
-                "    replace config/x.cfg",
+                "    add      mods/a.jar",
+                "    replace  config/x.cfg",
                 ""), printed.toString());
     }
 
@@ -52,7 +53,7 @@ class LogTest {
         Log log = new Log(out, Log.Level.QUIET);
         log.headline("update client");
         log.step("plan", "1 added", "");
-        log.note("nothing to see");
+        log.summary("kept", "nothing to see");
         log.item("add", "mods/a.jar");
         log.done("client is now at 2.9.1");
 
@@ -91,9 +92,9 @@ class LogTest {
         log.done("client is now at 2.9.1");
 
         String text = printed.toString();
-        assertTrue(text.contains("\u001b[32madd     \u001b[0mmods/a.jar"), text);
-        assertTrue(text.contains("\u001b[31mdelete  \u001b[0mmods/b.jar"), text);
-        assertTrue(text.contains("  scan    client/base"), text);
+        assertTrue(text.contains("\u001b[32madd      \u001b[0mmods/a.jar"), text);
+        assertTrue(text.contains("\u001b[31mdelete   \u001b[0mmods/b.jar"), text);
+        assertTrue(text.contains("  scan     client/base"), text);
         assertTrue(text.contains("\u001b[1mdone\u001b[0m: client is now at 2.9.1"), text);
     }
 
@@ -117,8 +118,8 @@ class LogTest {
 
         List<String> transcript = log.transcript();
         assertEquals("publish client 2.9.0", transcript.get(0));
-        assertTrue(transcript.contains("  upload  3 blobs"), transcript.toString());
-        assertTrue(transcript.contains("    upload  mods/a.jar"), transcript.toString());
+        assertTrue(transcript.contains("  upload   3 blobs"), transcript.toString());
+        assertTrue(transcript.contains("    upload   mods/a.jar"), transcript.toString());
         assertTrue(transcript.get(3).startsWith("done: client 2.9.0 is now the latest, "),
                 transcript.toString());
         assertFalse(printed.toString().contains("mods/a.jar"), "NORMAL prints no file lines");
@@ -131,7 +132,7 @@ class LogTest {
         log.step("upload", "3 blobs");
         log.progress("upload", "1/3 blobs", "4.0 MiB");
 
-        assertTrue(printed.toString().contains("  upload  1/3 blobs"), printed.toString());
+        assertTrue(printed.toString().contains("  upload   1/3 blobs"), printed.toString());
         assertFalse(log.transcript().stream().anyMatch(line -> line.contains("1/3 blobs")),
                 log.transcript().toString());
     }
@@ -143,6 +144,38 @@ class LogTest {
         log.item("replace", "config/x.cfg");
 
         assertTrue(printed.toString().contains("\u001b["), "the terminal was coloured");
-        assertEquals("    replace config/x.cfg", log.transcript().get(0));
+        assertEquals("    replace  config/x.cfg", log.transcript().get(0));
+    }
+
+    @Test
+    void opensAStageWithAHeadingAndClosesWithASummary() {
+        Log log = new Log(out, Log.Level.NORMAL, true);
+        log.headline("publish client 1.0.0");
+        log.phase("transfer");
+        log.step("upload", "2 blobs");
+        log.done("client 1.0.0 is now the latest");
+        log.summary("uploaded", "2 blobs, 7 B in 0.4s (17.5 B/s)");
+
+        String[] lines = printed.toString().split(System.lineSeparator());
+        assertEquals("publish client 1.0.0", lines[0]);
+        assertEquals("", lines[1], "a stage is set off by a blank line");
+        assertEquals("\u001b[1mtransfer\u001b[0m", lines[2]);
+        assertEquals("  \u001b[36mupload   \u001b[0m2 blobs", lines[3]);
+        assertTrue(lines[4].startsWith("\u001b[1mdone\u001b[0m: client 1.0.0 is now the latest, "), lines[4]);
+        assertEquals("  \u001b[1muploaded  \u001b[0m2 blobs, 7 B in 0.4s (17.5 B/s)", lines[5]);
+
+        List<String> transcript = log.transcript();
+        assertEquals("", transcript.get(1));
+        assertEquals("transfer", transcript.get(2), "the transcript has no colour");
+        assertTrue(transcript.contains("  uploaded  2 blobs, 7 B in 0.4s (17.5 B/s)"), transcript.toString());
+    }
+
+    @Test
+    void showsDurationsAndRatesTheWayTheSummariesWant() {
+        assertEquals("0.4s", Log.duration(400_000_000L));
+        assertEquals("12.0s", Log.duration(12_000_000_000L));
+        assertEquals("4 B/s", Sizes.rate(4, 1_000_000_000L));
+        assertEquals("30.1 MiB/s", Sizes.rate(31_562_137L, 1_000_000_000L));
+        assertEquals("7 B/s", Sizes.rate(7, 0), "a transfer too fast to time is reported as its size");
     }
 }

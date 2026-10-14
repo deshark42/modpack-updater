@@ -118,7 +118,7 @@ class CliTest {
 
         printed.reset();
         assertEquals(Cli.OK, run(cwd, "publish", "--tag", "client", "--id", "2.9.0", "--dry-run", "--verbose"));
-        assertTrue(printed.toString().contains("  scan    client/base"), printed.toString());
+        assertTrue(printed.toString().contains("  scan     client/base"), printed.toString());
 
         assertEquals(Cli.USAGE_ERROR, run(cwd, "update", "--tag", "client", "--verbose", "--quiet"));
         assertTrue(printedErrors.toString().contains("cannot be combined"), printedErrors.toString());

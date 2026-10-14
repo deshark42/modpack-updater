@@ -13,8 +13,12 @@ import java.util.function.LongSupplier;
  * happen, indented steps, one item per file only when asked for, and a closing line saying how it
  * went. Commands never print anything themselves.
  *
- * <p>Every line is built as {@code indent + verb padded to 8 + subject + note}: the verb column can
+ * <p>Every line is built as {@code indent + verb padded to 9 + subject + note}: the verb column can
  * be read down a log, and a note is pushed out past the longest subject it has to line up with.
+ *
+ * <p>A run is read in stages: {@link #phase} opens one with a heading of its own, and the closing
+ * line is followed by a {@link #summary} of what the run did, so the last few lines say what
+ * happened without reading back up.
  *
  * <p>Everything that records what the run did is also kept as plain text in a transcript, whatever
  * the console was asked to show, so a run that moved data can leave the detail behind in a file.
@@ -26,14 +30,17 @@ public final class Log {
     public enum Level {
         /** Only the closing line. */
         QUIET,
-        /** Headline, steps and the closing line. */
+        /** Headline, stage headings, steps, the closing line and the summary. */
         NORMAL,
         /** Everything, including one item per file. */
         VERBOSE
     }
 
-    private static final int VERB_WIDTH = 8;
+    /** Wide enough for the longest verb, so every subject starts in the same column. */
+    private static final int VERB_WIDTH = 9;
     private static final int SUBJECT_WIDTH = 40;
+    /** Wide enough for the longest summary key. */
+    private static final int KEY_WIDTH = 10;
     private static final long ONE_SECOND = 1_000_000_000L;
 
     private static final String RESET = "\u001b[0m";
@@ -105,6 +112,25 @@ public final class Log {
         }
     }
 
+    /** Opens a stage of the run, e.g. "transfer": a bold heading set off by a blank line. */
+    public void phase(String label) {
+        transcript.add("");
+        transcript.add(label);
+        if (level != Level.QUIET) {
+            out.println();
+            out.println(paint(label, BOLD));
+        }
+    }
+
+    /** One line of the closing summary, e.g. "uploaded 2 blobs, 7 B in 0.4s (4 B/s)". */
+    public void summary(String key, String value) {
+        String column = key + " ".repeat(Math.max(1, KEY_WIDTH - key.length()));
+        transcript.add("  " + column + value);
+        if (level != Level.QUIET) {
+            out.println("  " + paint(column, BOLD) + value);
+        }
+    }
+
     /** One fact about the run, e.g. "scan client/base 128 files, 1.2 GiB". */
     public void step(String verb, String subject) {
         step(verb, subject, "");
@@ -130,11 +156,6 @@ public final class Log {
         if (level != Level.QUIET) {
             out.println(line(1, verb, subject, note, true));
         }
-    }
-
-    /** An explanation rather than an action, e.g. what is still to be filled in. */
-    public void note(String text) {
-        step("note", text);
     }
 
     /** True at most once a second, so a long loop can report progress without flooding the log. */
@@ -171,8 +192,13 @@ public final class Log {
         return text.toString();
     }
 
+    /** "0.4s": how long something took, said the way the closing lines say it. */
+    public static String duration(long nanos) {
+        return String.format(Locale.ROOT, "%.1fs", nanos / 1e9);
+    }
+
     private String elapsed() {
-        return String.format(Locale.ROOT, "%.1fs", (clock.getAsLong() - startedAt) / 1e9);
+        return duration(clock.getAsLong() - startedAt);
     }
 
     private String paint(String text, String code) {
@@ -181,7 +207,7 @@ public final class Log {
 
     /** A verb and the blanks that carry the subject out to the subject column. */
     private static String verbColumn(String verb) {
-        return verb.length() >= VERB_WIDTH ? verb + " " : verb + " ".repeat(VERB_WIDTH - verb.length());
+        return verb + " ".repeat(Math.max(1, VERB_WIDTH - verb.length()));
     }
 
     private static String colorOf(String verb) {
@@ -189,7 +215,7 @@ public final class Log {
             case "add" -> GREEN;
             case "replace" -> YELLOW;
             case "delete" -> RED;
-            case "download" -> CYAN;
+            case "download", "upload" -> CYAN;
             default -> null;
         };
     }
