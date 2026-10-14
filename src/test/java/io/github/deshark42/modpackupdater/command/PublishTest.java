@@ -86,13 +86,18 @@ class PublishTest {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
             write(workspace, "client/base/mods/b.jar", "B");
+            write(workspace, "client/base/mods/c.jar", "C");
 
+            ByteArrayOutputStream bar = new ByteArrayOutputStream();
             AtomicLong clock = new AtomicLong();
-            Log ticking = new Log(out, Log.Level.NORMAL, false, () -> clock.addAndGet(2_000_000_000L));
+            Log ticking = new Log(out, new PrintStream(bar, true, StandardCharsets.UTF_8), Log.Level.NORMAL,
+                    false, true, () -> clock.addAndGet(2_000_000_000L));
             Publish.run(workspace, "client", "2.9.0", false, ticking);
 
-            assertTrue(printed.toString().contains("1/2 blobs"), printed.toString());
-            assertTrue(printed.toString().contains("2/2 blobs"), printed.toString());
+            String frames = bar.toString();
+            assertTrue(frames.contains("2/3 blobs"), frames);
+            assertTrue(frames.endsWith("\r\u001b[K"), "the bar is erased when the transfer ends: " + frames);
+            assertFalse(frames.contains("3/3 blobs"), "the last file does not draw a bar: " + frames);
         }
     }
 

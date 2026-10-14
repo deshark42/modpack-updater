@@ -28,7 +28,7 @@ Status: implemented
 - 本记录原先的「<tag>/base/ 是发布内容的全部来源」与「init 只铺 base/」两条事实已被[发布者 overlay 目录与 base 删除清单](2026-10-14-publisher-overlay.md)部分取代；其余决定不变。
 - tag 与 release_id 都由命令行指定，工作区不记录它们：publish --tag <tag> --id <release_id>，例如 --id 2.9.0-RC1。
 - publish --tag <tag> --id <release_id> 发布；加 --dry-run 时只计算将要发生的事（含 base/、overlay/ 与 remove.txt 的合并），不读 config.json、不联网、不写入任何对象。
-- 每次真正发布都在 .modpack-updater/logs/ 下留一份运行日志，名字带时间、命令与 tag（例如 2026-10-14T05-55-23Z-publish-client.log）。日志记的是逐文件的过程，比终端默认显示的多，但只在终端闪过的上传进度行不进日志；只有发布成功时才写，--dry-run 与被拒绝的发布都不留文件。
+- 每次真正发布都在 .modpack-updater/logs/ 下留一份运行日志，名字带时间、命令与 tag（例如 2026-10-14T05-55-23Z-publish-client.log）。日志记的是逐文件的过程，比终端默认显示的多，但只在终端上原地重画的上传进度条不进日志；只有发布成功时才写，--dry-run 与被拒绝的发布都不留文件。
 - 发布不做与上一次 release 的比较：base/ 里没被 remove.txt 剔除的文件与 overlay/ 里的文件进本次清单，其余不进。因此"路径消失"不会在发布侧被推断出来，只会在订阅者拿自己的清单与本次清单对比时显形；订阅者如何处理消失的路径见[订阅者工作区与更新流程](2026-10-14-subscriber-workspace.md)。
 - 同一个 --id 已经存在时 publish 直接报错退出：releases/ 只增不改，修正内容必须换一个 release_id。
 

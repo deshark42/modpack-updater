@@ -1,9 +1,12 @@
 package io.github.deshark42.modpackupdater.log;
 
+import io.github.deshark42.modpackupdater.fs.Sizes;
 import java.io.PrintStream;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.LongSupplier;
@@ -22,7 +25,8 @@ import java.util.function.LongSupplier;
  *
  * <p>Everything that records what the run did is also kept as plain text in a transcript, whatever
  * the console was asked to show, so a run that moved data can leave the detail behind in a file.
- * The progress lines that only report work in flight stay on the console.
+ * Work in flight is the one thing that is not recorded: it is a bar redrawn in place on a terminal
+ * that can take one, and nothing at all anywhere else.
  */
 public final class Log {
 
@@ -41,7 +45,17 @@ public final class Log {
     private static final int SUBJECT_WIDTH = 40;
     /** Wide enough for the longest summary key. */
     private static final int KEY_WIDTH = 10;
-    private static final long ONE_SECOND = 1_000_000_000L;
+    /** A bar redrawn in place is worth a few frames a second, no more. */
+    private static final long FRAME = 100_000_000L;
+    /** A transfer that is nearly over before it starts never gets a bar at all. */
+    private static final long SETTLE = 250_000_000L;
+    /** Rates and times left come from the last few seconds of samples, not from the whole run. */
+    private static final long WINDOW = 15_000_000_000L;
+    private static final int MIN_BAR = 10;
+    private static final int MAX_BAR = 30;
+    private static final int FALLBACK_WIDTH = 80;
+    private static final String FILLED = "#";
+    private static final String EMPTY = "-";
 
     private static final String RESET = "\u001b[0m";
     private static final String BOLD = "\u001b[1m";
@@ -51,12 +65,18 @@ public final class Log {
     private static final String CYAN = "\u001b[36m";
 
     private final PrintStream out;
+    private final PrintStream progressOut;
     private final Level level;
     private final boolean color;
+    private final boolean bar;
     private final LongSupplier clock;
     private final long startedAt;
     private final List<String> transcript = Collections.synchronizedList(new ArrayList<>());
-    private long lastProgress;
+    private final Deque<long[]> samples = new ArrayDeque<>();
+    private boolean barDrawn;
+    private long progressStartedAt;
+    private long lastFrame;
+    private String progressVerb = "";
 
     public Log(PrintStream out) {
         this(out, Level.NORMAL, false);
@@ -71,12 +91,23 @@ public final class Log {
     }
 
     public Log(PrintStream out, Level level, boolean color, LongSupplier clock) {
+        this(out, out, level, color, false, clock);
+    }
+
+    /**
+     * @param progressOut where work in flight is drawn: a stream of its own, so redirecting the log
+     *                    into a file leaves the bar where a human can still see it
+     * @param bar         draw work in flight as one bar redrawn in place, rather than as lines
+     */
+    public Log(PrintStream out, PrintStream progressOut, Level level, boolean color, boolean bar,
+            LongSupplier clock) {
         this.out = out;
+        this.progressOut = progressOut;
         this.level = level;
         this.color = color;
+        this.bar = bar;
         this.clock = clock;
         this.startedAt = clock.getAsLong();
-        this.lastProgress = this.startedAt;
     }
 
     /** Paths in the log are relative to the workspace the command was pointed at. */
@@ -105,28 +136,31 @@ public final class Log {
     }
 
     /** What the command is about to do, e.g. "publish client 2.9.0". */
-    public void headline(String text) {
+    public synchronized void headline(String text) {
         transcript.add(text);
         if (level != Level.QUIET) {
+            clearProgress();
             out.println(text);
         }
     }
 
     /** Opens a stage of the run, e.g. "transfer": a bold heading set off by a blank line. */
-    public void phase(String label) {
+    public synchronized void phase(String label) {
         transcript.add("");
         transcript.add(label);
         if (level != Level.QUIET) {
+            clearProgress();
             out.println();
             out.println(paint(label, BOLD));
         }
     }
 
     /** One line of the closing summary, e.g. "uploaded 2 blobs, 7 B in 0.4s (4 B/s)". */
-    public void summary(String key, String value) {
+    public synchronized void summary(String key, String value) {
         String column = key + " ".repeat(Math.max(1, KEY_WIDTH - key.length()));
         transcript.add("  " + column + value);
         if (level != Level.QUIET) {
+            clearProgress();
             out.println("  " + paint(column, BOLD) + value);
         }
     }
@@ -136,49 +170,118 @@ public final class Log {
         step(verb, subject, "");
     }
 
-    public void step(String verb, String subject, String note) {
+    public synchronized void step(String verb, String subject, String note) {
         transcript.add(line(1, verb, subject, note, false));
         if (level != Level.QUIET) {
+            clearProgress();
             out.println(line(1, verb, subject, note, true));
         }
     }
 
     /** One file the run touches; printed only at {@link Level#VERBOSE}. */
-    public void item(String verb, String path) {
+    public synchronized void item(String verb, String path) {
         transcript.add(line(2, verb, path, "", false));
         if (level == Level.VERBOSE) {
+            clearProgress();
             out.println(line(2, verb, path, "", true));
         }
     }
 
-    /** Work in flight, e.g. "upload 12/40 blobs": the console and nothing else. */
-    public void progress(String verb, String subject, String note) {
-        if (level != Level.QUIET) {
-            out.println(line(1, verb, subject, note, true));
+    /**
+     * Work in flight, e.g. "upload 112/240 blobs": one bar redrawn in place on a terminal, and
+     * nothing anywhere else, so a run piped into a file leaves no half-drawn line behind. Called
+     * once per file finished, which is what makes a bar that stopped moving mean something.
+     */
+    public synchronized void progress(String verb, long done, long total, long bytes, String noun) {
+        if (level == Level.QUIET || !bar || total <= 0 || done >= total) {
+            return;
+        }
+        long now = clock.getAsLong();
+        if (!verb.equals(progressVerb)) {
+            progressVerb = verb;
+            progressStartedAt = now;
+            samples.clear();
+        }
+        samples.addLast(new long[] {now, done, bytes});
+        while (samples.size() > 2 && now - samples.peekFirst()[0] > WINDOW) {
+            samples.removeFirst();
+        }
+        if (now - progressStartedAt < SETTLE || now - lastFrame < FRAME) {
+            return;
+        }
+        lastFrame = now;
+        drawBar(verb, done, total, bytes, noun, now);
+    }
+
+    /** Erases the bar, if one is on screen, so whatever is printed next starts on a clean line. */
+    public synchronized void clearProgress() {
+        if (barDrawn) {
+            progressOut.print("\r\u001b[K");
+            progressOut.flush();
+            barDrawn = false;
         }
     }
 
-    /** True at most once a second, so a long loop can report progress without flooding the log. */
-    public synchronized boolean progressDue() {
-        long now = clock.getAsLong();
-        if (now - lastProgress < ONE_SECOND) {
-            return false;
+    /** One frame: how far along, how fast, and how much longer, all on the line the bar owns. */
+    private void drawBar(String verb, long done, long total, long bytes, String noun, long now) {
+        long[] first = samples.peekFirst();
+        double seconds = (now - first[0]) / 1e9;
+        long perSecond = seconds > 0 ? Math.round((done - first[1]) / seconds) : 0;
+        String moved = Sizes.rate(seconds > 0 ? (long) ((bytes - first[2]) / seconds)
+                : bytes * 1_000_000_000L / Math.max(1, now - progressStartedAt), 1_000_000_000L);
+        String tail = String.format(Locale.ROOT, "%3d%% \u00b7 %d/%s \u00b7 %s \u00b7 ETA %s",
+                100 * done / total, done, count((int) total, noun), moved,
+                eta(total - done, perSecond));
+        int width = barWidth(tail.length());
+        int filled = (int) (width * done / total);
+        String text = "  " + verbColumn(verb)
+                + FILLED.repeat(filled)
+                + EMPTY.repeat(width - filled)
+                + " " + tail;
+        progressOut.print("\r" + text + "\u001b[K");
+        progressOut.flush();
+        barDrawn = true;
+    }
+
+    /** "0:42", or "1:02:03" once the wait is long enough to need the hours. */
+    private static String eta(long remaining, long perSecond) {
+        if (perSecond <= 0 || remaining <= 0) {
+            return "--:--";
         }
-        lastProgress = now;
-        return true;
+        long seconds = Math.round((double) remaining / perSecond);
+        return seconds >= 3600
+                ? String.format(Locale.ROOT, "%d:%02d:%02d", seconds / 3600, seconds % 3600 / 60,
+                        seconds % 60)
+                : String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60);
+    }
+
+    /** How wide the bar can be without pushing the tail off the end of the terminal. */
+    private static int barWidth(int tail) {
+        int columns = FALLBACK_WIDTH;
+        String configured = System.getenv("COLUMNS");
+        if (configured != null) {
+            try {
+                columns = Integer.parseInt(configured.trim());
+            } catch (NumberFormatException e) {
+                columns = FALLBACK_WIDTH;
+            }
+        }
+        return Math.max(MIN_BAR, Math.min(MAX_BAR, columns - 2 - VERB_WIDTH - tail - 1));
     }
 
     /** The closing line of a run that did something. */
-    public void done(String text) {
+    public synchronized void done(String text) {
         String took = elapsed();
         transcript.add("done: " + text + ", " + took);
+        clearProgress();
         out.println(paint("done", BOLD) + ": " + text + ", " + took);
     }
 
     /** The closing line of a dry run: the same shape, but nothing was written. */
-    public void dryRun() {
+    public synchronized void dryRun() {
         String closing = "dry run: nothing was written, " + elapsed();
         transcript.add(closing);
+        clearProgress();
         out.println(closing);
     }
 

@@ -69,18 +69,84 @@ class LogTest {
     }
 
     @Test
-    void progressIsDueAtMostOnceASecond() {
+    void drawsNoBarWhenThereIsNoTerminalToDrawItOn() {
         AtomicLong clock = new AtomicLong();
-        Log log = new Log(out, Log.Level.NORMAL, false, clock::get);
+        Log log = new Log(out, out, Log.Level.NORMAL, false, false, clock::get);
 
-        assertFalse(log.progressDue());
-        clock.addAndGet(999_999_999L);
-        assertFalse(log.progressDue());
-        clock.addAndGet(1L);
-        assertTrue(log.progressDue());
-        assertFalse(log.progressDue());
-        clock.addAndGet(2_000_000_000L);
-        assertTrue(log.progressDue());
+        clock.addAndGet(1_000_000_000L);
+        log.progress("upload", 1, 3, 4, "blob");
+
+        assertEquals("", printed.toString());
+        assertTrue(log.transcript().isEmpty(), log.transcript().toString());
+    }
+
+    @Test
+    void drawsABarInPlaceAndErasesItBeforeTheNextLine() {
+        ByteArrayOutputStream bar = new ByteArrayOutputStream();
+        AtomicLong clock = new AtomicLong();
+        Log log = new Log(out, new PrintStream(bar, true, StandardCharsets.UTF_8), Log.Level.NORMAL,
+                false, true, clock::get);
+
+        clock.addAndGet(400_000_000L);
+        log.progress("upload", 1, 4, 262_144, "blob");
+        assertEquals("", bar.toString(), "a transfer that just started gets no bar yet");
+
+        clock.addAndGet(600_000_000L);
+        log.progress("upload", 2, 4, 1_048_576, "blob");
+        String frame = bar.toString();
+        assertTrue(frame.startsWith("\r"), frame);
+        assertTrue(frame.contains("#"), frame);
+        assertTrue(frame.contains("-"), frame);
+        assertTrue(frame.contains(" 50% \u00b7 2/4 blobs \u00b7 "), frame);
+        assertTrue(frame.contains("MiB/s"), frame);
+        assertTrue(frame.contains("ETA 0:01"), frame);
+
+        bar.reset();
+        log.step("upload", "4 blobs");
+        assertEquals("\r\u001b[K", bar.toString(), "the step erases the bar");
+        assertTrue(printed.toString().endsWith("  upload   4 blobs" + System.lineSeparator()),
+                printed.toString());
+        assertFalse(log.transcript().stream().anyMatch(line -> line.contains("2/4")),
+                log.transcript().toString());
+    }
+
+    @Test
+    void erasesTheBarOnlyWhileItIsOnScreen() {
+        ByteArrayOutputStream bar = new ByteArrayOutputStream();
+        AtomicLong clock = new AtomicLong();
+        Log log = new Log(out, new PrintStream(bar, true, StandardCharsets.UTF_8), Log.Level.NORMAL,
+                false, true, clock::get);
+
+        log.clearProgress();
+        assertEquals("", bar.toString(), "there was nothing to erase");
+
+        clock.addAndGet(400_000_000L);
+        log.progress("upload", 1, 3, 1024, "blob");
+        clock.addAndGet(600_000_000L);
+        log.progress("upload", 2, 3, 2048, "blob");
+        assertTrue(bar.toString().contains("2/3"), bar.toString());
+
+        bar.reset();
+        log.clearProgress();
+        assertEquals("\r\u001b[K", bar.toString());
+        bar.reset();
+        log.clearProgress();
+        assertEquals("", bar.toString(), "the bar is erased once");
+    }
+
+    @Test
+    void quietRunsDrawNoBar() {
+        ByteArrayOutputStream bar = new ByteArrayOutputStream();
+        AtomicLong clock = new AtomicLong();
+        Log log = new Log(out, new PrintStream(bar, true, StandardCharsets.UTF_8), Log.Level.QUIET,
+                false, true, clock::get);
+
+        clock.addAndGet(400_000_000L);
+        log.progress("upload", 1, 3, 1024, "blob");
+        clock.addAndGet(600_000_000L);
+        log.progress("upload", 2, 3, 2048, "blob");
+
+        assertEquals("", bar.toString());
     }
 
     @Test
@@ -126,14 +192,21 @@ class LogTest {
     }
 
     @Test
-    void leavesWorkInFlightOutOfTheTranscript() {
-        Log log = new Log(out, Log.Level.NORMAL, false);
+    void keepsWorkInFlightOutOfTheTranscript() {
+        ByteArrayOutputStream bar = new ByteArrayOutputStream();
+        AtomicLong clock = new AtomicLong();
+        Log log = new Log(out, new PrintStream(bar, true, StandardCharsets.UTF_8), Log.Level.NORMAL,
+                false, true, clock::get);
 
         log.step("upload", "3 blobs");
-        log.progress("upload", "1/3 blobs", "4.0 MiB");
+        clock.addAndGet(400_000_000L);
+        log.progress("upload", 1, 3, 1024, "blob");
+        clock.addAndGet(600_000_000L);
+        log.progress("upload", 2, 3, 2048, "blob");
 
-        assertTrue(printed.toString().contains("  upload   1/3 blobs"), printed.toString());
-        assertFalse(log.transcript().stream().anyMatch(line -> line.contains("1/3 blobs")),
+        assertTrue(bar.toString().contains("2/3 blobs"), bar.toString());
+        assertFalse(printed.toString().contains("2/3"), printed.toString());
+        assertFalse(log.transcript().stream().anyMatch(line -> line.contains("2/3")),
                 log.transcript().toString());
     }
 

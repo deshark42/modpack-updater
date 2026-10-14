@@ -127,9 +127,7 @@ public final class Update {
             store.download(ObjectKeys.blob(entry.hash()), SafePath.resolve(workspace, path));
             int done = downloaded.incrementAndGet();
             long sofar = bytes.addAndGet(entry.size());
-            if (log.progressDue()) {
-                log.progress("download", done + "/" + total + " files", Sizes.human(sofar));
-            }
+            log.progress("download", done, total, sofar, "file");
         });
         long downloadNanos = System.nanoTime() - downloadStartedAt;
 

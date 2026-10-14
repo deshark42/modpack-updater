@@ -73,4 +73,4 @@ remove.txt 只作用于 base/：同路径以 overlay/ 为准，规则命中 over
 - **remove.txt 直接驱动订阅者删除。** 清单里消失的路径在订阅者侧就是删除（旧文件移入 backup/，见[订阅者工作区与更新流程](2026-10-14-subscriber-workspace.md)）。写错或过期的规则会把玩家实例里的文件搬走，影响面是全体订阅者，发布侧不做二次确认。
 - **remove.txt 会腐化。** 未命中的规则只报告不报错，长期不清理会积累已无作用的条目。
 - 两份输入都要发布者自己维护：工具不校验 overlay/ 里的文件是否真的该覆盖 base/，也不校验 remove.txt 的规则是否仍然表达意图。
-- publish 的 NORMAL 级输出多了 scan/remove/stale/merge 行（VERBOSE 级还有逐文件 add/replace）：日志更完整，但没有开关让它安静下来。
+- publish 的 NORMAL 级输出多了 scan/remove/stale/merge 行（VERBOSE 级还有逐文件 add/replace）：日志更完整；要更安静只能整体切到 `--quiet`（只剩收尾行），没有只压掉这几行的开关。

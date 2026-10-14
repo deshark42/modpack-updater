@@ -138,9 +138,7 @@ public final class Publish {
             log.item("upload", entry.getValue());
             int done = uploaded.incrementAndGet();
             long bytes = uploadedBytes.addAndGet(files.get(entry.getValue()).size());
-            if (log.progressDue()) {
-                log.progress("upload", done + "/" + toUpload + " blobs", Sizes.human(bytes));
-            }
+            log.progress("upload", done, toUpload, bytes, "blob");
         });
         long uploadNanos = System.nanoTime() - uploadStartedAt;
         if (toUpload > 0) {

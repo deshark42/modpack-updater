@@ -60,8 +60,9 @@ public final class Cli {
         }
         Path workspace = cwd.resolve(options.getOrDefault("workspace", ".")).toAbsolutePath().normalize();
         String tag = options.get("tag");
-        Log log = new Log(out, quiet ? Log.Level.QUIET : verbose ? Log.Level.VERBOSE : Log.Level.NORMAL,
-                terminal(out));
+        Log log = new Log(out, err, quiet ? Log.Level.QUIET : verbose ? Log.Level.VERBOSE : Log.Level.NORMAL,
+                terminal(out, System.out), terminal(err, System.err),
+                System::nanoTime);
         try {
             switch (command) {
                 case "publish" -> {
@@ -100,14 +101,15 @@ public final class Cli {
                 }
             }
         } catch (UserError e) {
+            log.clearProgress();
             err.println("error: " + e.getMessage());
             return FAILURE;
         }
     }
 
-    /** Colour only when the log goes to a terminal that is not asking for plain text. */
-    private static boolean terminal(PrintStream out) {
-        return out == System.out && System.console() != null && !"dumb".equals(System.getenv("TERM"));
+    /** Colour and bars only when the stream is a terminal that is not asking for plain text. */
+    private static boolean terminal(PrintStream stream, PrintStream system) {
+        return stream == system && System.console() != null && !"dumb".equals(System.getenv("TERM"));
     }
 
     private static int usage(PrintStream err, String message) {
