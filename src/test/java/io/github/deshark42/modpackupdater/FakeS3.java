@@ -18,6 +18,7 @@ public final class FakeS3 implements AutoCloseable {
     private final HttpServer server;
     private final Map<String, byte[]> objects = new ConcurrentHashMap<>();
     private final List<String> requests = Collections.synchronizedList(new ArrayList<>());
+    private volatile String failPutPath;
 
     public FakeS3() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -48,14 +49,37 @@ public final class FakeS3 implements AutoCloseable {
         return content == null ? null : new String(content, StandardCharsets.UTF_8);
     }
 
+    /** Stores an object without going through the publisher, as if another writer had put it there. */
+    public void put(String key, byte[] content) {
+        objects.put(key, content.clone());
+    }
+
+    /** Makes the next PUT to {@code path} fail with a 500, until {@link #clearFailures()} is called. */
+    public void failPut(String path) {
+        failPutPath = path;
+    }
+
+    public void clearFailures() {
+        failPutPath = null;
+    }
+
     private void handle(HttpExchange exchange) throws IOException {
         String path = exchange.getRequestURI().getRawPath();
         String method = exchange.getRequestMethod();
         requests.add(method + " " + path);
         byte[] content = objects.get(path);
         if ("PUT".equals(method)) {
-            objects.put(path, exchange.getRequestBody().readAllBytes());
-            exchange.sendResponseHeaders(200, -1);
+            byte[] body = exchange.getRequestBody().readAllBytes();
+            if (path.equals(failPutPath)) {
+                byte[] message = "InjectedFailure".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(500, message.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(message);
+                }
+            } else {
+                objects.put(path, body);
+                exchange.sendResponseHeaders(200, -1);
+            }
         } else if (content != null) {
             if ("HEAD".equals(method)) {
                 exchange.sendResponseHeaders(200, -1);

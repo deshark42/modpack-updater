@@ -14,6 +14,7 @@ import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import io.github.deshark42.modpackupdater.model.Pointer;
 import io.github.deshark42.modpackupdater.model.RemoveRules;
 import io.github.deshark42.modpackupdater.model.SafePath;
+import io.github.deshark42.modpackupdater.s3.BlobCache;
 import io.github.deshark42.modpackupdater.s3.S3Store;
 import io.github.deshark42.modpackupdater.util.Parallel;
 import java.nio.charset.StandardCharsets;
@@ -108,15 +109,17 @@ public final class Publish {
             throw new UserError("release " + releaseId + " of tag " + tag
                     + " already exists; a published release is never rewritten");
         }
+        BlobCache cache = BlobCache.open(workspace, config);
 
-        // Ask which blobs are missing before uploading, so progress can count them.
+        // Ask which blobs are missing before uploading, so progress can count them. Blobs the
+        // cache already knows cost no request at all.
         Map<String, String> distinct = new LinkedHashMap<>();
         for (Map.Entry<String, FileEntry> entry : files.entrySet()) {
             distinct.putIfAbsent(entry.getValue().hash(), entry.getKey());
         }
         Map<String, String> pending = new ConcurrentHashMap<>();
         Parallel.forEach(distinct.entrySet(), config.concurrency(), entry -> {
-            if (!store.exists(ObjectKeys.blob(entry.getKey()))) {
+            if (!cache.exists(store, entry.getKey())) {
                 pending.put(entry.getKey(), entry.getValue());
             }
         });
@@ -135,6 +138,7 @@ public final class Publish {
         Parallel.forEach(pending.entrySet(), config.concurrency(), entry -> {
             Path root = overlaid.contains(entry.getValue()) ? overlay : base;
             store.putFile(ObjectKeys.blob(entry.getKey()), SafePath.resolve(root, entry.getValue()));
+            cache.remember(entry.getKey());
             log.item("upload", entry.getValue());
             int done = uploaded.incrementAndGet();
             long bytes = uploadedBytes.addAndGet(files.get(entry.getValue()).size());

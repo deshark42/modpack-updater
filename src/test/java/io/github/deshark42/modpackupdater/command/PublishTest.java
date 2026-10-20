@@ -125,6 +125,7 @@ class PublishTest {
 
         assertTrue(printed.toString().contains("dry run"), printed.toString());
         assertTrue(printed.toString().contains("1 file,"), printed.toString());
+        assertFalse(Files.exists(Layout.knownBlobsFile(workspace)), "a dry run writes no cache");
     }
 
     @Test
@@ -318,6 +319,153 @@ class PublishTest {
             assertTrue(lines.get(done + 1).startsWith("  contents  "), lines.toString());
             assertTrue(lines.get(lines.size() - 1).startsWith("  log       "), lines.toString());
         }
+    }
+
+
+    @Test
+    void asksTheBucketOnlyAboutBlobsTheCacheDoesNotKnow(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            Publish.run(workspace, "client", "2.9.0", false, log);
+            String hashA = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
+            int before = s3.requests().size();
+
+            write(workspace, "client/base/mods/b.jar", "B");
+            Publish.run(workspace, "client", "2.9.1", false, log);
+            List<String> second = s3.requests().subList(before, s3.requests().size());
+
+            assertFalse(second.contains("HEAD " + blobKey(hashA)), second.toString());
+            String hashB = Sha256.ofFile(workspace.resolve("client/base/mods/b.jar"));
+            assertEquals(1, second.stream().filter(request -> request.equals("HEAD " + blobKey(hashB))).count(),
+                    second.toString());
+        }
+    }
+
+    @Test
+    void remembersBlobsItFoundInTheBucket(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
+            s3.put(blobKey(hash), "A".getBytes(StandardCharsets.UTF_8));
+
+            Publish.run(workspace, "client", "2.9.0", false, log);
+
+            assertTrue(cache(workspace).contains(hash), cache(workspace));
+            assertFalse(s3.requests().stream().anyMatch(request -> request.startsWith("PUT " + blobKey(hash))),
+                    s3.requests().toString());
+            assertTrue(printed.toString().contains("skip     1 blob"), printed.toString());
+        }
+    }
+
+    @Test
+    void keepsConfirmedBlobsWhenALaterStepFails(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
+            s3.put(blobKey(hash), "A".getBytes(StandardCharsets.UTF_8));
+            s3.failPut("/pack/gtnh/metadata/client/releases/2.9.0.json");
+
+            assertThrows(UserError.class, () -> Publish.run(workspace, "client", "2.9.0", false, log));
+
+            assertTrue(cache(workspace).contains(hash), cache(workspace));
+        }
+    }
+
+    @Test
+    void keepsUploadedBlobsWhenALaterStepFails(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
+            s3.failPut("/pack/gtnh/metadata/client/releases/2.9.0.json");
+
+            assertThrows(UserError.class, () -> Publish.run(workspace, "client", "2.9.0", false, log));
+
+            assertNotNull(s3.object(blobKey(hash)));
+            assertTrue(cache(workspace).contains(hash), cache(workspace));
+        }
+    }
+
+    @Test
+    void doesNotRememberAFailedUpload(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
+            s3.failPut(blobKey(hash));
+
+            assertThrows(UserError.class, () -> Publish.run(workspace, "client", "2.9.0", false, log));
+            assertFalse(cache(workspace).contains(hash), cache(workspace));
+
+            s3.clearFailures();
+            Publish.run(workspace, "client", "2.9.0", false, log);
+            assertTrue(cache(workspace).contains(hash), cache(workspace));
+            assertNotNull(s3.object(blobKey(hash)));
+        }
+    }
+
+    @Test
+    void givesUpTheCacheWhenTheBucketChanges(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            Publish.run(workspace, "client", "2.9.0", false, log);
+            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
+            int before = s3.requests().size();
+
+            write(workspace, ".modpack-updater/config.json", "{\"endpoint\": \"" + s3.url()
+                    + "\", \"bucket\": \"other\", \"prefix\": \"gtnh\", \"path_style\": true,"
+                    + " \"access_key\": \"AK\", \"secret_key\": \"SK\"}");
+            Publish.run(workspace, "client", "2.9.1", false, log);
+            List<String> second = s3.requests().subList(before, s3.requests().size());
+
+            String otherBlob = "/other/gtnh/blobs/" + hash.substring(0, 2) + "/" + hash;
+            assertTrue(second.contains("HEAD " + otherBlob), second.toString());
+        }
+    }
+
+    @Test
+    void rebuildsACorruptedCache(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            Publish.run(workspace, "client", "2.9.0", false, log);
+            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
+            Files.writeString(Layout.knownBlobsFile(workspace), "not a cache\n", StandardCharsets.UTF_8);
+            int before = s3.requests().size();
+
+            Publish.run(workspace, "client", "2.9.1", false, log);
+            List<String> second = s3.requests().subList(before, s3.requests().size());
+
+            assertTrue(second.contains("HEAD " + blobKey(hash)), second.toString());
+            assertTrue(cache(workspace).contains(hash), cache(workspace));
+        }
+    }
+
+    @Test
+    void remembersEveryBlobUploadedInParallel(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            for (int i = 0; i < 8; i++) {
+                write(workspace, "client/base/mods/" + i + ".jar", "content-" + i);
+            }
+
+            Publish.run(workspace, "client", "2.9.0", false, log);
+
+            String cache = cache(workspace);
+            for (int i = 0; i < 8; i++) {
+                String hash = Sha256.ofFile(workspace.resolve("client/base/mods/" + i + ".jar"));
+                assertTrue(cache.contains(hash), cache);
+            }
+        }
+    }
+
+    private static String cache(Path workspace) throws IOException {
+        Path file = Layout.knownBlobsFile(workspace);
+        return Files.exists(file) ? Files.readString(file, StandardCharsets.UTF_8) : "";
     }
 
     private static String blobKey(String hash) {

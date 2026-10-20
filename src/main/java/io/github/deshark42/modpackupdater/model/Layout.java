@@ -7,6 +7,7 @@ public final class Layout {
 
     public static final String STATE_DIR = ".modpack-updater";
     public static final String CONFIG = "config.json";
+    public static final String KNOWN_BLOBS = "known-blobs.jsonl";
     public static final String CURRENT = "current.json";
     public static final String RELEASES = "releases";
     public static final String BACKUP = "backup";
@@ -28,6 +29,11 @@ public final class Layout {
 
     public static Path logsDir(Path workspaceRoot) {
         return stateDir(workspaceRoot).resolve(LOGS);
+    }
+
+    /** The append-only record of blobs this workspace has confirmed in the bucket. */
+    public static Path knownBlobsFile(Path workspaceRoot) {
+        return stateDir(workspaceRoot).resolve(KNOWN_BLOBS);
     }
 
     public static Path tagDir(Path workspaceRoot, String tag) {
