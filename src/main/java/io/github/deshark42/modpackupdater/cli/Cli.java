@@ -22,6 +22,9 @@ public final class Cli {
             "       modpack-updater update --tag <tag> [options]",
             "       modpack-updater init [--tag <tag>] [options]",
             "options: --workspace <dir>   work in this directory instead of the current one",
+            "         --cache-max-age-days <days>",
+            "                             how long the local blob cache stays usable (default "
+                    + Publish.DEFAULT_CACHE_MAX_AGE_DAYS + ")",
             "         --dry-run           report what would happen, write nothing",
             "         --verbose           list every file the command touches",
             "         --quiet             print only the closing line");
@@ -44,7 +47,7 @@ public final class Cli {
                 case "--dry-run" -> dryRun = true;
                 case "--verbose" -> verbose = true;
                 case "--quiet" -> quiet = true;
-                case "--tag", "--id", "--workspace" -> {
+                case "--tag", "--id", "--workspace", "--cache-max-age-days" -> {
                     if (i + 1 == args.length) {
                         return usage(err, argument + " needs a value");
                     }
@@ -73,7 +76,19 @@ public final class Cli {
                     if (releaseId == null) {
                         return usage(err, "publish needs --id <release-id>");
                     }
-                    Publish.run(workspace, tag, releaseId, dryRun, log);
+                    int cacheMaxAgeDays = Publish.DEFAULT_CACHE_MAX_AGE_DAYS;
+                    if (options.containsKey("cache-max-age-days")) {
+                        String value = options.get("cache-max-age-days");
+                        try {
+                            cacheMaxAgeDays = Integer.parseInt(value);
+                        } catch (NumberFormatException e) {
+                            return usage(err, "--cache-max-age-days needs a positive number of days: " + value);
+                        }
+                        if (cacheMaxAgeDays < 1) {
+                            return usage(err, "--cache-max-age-days needs a positive number of days: " + value);
+                        }
+                    }
+                    Publish.run(workspace, tag, releaseId, cacheMaxAgeDays, dryRun, log);
                     return OK;
                 }
                 case "update" -> {
@@ -83,12 +98,18 @@ public final class Cli {
                     if (options.containsKey("id")) {
                         return usage(err, "update does not take --id");
                     }
+                    if (options.containsKey("cache-max-age-days")) {
+                        return usage(err, "update does not take --cache-max-age-days");
+                    }
                     Update.run(workspace, tag, dryRun, log);
                     return OK;
                 }
                 case "init" -> {
                     if (options.containsKey("id")) {
                         return usage(err, "init does not take --id");
+                    }
+                    if (options.containsKey("cache-max-age-days")) {
+                        return usage(err, "init does not take --cache-max-age-days");
                     }
                     if (dryRun) {
                         return usage(err, "init does not take --dry-run");

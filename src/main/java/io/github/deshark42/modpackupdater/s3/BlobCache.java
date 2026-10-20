@@ -35,7 +35,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>The first line is a header object tying the file to one bucket location and recording when it
  * was created; every later line is one {@code {"hash": ...}} object. A different endpoint, bucket
- * or prefix, an unreadable or malformed file, or a cache older than {@link #MAX_AGE} discards it as
+ * or prefix, an unreadable or malformed file, or a cache older than its maximum age discards it as
  * a whole and starts a new one.
  *
  * <p>Writers append under an exclusive lock on the file and re-check the header first, so publishers
@@ -48,13 +48,13 @@ public final class BlobCache {
     /** The hash of a sha256 content address, as the manifest carries it. */
     private static final int HASH_LENGTH = 64;
     private static final String VERSION = "v1";
-    private static final Duration MAX_AGE = Duration.ofDays(30);
     /** Enough for the header line, so a writer can recognize it without reading the whole file. */
     private static final int HEADER_BUFFER = 512;
 
     private final Path file;
     private final String label;
     private final String fingerprint;
+    private final long maxAgeSeconds;
     private final Clock clock;
     private final Log log;
     private final Set<String> known;
@@ -62,11 +62,12 @@ public final class BlobCache {
     private boolean writable = true;
     private boolean warned;
 
-    private BlobCache(Path file, String label, String fingerprint, Clock clock, Log log,
-            Set<String> known, boolean reset) {
+    private BlobCache(Path file, String label, String fingerprint, long maxAgeSeconds, Clock clock,
+            Log log, Set<String> known, boolean reset) {
         this.file = file;
         this.label = label;
         this.fingerprint = fingerprint;
+        this.maxAgeSeconds = maxAgeSeconds;
         this.clock = clock;
         this.log = log;
         this.known = known;
@@ -74,24 +75,25 @@ public final class BlobCache {
     }
 
     /** Loads the cache for {@code config}'s bucket location, starting empty if it is unusable. */
-    public static BlobCache open(Path workspace, Config config, Log log) {
-        return open(workspace, config, log, Clock.systemUTC());
+    public static BlobCache open(Path workspace, Config config, Log log, Duration maxAge) {
+        return open(workspace, config, log, maxAge, Clock.systemUTC());
     }
 
-    static BlobCache open(Path workspace, Config config, Log log, Clock clock) {
+    static BlobCache open(Path workspace, Config config, Log log, Duration maxAge, Clock clock) {
         Path file = Layout.knownBlobsFile(workspace);
         String fingerprint = fingerprint(config);
         Read read = read(file);
         long now = clock.instant().getEpochSecond();
+        long maxAgeSeconds = maxAge.getSeconds();
         boolean usable = read != null
                 && read.fingerprint().equals(fingerprint)
-                && now - read.createdAt() <= MAX_AGE.getSeconds();
+                && now - read.createdAt() <= maxAgeSeconds;
         Set<String> known = ConcurrentHashMap.newKeySet();
         if (usable) {
             known.addAll(read.hashes());
         }
-        return new BlobCache(file, Log.relativeTo(workspace, file), fingerprint, clock, log, known,
-                !usable);
+        return new BlobCache(file, Log.relativeTo(workspace, file), fingerprint, maxAgeSeconds, clock,
+                log, known, !usable);
     }
 
     /**
@@ -188,7 +190,7 @@ public final class BlobCache {
             return false;
         }
         return current.equals(fingerprint)
-                && clock.instant().getEpochSecond() - createdAt <= MAX_AGE.getSeconds();
+                && clock.instant().getEpochSecond() - createdAt <= maxAgeSeconds;
     }
 
     private static void writeFully(FileChannel channel, byte[] bytes) throws IOException {

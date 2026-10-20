@@ -63,6 +63,35 @@ class CliTest {
     }
 
     @Test
+    void cacheMaxAgeIsAPublishOption(@TempDir Path cwd) throws IOException {
+        write(cwd, "client/base/mods/a.jar", "A");
+
+        assertEquals(Cli.OK, run(cwd, "publish", "--tag", "client", "--id", "2.9.0", "--dry-run",
+                "--cache-max-age-days", "7"), printedErrors.toString());
+
+        assertEquals(Cli.USAGE_ERROR, run(cwd, "publish", "--tag", "client", "--id", "2.9.0", "--dry-run",
+                "--cache-max-age-days", "0"));
+        assertTrue(printedErrors.toString().contains("cache-max-age-days needs a positive number of days"),
+                printedErrors.toString());
+
+        printedErrors.reset();
+        assertEquals(Cli.USAGE_ERROR, run(cwd, "publish", "--tag", "client", "--id", "2.9.0", "--dry-run",
+                "--cache-max-age-days", "soon"));
+        assertTrue(printedErrors.toString().contains("cache-max-age-days needs a positive number of days"),
+                printedErrors.toString());
+
+        printedErrors.reset();
+        assertEquals(Cli.USAGE_ERROR, run(cwd, "update", "--tag", "client", "--cache-max-age-days", "7"));
+        assertTrue(printedErrors.toString().contains("update does not take --cache-max-age-days"),
+                printedErrors.toString());
+
+        printedErrors.reset();
+        assertEquals(Cli.USAGE_ERROR, run(cwd, "init", "--cache-max-age-days", "7"));
+        assertTrue(printedErrors.toString().contains("init does not take --cache-max-age-days"),
+                printedErrors.toString());
+    }
+
+    @Test
     void aMissingWorkspaceIsAFailureNotAUsageError(@TempDir Path cwd) {
         assertEquals(Cli.FAILURE, run(cwd, "update", "--tag", "client"));
         assertTrue(printedErrors.toString().startsWith("error: "), printedErrors.toString());

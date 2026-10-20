@@ -20,6 +20,7 @@ import io.github.deshark42.modpackupdater.util.Parallel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -43,12 +44,23 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class Publish {
 
+    /** How long the local blob cache stays usable unless the publish command says otherwise. */
+    public static final int DEFAULT_CACHE_MAX_AGE_DAYS = 30;
+
     private Publish() {
     }
 
     public static void run(Path workspace, String tag, String releaseId, boolean dryRun, Log log) {
+        run(workspace, tag, releaseId, DEFAULT_CACHE_MAX_AGE_DAYS, dryRun, log);
+    }
+
+    public static void run(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
+            boolean dryRun, Log log) {
         Names.requireTag(tag);
         Names.requireReleaseId(releaseId);
+        if (cacheMaxAgeDays < 1) {
+            throw new UserError("cache max age must be at least 1 day: " + cacheMaxAgeDays);
+        }
         log.headline("publish " + tag + " " + releaseId);
         log.phase("inputs");
         Path base = Layout.baseDir(workspace, tag);
@@ -109,7 +121,7 @@ public final class Publish {
             throw new UserError("release " + releaseId + " of tag " + tag
                     + " already exists; a published release is never rewritten");
         }
-        BlobCache cache = BlobCache.open(workspace, config, log);
+        BlobCache cache = BlobCache.open(workspace, config, log, Duration.ofDays(cacheMaxAgeDays));
 
         // Ask which blobs are missing before uploading, so progress can count them. Blobs the
         // cache already knows cost no request at all.

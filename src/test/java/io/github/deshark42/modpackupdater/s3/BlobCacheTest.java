@@ -43,7 +43,7 @@ class BlobCacheTest {
     }
 
     private static BlobCache open(Path workspace) {
-        return BlobCache.open(workspace, config("pack"), quietLog(), CLOCK);
+        return BlobCache.open(workspace, config("pack"), quietLog(), Duration.ofDays(30), CLOCK);
     }
 
     private static List<Map<String, Object>> entries(Path workspace) throws IOException {
@@ -106,15 +106,31 @@ class BlobCacheTest {
         Clock fresh = Clock.fixed(NOW.plus(Duration.ofDays(29)), ZoneOffset.UTC);
         Clock stale = Clock.fixed(NOW.plus(Duration.ofDays(31)), ZoneOffset.UTC);
 
-        assertTrue(BlobCache.open(workspace, config("pack"), quietLog(), fresh).known(HASH_A));
-        assertFalse(BlobCache.open(workspace, config("pack"), quietLog(), stale).known(HASH_A));
+        assertTrue(BlobCache.open(workspace, config("pack"), quietLog(), Duration.ofDays(30), fresh)
+                .known(HASH_A));
+        assertFalse(BlobCache.open(workspace, config("pack"), quietLog(), Duration.ofDays(30), stale)
+                .known(HASH_A));
+    }
+
+    @Test
+    void usesTheMaximumAgeItIsGiven(@TempDir Path workspace) {
+        BlobCache.open(workspace, config("pack"), quietLog(), Duration.ofDays(1), CLOCK).remember(HASH_A);
+
+        Clock within = Clock.fixed(NOW.plus(Duration.ofDays(1)), ZoneOffset.UTC);
+        Clock past = Clock.fixed(NOW.plus(Duration.ofDays(2)), ZoneOffset.UTC);
+
+        assertTrue(BlobCache.open(workspace, config("pack"), quietLog(), Duration.ofDays(1), within)
+                .known(HASH_A));
+        assertFalse(BlobCache.open(workspace, config("pack"), quietLog(), Duration.ofDays(1), past)
+                .known(HASH_A));
     }
 
     @Test
     void dropsTheCacheOfAnotherBucketLocation(@TempDir Path workspace) {
         open(workspace).remember(HASH_A);
 
-        assertFalse(BlobCache.open(workspace, config("other"), quietLog(), CLOCK).known(HASH_A));
+        assertFalse(BlobCache.open(workspace, config("other"), quietLog(), Duration.ofDays(30), CLOCK)
+                .known(HASH_A));
     }
 
     @Test
@@ -142,7 +158,7 @@ class BlobCacheTest {
     void startsANewCacheAfterDiscardingTheOldOne(@TempDir Path workspace) {
         open(workspace).remember(HASH_A);
 
-        BlobCache stale = BlobCache.open(workspace, config("pack"), quietLog(),
+        BlobCache stale = BlobCache.open(workspace, config("pack"), quietLog(), Duration.ofDays(30),
                 Clock.fixed(NOW.plus(Duration.ofDays(31)), ZoneOffset.UTC));
         stale.remember(HASH_B);
 
@@ -158,13 +174,14 @@ class BlobCacheTest {
         BlobCache first = open(workspace);
         first.remember(HASH_A);
 
-        BlobCache other = BlobCache.open(workspace, config("other"), quietLog(), CLOCK);
+        BlobCache other = BlobCache.open(workspace, config("other"), quietLog(), Duration.ofDays(30), CLOCK);
         other.remember(HASH_B);
 
         first.remember(HASH_C);
 
         assertTrue(open(workspace).known(HASH_C));
-        assertFalse(BlobCache.open(workspace, config("other"), quietLog(), CLOCK).known(HASH_B));
+        assertFalse(BlobCache.open(workspace, config("other"), quietLog(), Duration.ofDays(30), CLOCK)
+                .known(HASH_B));
     }
 
     @Test
@@ -172,7 +189,7 @@ class BlobCacheTest {
         Files.createDirectories(Layout.knownBlobsFile(workspace));
         ByteArrayOutputStream printed = new ByteArrayOutputStream();
         BlobCache cache = BlobCache.open(workspace, config("pack"),
-                new Log(new PrintStream(printed, true, StandardCharsets.UTF_8)), CLOCK);
+                new Log(new PrintStream(printed, true, StandardCharsets.UTF_8)), Duration.ofDays(30), CLOCK);
 
         assertDoesNotThrow(() -> cache.remember(HASH_A));
 
