@@ -1,9 +1,8 @@
 package io.github.deshark42.modpackupdater.s3;
 
-import io.github.deshark42.modpackupdater.UserError;
-import io.github.deshark42.modpackupdater.fs.AtomicFile;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.json.Json;
+import io.github.deshark42.modpackupdater.log.Log;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.Layout;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
@@ -38,6 +37,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * was created; every later line is one {@code {"hash": ...}} object. A different endpoint, bucket
  * or prefix, an unreadable or malformed file, or a cache older than {@link #MAX_AGE} discards it as
  * a whole and starts a new one.
+ *
+ * <p>Writers append under an exclusive lock on the file and re-check the header first, so publishers
+ * sharing a workspace never leave an entry under another bucket location's header. A write that
+ * fails only gives up the cache for later runs, never the publish: it is reported and the run
+ * continues without it.
  */
 public final class BlobCache {
 
@@ -45,27 +49,36 @@ public final class BlobCache {
     private static final int HASH_LENGTH = 64;
     private static final String VERSION = "v1";
     private static final Duration MAX_AGE = Duration.ofDays(30);
+    /** Enough for the header line, so a writer can recognize it without reading the whole file. */
+    private static final int HEADER_BUFFER = 512;
 
     private final Path file;
+    private final String label;
     private final String fingerprint;
     private final Clock clock;
+    private final Log log;
     private final Set<String> known;
     private boolean reset;
+    private boolean writable = true;
+    private boolean warned;
 
-    private BlobCache(Path file, String fingerprint, Clock clock, Set<String> known, boolean reset) {
+    private BlobCache(Path file, String label, String fingerprint, Clock clock, Log log,
+            Set<String> known, boolean reset) {
         this.file = file;
+        this.label = label;
         this.fingerprint = fingerprint;
         this.clock = clock;
+        this.log = log;
         this.known = known;
         this.reset = reset;
     }
 
     /** Loads the cache for {@code config}'s bucket location, starting empty if it is unusable. */
-    public static BlobCache open(Path workspace, Config config) {
-        return open(workspace, config, Clock.systemUTC());
+    public static BlobCache open(Path workspace, Config config, Log log) {
+        return open(workspace, config, log, Clock.systemUTC());
     }
 
-    static BlobCache open(Path workspace, Config config, Clock clock) {
+    static BlobCache open(Path workspace, Config config, Log log, Clock clock) {
         Path file = Layout.knownBlobsFile(workspace);
         String fingerprint = fingerprint(config);
         Read read = read(file);
@@ -77,12 +90,13 @@ public final class BlobCache {
         if (usable) {
             known.addAll(read.hashes());
         }
-        return new BlobCache(file, fingerprint, clock, known, !usable);
+        return new BlobCache(file, Log.relativeTo(workspace, file), fingerprint, clock, log, known,
+                !usable);
     }
 
     /**
      * Whether {@code hash} is in the bucket, answering from the cache and asking the store only on
-     * a miss. A confirmed object is written to the cache before this returns.
+     * a miss. A confirmed object is remembered before this returns.
      */
     public boolean exists(S3Store store, String hash) {
         if (known.contains(hash)) {
@@ -96,26 +110,27 @@ public final class BlobCache {
     }
 
     /**
-     * Records a blob that is now known to be in the bucket. The append is one atomic operation, so
-     * a crash never leaves a half-written entry and concurrent publishers never overwrite each
-     * other's entries.
+     * Records a blob that is now known to be in the bucket. The entry is appended under a lock on
+     * the cache file, after checking that the header still belongs to this bucket location; a crash
+     * can leave a partial line, which the next read rejects as a whole. A failed write drops the
+     * entry from this run and stops writing the cache, without failing the publish.
      */
     public synchronized void remember(String hash) {
         if (!known.add(hash)) {
             return;
         }
+        if (!writable) {
+            return;
+        }
         try {
-            if (reset) {
-                AtomicFile.write(file, headerLine(fingerprint, clock.instant().getEpochSecond()));
-                reset = false;
-            }
             append(hash);
+        } catch (IOException e) {
+            known.remove(hash);
+            writable = false;
+            warnOnce(e);
         } catch (RuntimeException e) {
             known.remove(hash);
             throw e;
-        } catch (IOException e) {
-            known.remove(hash);
-            throw new UserError("cannot write " + file + ": " + e.getMessage(), e);
         }
     }
 
@@ -129,15 +144,67 @@ public final class BlobCache {
         if (parent != null) {
             Files.createDirectories(parent);
         }
-        byte[] line = entryLine(hash).getBytes(StandardCharsets.UTF_8);
+        byte[] entry = entryLine(hash).getBytes(StandardCharsets.UTF_8);
         try (FileChannel channel = FileChannel.open(file, StandardOpenOption.CREATE,
-                StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+                StandardOpenOption.READ, StandardOpenOption.WRITE);
              FileLock ignored = channel.lock()) {
-            ByteBuffer buffer = ByteBuffer.wrap(line);
-            while (buffer.hasRemaining()) {
-                channel.write(buffer);
+            if (reset || !hasCurrentHeader(channel)) {
+                channel.truncate(0);
+                channel.position(0);
+                writeFully(channel,
+                        headerLine(fingerprint, clock.instant().getEpochSecond())
+                                .getBytes(StandardCharsets.UTF_8));
             }
+            channel.position(channel.size());
+            writeFully(channel, entry);
         }
+        reset = false;
+    }
+
+    /** Whether the first line still ties the file to this bucket location and is not stale. */
+    private boolean hasCurrentHeader(FileChannel channel) throws IOException {
+        ByteBuffer buffer = ByteBuffer.allocate(HEADER_BUFFER);
+        channel.position(0);
+        int length = channel.read(buffer);
+        if (length <= 0) {
+            return false;
+        }
+        byte[] bytes = buffer.array();
+        int end = 0;
+        while (end < length && bytes[end] != '\n') {
+            end++;
+        }
+        if (end == length) {
+            return false;
+        }
+        Map<String, Object> header = object(new String(bytes, 0, end, StandardCharsets.UTF_8));
+        if (header == null || !VERSION.equals(header.get("version"))) {
+            return false;
+        }
+        if (!(header.get("fingerprint") instanceof String current)) {
+            return false;
+        }
+        if (!(header.get("createdAt") instanceof Long createdAt)) {
+            return false;
+        }
+        return current.equals(fingerprint)
+                && clock.instant().getEpochSecond() - createdAt <= MAX_AGE.getSeconds();
+    }
+
+    private static void writeFully(FileChannel channel, byte[] bytes) throws IOException {
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        while (buffer.hasRemaining()) {
+            channel.write(buffer);
+        }
+    }
+
+    private void warnOnce(IOException e) {
+        if (warned) {
+            return;
+        }
+        warned = true;
+        String message = e.getMessage() == null ? "write failed" : e.getMessage();
+        log.step("cache", "cannot write " + label, message);
     }
 
     private static Read read(Path file) {

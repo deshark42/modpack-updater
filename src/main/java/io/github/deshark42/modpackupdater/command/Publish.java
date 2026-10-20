@@ -109,7 +109,7 @@ public final class Publish {
             throw new UserError("release " + releaseId + " of tag " + tag
                     + " already exists; a published release is never rewritten");
         }
-        BlobCache cache = BlobCache.open(workspace, config);
+        BlobCache cache = BlobCache.open(workspace, config, log);
 
         // Ask which blobs are missing before uploading, so progress can count them. Blobs the
         // cache already knows cost no request at all.

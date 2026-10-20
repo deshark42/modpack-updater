@@ -1,13 +1,18 @@
 package io.github.deshark42.modpackupdater.s3;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.deshark42.modpackupdater.json.Json;
+import io.github.deshark42.modpackupdater.log.Log;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.Layout;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,14 +31,19 @@ class BlobCacheTest {
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
     private static final String HASH_A = "a".repeat(64);
     private static final String HASH_B = "b".repeat(64);
+    private static final String HASH_C = "c".repeat(64);
 
     private static Config config(String bucket) {
         return Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"" + bucket + "\","
                 + " \"prefix\": \"gtnh\", \"path_style\": true}", "config.json");
     }
 
+    private static Log quietLog() {
+        return new Log(new PrintStream(OutputStream.nullOutputStream(), true, StandardCharsets.UTF_8));
+    }
+
     private static BlobCache open(Path workspace) {
-        return BlobCache.open(workspace, config("pack"), CLOCK);
+        return BlobCache.open(workspace, config("pack"), quietLog(), CLOCK);
     }
 
     private static List<Map<String, Object>> entries(Path workspace) throws IOException {
@@ -96,15 +106,15 @@ class BlobCacheTest {
         Clock fresh = Clock.fixed(NOW.plus(Duration.ofDays(29)), ZoneOffset.UTC);
         Clock stale = Clock.fixed(NOW.plus(Duration.ofDays(31)), ZoneOffset.UTC);
 
-        assertTrue(BlobCache.open(workspace, config("pack"), fresh).known(HASH_A));
-        assertFalse(BlobCache.open(workspace, config("pack"), stale).known(HASH_A));
+        assertTrue(BlobCache.open(workspace, config("pack"), quietLog(), fresh).known(HASH_A));
+        assertFalse(BlobCache.open(workspace, config("pack"), quietLog(), stale).known(HASH_A));
     }
 
     @Test
     void dropsTheCacheOfAnotherBucketLocation(@TempDir Path workspace) {
         open(workspace).remember(HASH_A);
 
-        assertFalse(BlobCache.open(workspace, config("other"), CLOCK).known(HASH_A));
+        assertFalse(BlobCache.open(workspace, config("other"), quietLog(), CLOCK).known(HASH_A));
     }
 
     @Test
@@ -132,12 +142,41 @@ class BlobCacheTest {
     void startsANewCacheAfterDiscardingTheOldOne(@TempDir Path workspace) {
         open(workspace).remember(HASH_A);
 
-        BlobCache stale = BlobCache.open(workspace, config("pack"),
+        BlobCache stale = BlobCache.open(workspace, config("pack"), quietLog(),
                 Clock.fixed(NOW.plus(Duration.ofDays(31)), ZoneOffset.UTC));
         stale.remember(HASH_B);
 
         BlobCache reopened = open(workspace);
         assertFalse(reopened.known(HASH_A));
         assertTrue(reopened.known(HASH_B));
+    }
+
+    @Test
+    void doesNotAppendUnderAnotherBucketLocationsHeader(@TempDir Path workspace) {
+        // This instance opened before another location rewrote the file; appending blindly would
+        // leave its hash under that other location's header.
+        BlobCache first = open(workspace);
+        first.remember(HASH_A);
+
+        BlobCache other = BlobCache.open(workspace, config("other"), quietLog(), CLOCK);
+        other.remember(HASH_B);
+
+        first.remember(HASH_C);
+
+        assertTrue(open(workspace).known(HASH_C));
+        assertFalse(BlobCache.open(workspace, config("other"), quietLog(), CLOCK).known(HASH_B));
+    }
+
+    @Test
+    void keepsTheRunGoingWhenTheCacheCannotBeWritten(@TempDir Path workspace) throws IOException {
+        Files.createDirectories(Layout.knownBlobsFile(workspace));
+        ByteArrayOutputStream printed = new ByteArrayOutputStream();
+        BlobCache cache = BlobCache.open(workspace, config("pack"),
+                new Log(new PrintStream(printed, true, StandardCharsets.UTF_8)), CLOCK);
+
+        assertDoesNotThrow(() -> cache.remember(HASH_A));
+
+        assertFalse(cache.known(HASH_A));
+        assertTrue(printed.toString(StandardCharsets.UTF_8).contains("cannot write"));
     }
 }
