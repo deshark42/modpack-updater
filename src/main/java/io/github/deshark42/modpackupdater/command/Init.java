@@ -24,7 +24,7 @@ public final class Init {
               "bucket": "",
               "prefix": "",
               "path_style": false,
-              "concurrency": 4,
+              "concurrency": 8,
               "access_key": "",
               "secret_key": ""
             }

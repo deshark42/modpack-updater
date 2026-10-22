@@ -51,7 +51,7 @@ Status: implemented
   "bucket": "modpack-updater",
   "prefix": "gtnh/",
   "path_style": true,
-  "concurrency": 4,
+  "concurrency": 8,
   "access_key": "…",
   "secret_key": "…"
 }
@@ -61,7 +61,7 @@ Status: implemented
 - 连接信息与密钥只从 config.json 读取，工具不看环境变量：少一条取值路径，少一处需要解释的行为。
 - path_style 给 MinIO 与自建端点用，AWS 可省略。
 - prefix 可选，默认空。tag 不进 config，由命令参数给出。
-- concurrency 是同时在传的块与块表的数量，默认 4，取值 1–64：串行传输等不满带宽。
+- concurrency 是同时在传的块与块表的数量，默认 8，取值 1–64：块只有几十 KiB，耗时以请求往返为主，4 个并发等不满上行带宽。
 - region、prefix、path_style、concurrency 都可以整段省掉。工具读到缺字段就把默认值补进文件（保留已有值与不认识的键），于是早先版本写的 config.json 不必手工迁移；补过之后文件不再被改写。
 
 **取值与字符集**

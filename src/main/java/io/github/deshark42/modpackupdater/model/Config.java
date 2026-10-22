@@ -13,7 +13,7 @@ public record Config(String endpoint, String region, String bucket, String prefi
                      String accessKey, String secretKey, int concurrency) {
 
     /** Transfers that run at the same time unless config.json says otherwise. */
-    public static final int DEFAULT_CONCURRENCY = 4;
+    public static final int DEFAULT_CONCURRENCY = 8;
     public static final int MAX_CONCURRENCY = 64;
 
     /** The fields a config may leave out, and the values the tool uses and writes back for them. */

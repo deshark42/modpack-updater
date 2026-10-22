@@ -84,8 +84,8 @@ class InitTest {
 
         Init.run(workspace, null, log);
 
-        assertEquals(4, Config.load(workspace).concurrency());
-        assertTrue(Files.readString(config).contains("\"concurrency\": 4"), Files.readString(config));
+        assertEquals(8, Config.load(workspace).concurrency());
+        assertTrue(Files.readString(config).contains("\"concurrency\": 8"), Files.readString(config));
         assertTrue(printed.toString().contains("filled in the defaults it was missing"), printed.toString());
     }
 

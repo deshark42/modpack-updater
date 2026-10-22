@@ -27,7 +27,7 @@ class ConfigTest {
     @Test
     void defaultsToFourTransfersAtATime() {
         Config config = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\"}", "config.json");
-        assertEquals(4, config.concurrency());
+        assertEquals(8, config.concurrency());
     }
 
     @Test
@@ -113,10 +113,10 @@ class ConfigTest {
         assertEquals("us-east-1", config.region());
         assertEquals("", config.prefix());
         assertFalse(config.pathStyle());
-        assertEquals(4, config.concurrency());
+        assertEquals(8, config.concurrency());
         String written = Files.readString(file);
         assertTrue(written.contains("\"endpoint\": \"https://s3.example.com\""), written);
-        assertTrue(written.contains("\"concurrency\": 4"), written);
+        assertTrue(written.contains("\"concurrency\": 8"), written);
         assertTrue(written.contains("\n  \"region\": \"us-east-1\",\n"), written);
     }
 
