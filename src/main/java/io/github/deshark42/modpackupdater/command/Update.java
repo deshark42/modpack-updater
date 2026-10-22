@@ -133,6 +133,7 @@ public final class Update {
             return;
         }
 
+        Path backups = Layout.backupsDir(workspace, tag);
         Path backup = applied == null ? null : Layout.backupDir(workspace, tag, applied);
         int moved = 0;
         for (String path : plan.deleted()) {
@@ -157,7 +158,8 @@ public final class Update {
         if (total > 0) {
             try {
                 Map<String, ChunkTable> tables = chunkTables(store, target, downloads, config.concurrency());
-                Reuse reuse = localChunks(backup, plan, target, tables, config.concurrency());
+                Reuse reuse = localChunks(backups, applied, plan, targetId, target, tables,
+                        config.concurrency());
                 Map<String, Local> existing = reuse.chunks();
                 Set<String> needed = new LinkedHashSet<>();
                 for (String path : downloads) {
@@ -172,7 +174,7 @@ public final class Update {
                 reused = needed.size() - missing.size();
                 if (reused > 0) {
                     log.step("chunk", Log.count(reuse.files(), "file"),
-                            Log.count(reused, "chunk") + " reused from " + Log.relativeTo(workspace, backup));
+                            Log.count(reused, "chunk") + " reused from " + Log.relativeTo(workspace, backups));
                 }
                 if (!missing.isEmpty()) {
                     Files.createDirectories(Layout.tempDir(workspace));
@@ -198,7 +200,7 @@ public final class Update {
         log.summary("version", version);
         log.summary("changed", changed(plan, downloadedBytes, "downloaded"));
         log.summary("reuse", Log.count(reused, "chunk")
-                + (reused > 0 ? " from " + Log.relativeTo(workspace, backup) : ""));
+                + (reused > 0 ? " from " + Log.relativeTo(workspace, backups) : ""));
         if (moved > 0) {
             log.summary("backup", Log.count(moved, "file") + " in " + Log.relativeTo(workspace, backup));
         }
@@ -255,45 +257,64 @@ public final class Update {
     }
 
     /**
-     * Splits the copies the previous release left in {@code backup/} with the parameters the target
-     * chunk tables record, collecting every chunk the new release could reuse. Replaced files have a
-     * copy under their own path; deleted ones have a copy under the path they were removed from, and
-     * their chunks are what makes a file that merely changed its name cheap to apply. A deleted path
-     * has no target table of its own, so its copy is split with every chunking the run's target tables
-     * use. A copy that is missing or cannot be read contributes nothing.
+     * Splits the copies left in {@code backup/} with the parameters the target chunk tables record,
+     * collecting every chunk the new release could reuse. Two kinds of copies qualify: the ones this
+     * run moved aside, under the paths they were removed from, and the ones an earlier run moved aside
+     * when it left the release being applied now, which is what makes a rollback nearly free. A path
+     * without a target table of its own, a deleted one or a kept copy addressed by its old path, is
+     * split with every chunking the run's target tables use. A copy that is missing or cannot be read
+     * contributes nothing.
      */
-    private static Reuse localChunks(Path backup, Plan plan, Manifest target,
-            Map<String, ChunkTable> tables, int concurrency) {
+    private static Reuse localChunks(Path backups, String applied, Plan plan, String targetId,
+            Manifest target, Map<String, ChunkTable> tables, int concurrency) {
         Map<String, Local> existing = new ConcurrentHashMap<>();
-        if (backup == null) {
-            return new Reuse(existing, 0);
-        }
         Set<Chunking> targetChunkings = new LinkedHashSet<>();
         for (ChunkTable table : tables.values()) {
             targetChunkings.add(table.chunking());
         }
-        List<String> candidates = new ArrayList<>(plan.replaced());
-        candidates.addAll(plan.deleted());
+        if (targetChunkings.isEmpty()) {
+            return new Reuse(existing, 0);
+        }
         AtomicInteger read = new AtomicInteger();
-        Parallel.forEach(candidates, concurrency, path -> {
-            Path copy = SafePath.resolve(backup, path);
-            if (!Files.isRegularFile(copy)) {
-                return;
-            }
-            FileEntry entry = target.files().get(path);
-            List<Chunking> chunkings = entry == null
-                    ? List.copyOf(targetChunkings)
-                    : List.of(tables.get(entry.chunks()).chunking());
-            if (chunkings.isEmpty()) {
-                return;
-            }
+        if (applied != null) {
+            Path backup = backups.resolve(Names.requireReleaseId(applied));
+            List<String> moved = new ArrayList<>(plan.replaced());
+            moved.addAll(plan.deleted());
+            Parallel.forEach(moved, concurrency, path -> {
+                Path copy = SafePath.resolve(backup, path);
+                if (!Files.isRegularFile(copy)) {
+                    return;
+                }
+                Map<String, Local> found = new HashMap<>();
+                try {
+                    for (Chunking chunking : chunkingsFor(path, target, tables, targetChunkings)) {
+                        Chunker.split(copy, chunking, cut -> found.putIfAbsent(cut.hash(), new Local(copy, cut)));
+                    }
+                } catch (UserError e) {
+                    return; // a copy that cannot be read is as good as no copy at all
+                }
+                read.incrementAndGet();
+                for (Map.Entry<String, Local> chunk : found.entrySet()) {
+                    existing.putIfAbsent(chunk.getKey(), chunk.getValue());
+                }
+            });
+        }
+        Path kept = backups.resolve(Names.requireReleaseId(targetId));
+        List<Path> keptCopies;
+        try (var walk = Files.walk(kept)) {
+            keptCopies = walk.filter(Files::isRegularFile).toList();
+        } catch (IOException e) {
+            return new Reuse(existing, read.get()); // a kept directory that cannot be listed only costs reuse
+        }
+        Parallel.forEach(keptCopies, concurrency, copy -> {
+            String path = kept.relativize(copy).toString().replace('\\', '/');
             Map<String, Local> found = new HashMap<>();
             try {
-                for (Chunking chunking : chunkings) {
+                for (Chunking chunking : chunkingsFor(path, target, tables, targetChunkings)) {
                     Chunker.split(copy, chunking, cut -> found.putIfAbsent(cut.hash(), new Local(copy, cut)));
                 }
             } catch (UserError e) {
-                return; // a copy that cannot be read is as good as no copy at all
+                return;
             }
             read.incrementAndGet();
             for (Map.Entry<String, Local> chunk : found.entrySet()) {
@@ -301,6 +322,14 @@ public final class Update {
             }
         });
         return new Reuse(existing, read.get());
+    }
+
+    /** The parameters the target table of one path records, or every one the run's target tables use. */
+    private static List<Chunking> chunkingsFor(String path, Manifest target, Map<String, ChunkTable> tables,
+            Set<Chunking> all) {
+        FileEntry entry = target.files().get(path);
+        ChunkTable table = entry == null ? null : tables.get(entry.chunks());
+        return table == null ? List.copyOf(all) : List.of(table.chunking());
     }
 
     /** Fetches the missing chunks into the run's temporary directory, one file per chunk. */

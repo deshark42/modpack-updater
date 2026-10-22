@@ -58,8 +58,13 @@ public final class Layout {
         return releasesDir(workspaceRoot, tag).resolve(Names.requireReleaseId(releaseId) + ".json");
     }
 
+    /** The directory every release's moved-away files are kept under. */
+    public static Path backupsDir(Path workspaceRoot, String tag) {
+        return tagDir(workspaceRoot, tag).resolve(BACKUP);
+    }
+
     public static Path backupDir(Path workspaceRoot, String tag, String releaseId) {
-        return tagDir(workspaceRoot, tag).resolve(BACKUP).resolve(Names.requireReleaseId(releaseId));
+        return backupsDir(workspaceRoot, tag).resolve(Names.requireReleaseId(releaseId));
     }
 
     /** The directory a tag is published from: base/, overlay/ and remove.txt live side by side. */

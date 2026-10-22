@@ -571,6 +571,39 @@ class UpdateTest {
     }
 
     @Test
+    void reusesTheKeptCopiesOfTheReleaseItRollsBackTo(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            byte[] before = random(300_000, 85);
+            byte[] after = before.clone();
+            after[90_000] ^= 0x13;
+            Path publisher = root.resolve("publisher");
+            configure(publisher, s3);
+            publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", before));
+            publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", after));
+            Path player = root.resolve("player");
+            configure(player, s3);
+
+            Update.run(player, "client", "2.9.0", false, log);
+            Update.run(player, "client", null, false, log);
+            assertEquals("2.9.1", applied(player, "client"));
+            long forwarded = s3.downloadedBytes();
+
+            printed.reset();
+            Update.run(player, "client", "2.9.0", false, log);
+            long delta = s3.downloadedBytes() - forwarded;
+
+            assertEquals("2.9.0", applied(player, "client"));
+            assertArrayEquals(before, Files.readAllBytes(player.resolve("mods/a.jar")));
+            assertEquals(hashes(cuts(root, before)).size(), reportedReuse(printed.toString()),
+                    "every target chunk came from the copy kept under backup/2.9.0: " + printed);
+            assertFalse(hasStep(printed.toString(), "download"), printed.toString());
+            String table = manifest(s3, "2.9.0").files().get("mods/a.jar").chunks();
+            assertEquals(s3.object(indexKey(table)).length + s3.object(releaseKey("2.9.0")).length, delta,
+                    "only the chunk table and the manifest came over the wire: " + s3.requests());
+        }
+    }
+
+    @Test
     void appliesTheReleaseNamedOnTheCommandLineInsteadOfLatest(@TempDir Path root) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             Path publisher = root.resolve("publisher");
