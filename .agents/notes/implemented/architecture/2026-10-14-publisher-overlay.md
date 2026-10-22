@@ -4,7 +4,7 @@ Status: implemented
 
 ## 问题
 
-[发布者工作区与发布命令](2026-10-13-publisher-workspace.md)把 `<tag>/base/` 定为该 tag 发布内容的唯一来源。base/ 承载的是官方整合包解出来的那棵树，而它的更新方式是删掉整个目录、重新解压新版本——这是发布者处理官方更新的既定做法，工具不参与。
+在此之前，tag 的发布内容只有 `<tag>/base/` 一个来源。base/ 承载的是官方整合包解出来的那棵树，而它的更新方式是删掉整个目录、重新解压新版本——这是发布者处理官方更新的既定做法，工具不参与。
 
 这个更新方式与「把自己的内容放进 base/」互相冲突：
 
@@ -15,18 +15,9 @@ Status: implemented
 
 ## 决策
 
-`<tag>/` 下有与 base/ 并列的两个发布侧输入：
+`<tag>/` 下与 base/ 并列的两个发布侧输入是 `overlay/`（发布者自己的文件：对 base/ 的新增或覆盖）与 `remove.txt`（从 base/ 中剔除的路径，一行一条）；它们在发布者工作区里的位置见[发布者工作区与发布命令](2026-10-13-publisher-workspace.md)。
 
-```
-<workspace>/
-├── .modpack-updater/
-└── <tag>/
-    ├── base/            # 官方包解出的树；随官方更新整体替换，工具不参与
-    ├── overlay/         # 发布者自己的文件：对 base/ 的新增或覆盖
-    └── remove.txt       # 从 base/ 中剔除的路径，一行一条
-```
-
-publish 在扫描阶段把三者合成一份**有效清单**，其余流程（blob 去重、上传、写 release 清单、覆写 latest）不变。有效清单 = base/ 的全部文件 + overlay/ 路径的文件（增加或覆盖），再去掉 remove.txt 命中的 base/ 文件。
+publish 在扫描阶段把三者合成一份**有效清单**，其余流程（块去重、上传、写 release 清单、覆写 latest）不变。有效清单 = base/ 的全部文件 + overlay/ 路径的文件（增加或覆盖），再去掉 remove.txt 命中的 base/ 文件。
 
 overlay/ 与 base/ 共用同一路径空间：`overlay/.minecraft/mods/example-mod.jar` 对应的清单路径是 `.minecraft/mods/example-mod.jar`，与 base/ 下的同名路径指同一个位置。overlay/ 与 remove.txt 自身可以不存在，缺失时按空处理。
 
@@ -34,9 +25,7 @@ overlay/ 与 base/ 生命周期无关：官方更新只替换 base/，发布者�
 
 删除是**显式意图**，不是推断：publish 仍然不与上一次 release 的清单比较，某个路径不再发布只有两种可能——它已不在 base/ 里，或被 remove.txt 命中。
 
-`init --tag <tag>` 一并铺出 overlay/ 与带注释头的 remove.txt（只创建缺失的，不覆盖已有内容）。`publish --dry-run` 与发布日志报告合并结果：扫描 base/ 与 overlay/ 各一行、remove 命中多少文件（来自多少条规则）、未命中的规则、merge 新增/覆盖多少文件，VERBOSE 级再逐文件打印 add/replace。release 清单格式不变（version 仍为 1，不记录某个文件来自 base/ 还是 overlay/），存储布局、latest 指针、config.json、`update` 命令与订阅者工作区也都不变。
-
-本决策改动了[发布者工作区与发布命令](2026-10-13-publisher-workspace.md)里「base/ 是发布内容的全部来源」与「init 只铺 base/」两条事实；该记录已在同一次改动里更新，并与本记录互相链接。
+`publish --dry-run` 与发布日志报告合并结果：扫描 base/ 与 overlay/ 各一行、remove 命中多少文件（来自多少条规则）、未命中的规则、merge 新增/覆盖多少文件，VERBOSE 级再逐文件打印 add/replace。release 清单不记录某个文件来自 base/ 还是 overlay/；存储布局、latest 指针、config.json、`update` 命令与订阅者工作区都不需要知道来源。
 
 ### 合并规则
 
@@ -68,8 +57,7 @@ remove.txt 只作用于 base/：同路径以 overlay/ 为准，规则命中 over
 - overlay/ 独有的路径进清单且 hash 取自 overlay/ 的文件；同路径同时在 base/ 与 overlay/ 时取 overlay/ 的 hash，其余文件仍取自 base/。
 - remove.txt 命中的 base/ 文件不进清单；`dir/` 剔除该目录下全部文件，`example-mod-*.jar` 剔除任意深度下同名的文件；未命中的规则出现在日志里，不改变退出码。
 - `publish --dry-run` 报出的 scan/remove/stale/merge 与最终清单一致：dry-run 在合并之后才返回，读到的是同一份结果。
-- `init --tag <tag>` 创建 `<tag>/overlay/` 与 `<tag>/remove.txt`（模板只有注释，零条生效规则），重复执行不覆盖已有内容。
-- 桶中的 release 清单格式不变，本改动对订阅者侧与 `update` 命令透明；语义上新增的是「清单里的路径可能来自发布者而非官方包」。
+- 清单不携带来源：订阅者无法区分一个路径来自官方包还是发布者自己，排查内容问题时少一条线索。
 - **remove.txt 直接驱动订阅者删除。** 清单里消失的路径在订阅者侧就是删除（旧文件移入 backup/，见[订阅者工作区与更新流程](2026-10-14-subscriber-workspace.md)）。写错或过期的规则会把玩家实例里的文件搬走，影响面是全体订阅者，发布侧不做二次确认。
 - **remove.txt 会腐化。** 未命中的规则只报告不报错，长期不清理会积累已无作用的条目。
 - 两份输入都要发布者自己维护：工具不校验 overlay/ 里的文件是否真的该覆盖 base/，也不校验 remove.txt 的规则是否仍然表达意图。

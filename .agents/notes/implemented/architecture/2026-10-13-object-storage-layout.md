@@ -23,7 +23,7 @@ Status: implemented
             └── <release_id>.json
 ```
 
-- blob/ 按块内容的哈希存放文件的每一段字节，路径为 blob/<块哈希前两位>/<块哈希>；index/ 按块表字节的哈希存放块表，路径为 index/<index_id 前两位>/<index_id>。哈希算法（sha256）由清单的 hash_algorithm 声明：同一段字节、同一份块表总是得到相同的路径，所有 tag、所有 release 共享这两层，同一份内容只存一份；两位分片只为让列举与本地挂载不至于把全部对象堆在一个前缀下。对象从「一个文件的完整内容」变为「文件的一段字节」与「一份块表」，文件由块表表达；旧的整文件对象不再产生，也不迁移。分块与块表的来源见[按内容定义分块传输发布内容](2026-10-22-content-defined-chunked-transfer.md)。
+- blob/ 按块内容的哈希存放文件的每一段字节，路径为 blob/<块哈希前两位>/<块哈希>；index/ 按块表字节的哈希存放块表，路径为 index/<index_id 前两位>/<index_id>。哈希算法（sha256）由清单的 hash_algorithm 声明：同一段字节、同一份块表总是得到相同的路径，所有 tag、所有 release 共享这两层，同一份内容只存一份；两位分片只为让列举与本地挂载不至于把全部对象堆在一个前缀下。文件由块表表达；块、块表与清单的结构与来源见[按内容定义分块传输发布内容](2026-10-22-content-defined-chunked-transfer.md)。
 - metadata/<tag>/ 让每个 TAG（client、server、其他）成为一条独立演进、互不影响的发布流。
 - metadata/<tag>/releases/<release_id>.json 是一次发布的完整清单：列出该发布实例目录的全部路径与每个文件的块表引用，字段与 release_id 形态见[发布内容格式与连接配置](2026-10-14-release-manifest-and-config.md)。
 - metadata/<tag>/latest.json 指向该 tag 当前的发布，是订阅者的唯一入口：读到它就知道该取哪个 release，不需要 LIST 桶。
@@ -40,7 +40,7 @@ Status: implemented
 ## 后果
 
 - 发布者写一次发布：块、块表与 metadata/<tag>/releases/<release_id>.json 落位，latest.json 指向它。
-- 写入顺序固定为 块 → 块表 → metadata/<tag>/releases/<release_id>.json → metadata/<tag>/latest.json；中途失败时，桶里不会留下指向不完整 release 的 latest.json。
+- 中途失败时，桶里不会留下指向不完整 release 的 latest.json——写入顺序保证了这一点。
 - 订阅者只读 metadata/<tag>/latest.json 就能确定要取哪个 release，并据此取回该发布引用的全部块与块表。
 - 同一段字节或同一份块表出现在两个 tag 或两个 release 中时，桶里只存在一份：发布按哈希去重，块或块表已存在就不重复上传。
 - latest.json 是唯一可变点，订阅者可能读到尚未更新的值，表现为晚一次看到新发布；缓存与一致性属于存储服务与部署方，本工具不做约定。
