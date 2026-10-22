@@ -8,6 +8,7 @@ import io.github.deshark42.modpackupdater.fs.Sizes;
 import io.github.deshark42.modpackupdater.log.Log;
 import io.github.deshark42.modpackupdater.log.LogFile;
 import io.github.deshark42.modpackupdater.model.ChunkTable;
+import io.github.deshark42.modpackupdater.model.Chunking;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.FileEntry;
 import io.github.deshark42.modpackupdater.model.Layout;
@@ -145,8 +146,8 @@ public final class Update {
         if (total > 0) {
             try {
                 Map<String, ChunkTable> tables = chunkTables(store, target, downloads, config.concurrency());
-                Map<String, Local> existing = localChunks(backup, plan.replaced(), target, tables,
-                        config.concurrency());
+                Reuse reuse = localChunks(backup, plan, target, tables, config.concurrency());
+                Map<String, Local> existing = reuse.chunks();
                 Set<String> needed = new LinkedHashSet<>();
                 for (String path : downloads) {
                     needed.addAll(tables.get(target.files().get(path).chunks()).chunks());
@@ -159,7 +160,7 @@ public final class Update {
                 }
                 reused = needed.size() - missing.size();
                 if (reused > 0) {
-                    log.step("chunk", Log.count(downloads.size(), "file"),
+                    log.step("chunk", Log.count(reuse.files(), "file"),
                             Log.count(reused, "chunk") + " reused from " + Log.relativeTo(workspace, backup));
                 }
                 if (!missing.isEmpty()) {
@@ -238,34 +239,57 @@ public final class Update {
     private record Local(Path file, Chunker.Cut cut) {
     }
 
+    /** The chunks the previous release's copies still hold, and how many of those copies were read. */
+    private record Reuse(Map<String, Local> chunks, int files) {
+    }
+
     /**
-     * Splits the copies the previous release left in {@code backup/} with the parameters their target
-     * chunk tables record, collecting every chunk the new release could reuse. Only replaced files
-     * have such a copy; a copy that is missing or cannot be read contributes nothing.
+     * Splits the copies the previous release left in {@code backup/} with the parameters the target
+     * chunk tables record, collecting every chunk the new release could reuse. Replaced files have a
+     * copy under their own path; deleted ones have a copy under the path they were removed from, and
+     * their chunks are what makes a file that merely changed its name cheap to apply. A deleted path
+     * has no target table of its own, so its copy is split with every chunking the run's target tables
+     * use. A copy that is missing or cannot be read contributes nothing.
      */
-    private static Map<String, Local> localChunks(Path backup, List<String> replaced, Manifest target,
+    private static Reuse localChunks(Path backup, Plan plan, Manifest target,
             Map<String, ChunkTable> tables, int concurrency) {
         Map<String, Local> existing = new ConcurrentHashMap<>();
         if (backup == null) {
-            return existing;
+            return new Reuse(existing, 0);
         }
-        Parallel.forEach(replaced, concurrency, path -> {
+        Set<Chunking> targetChunkings = new LinkedHashSet<>();
+        for (ChunkTable table : tables.values()) {
+            targetChunkings.add(table.chunking());
+        }
+        List<String> candidates = new ArrayList<>(plan.replaced());
+        candidates.addAll(plan.deleted());
+        AtomicInteger read = new AtomicInteger();
+        Parallel.forEach(candidates, concurrency, path -> {
             Path copy = SafePath.resolve(backup, path);
             if (!Files.isRegularFile(copy)) {
                 return;
             }
+            FileEntry entry = target.files().get(path);
+            List<Chunking> chunkings = entry == null
+                    ? List.copyOf(targetChunkings)
+                    : List.of(tables.get(entry.chunks()).chunking());
+            if (chunkings.isEmpty()) {
+                return;
+            }
             Map<String, Local> found = new HashMap<>();
             try {
-                Chunker.split(copy, tables.get(target.files().get(path).chunks()).chunking(),
-                        cut -> found.putIfAbsent(cut.hash(), new Local(copy, cut)));
+                for (Chunking chunking : chunkings) {
+                    Chunker.split(copy, chunking, cut -> found.putIfAbsent(cut.hash(), new Local(copy, cut)));
+                }
             } catch (UserError e) {
                 return; // a copy that cannot be read is as good as no copy at all
             }
+            read.incrementAndGet();
             for (Map.Entry<String, Local> chunk : found.entrySet()) {
                 existing.putIfAbsent(chunk.getKey(), chunk.getValue());
             }
         });
-        return existing;
+        return new Reuse(existing, read.get());
     }
 
     /** Fetches the missing chunks into the run's temporary directory, one file per chunk. */

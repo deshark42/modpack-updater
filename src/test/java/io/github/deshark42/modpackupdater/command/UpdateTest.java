@@ -328,6 +328,43 @@ class UpdateTest {
     }
 
     @Test
+    void reusesTheChunksOfTheDeletedCopyWhenAFileOnlyChangedItsName(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            byte[] before = random(300_000, 35);
+            byte[] after = before.clone();
+            after[200_000] ^= 0x21;
+            Path publisher = root.resolve("publisher");
+            configure(publisher, s3);
+            publish(publisher, "client", "2.9.0", Map.of("mods/a-1.0.jar", before));
+            Path player = root.resolve("player");
+            configure(player, s3);
+            Update.run(player, "client", false, log);
+            long already = s3.downloadedBytes();
+
+            publish(publisher, "client", "2.9.1", Map.of("mods/a-1.1.jar", after));
+            printed.reset();
+            Update.run(player, "client", false, log);
+            long delta = s3.downloadedBytes() - already;
+
+            assertArrayEquals(after, Files.readAllBytes(player.resolve("mods/a-1.1.jar")));
+            assertFalse(Files.exists(player.resolve("mods/a-1.0.jar")), "the old name is gone");
+            List<Chunker.Cut> oldCuts = cuts(root, before);
+            List<Chunker.Cut> newCuts = cuts(root, after);
+            List<String> missing = newHashes(newCuts, hashes(oldCuts));
+            int expectedReuse = newCuts.size() - missing.size();
+            assertTrue(expectedReuse > 0, "the renamed file kept most of its chunks");
+            assertEquals(expectedReuse, reportedReuse(printed.toString()),
+                    "the deleted copy's chunks are reused: " + printed);
+            assertEquals(bytesOf(newCuts, missing) + metadataBytes(s3, "2.9.1", List.of("mods/a-1.1.jar")),
+                    delta, "only the changed chunks and the metadata came over the wire");
+            assertTrue(delta < before.length / 2, "far less than the file: " + delta + " of " + before.length);
+            assertArrayEquals(before, Files.readAllBytes(
+                    Layout.backupDir(player, "client", "2.9.0").resolve("mods/a-1.0.jar")));
+            assertEquals("2.9.1", applied(player, "client"));
+        }
+    }
+
+    @Test
     void replacesAndAddsWhatChangedAndBacksUpTheOldFiles(@TempDir Path root) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             Path publisher = root.resolve("publisher");
