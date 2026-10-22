@@ -10,6 +10,8 @@ import io.github.deshark42.modpackupdater.FakeS3;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.log.Log;
+import io.github.deshark42.modpackupdater.model.ChunkTable;
+import io.github.deshark42.modpackupdater.model.Chunking;
 import io.github.deshark42.modpackupdater.model.Layout;
 import io.github.deshark42.modpackupdater.model.Manifest;
 import java.io.ByteArrayOutputStream;
@@ -18,7 +20,11 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -30,9 +36,13 @@ class PublishTest {
     private final Log log = new Log(out, Log.Level.VERBOSE);
 
     private static void write(Path root, String name, String content) throws IOException {
+        write(root, name, content.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void write(Path root, String name, byte[] content) throws IOException {
         Path file = root.resolve(name);
         Files.createDirectories(file.getParent());
-        Files.writeString(file, content, StandardCharsets.UTF_8);
+        Files.write(file, content);
     }
 
     private static void configure(Path workspace, FakeS3 s3) throws IOException {
@@ -50,8 +60,18 @@ class PublishTest {
         return -1;
     }
 
+    /** The chunk table a one-chunk file produces, as the publisher will record it. */
+    private static ChunkTable tableOf(String content) {
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        return new ChunkTable(Chunking.DEFAULT, bytes.length, List.of(Sha256.ofBytes(bytes)));
+    }
+
+    private static String chunkOf(String content) {
+        return Sha256.ofBytes(content.getBytes(StandardCharsets.UTF_8));
+    }
+
     @Test
-    void uploadsEveryFileAndPointsLatestAtTheRelease(@TempDir Path workspace) throws IOException {
+    void uploadsEveryDistinctChunkAndTableAndPointsLatestAtTheRelease(@TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
@@ -60,22 +80,36 @@ class PublishTest {
 
             Publish.run(workspace, "client", "2.9.0", false, log);
 
-            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
-            String blob = "PUT /pack/gtnh/blobs/" + hash.substring(0, 2) + "/" + hash;
+            String chunkA = chunkOf("A");
+            String tableA = tableOf("A").indexId();
             List<String> requests = s3.requests();
-            assertTrue(requests.contains(blob), requests.toString());
-            assertEquals(1, requests.stream().filter(r -> r.equals(blob)).count(),
-                    "two files with the same content are one object");
-            assertTrue(indexOf(requests, blob) < indexOf(requests, "PUT /pack/gtnh/metadata/client/releases/2.9.0.json"));
-            assertTrue(indexOf(requests, "PUT /pack/gtnh/metadata/client/releases/2.9.0.json")
-                    < indexOf(requests, "PUT /pack/gtnh/metadata/client/latest.json"));
-            assertEquals(4, s3.objectCount());
+            String chunkPut = "PUT " + chunkKey(chunkA);
+            String tablePut = "PUT " + indexKey(tableA);
+            assertTrue(requests.contains(chunkPut), requests.toString());
+            assertEquals(1, requests.stream().filter(r -> r.equals(chunkPut)).count(),
+                    "two files with the same content are one chunk");
+            assertEquals(1, requests.stream().filter(r -> r.equals(tablePut)).count(),
+                    "two files with the same content share one chunk table");
+            assertTrue(indexOf(requests, chunkPut) < indexOf(requests, tablePut), "chunks go before chunk tables");
+            assertTrue(indexOf(requests, tablePut) < indexOf(requests, releasePut("2.9.0")),
+                    "chunk tables go before the manifest");
+            assertTrue(indexOf(requests, releasePut("2.9.0")) < indexOf(requests, latestPut()),
+                    "the manifest goes before the latest pointer");
+            assertEquals(6, s3.objectCount(), "2 chunks, 2 chunk tables, the manifest and the pointer");
 
-            Manifest manifest = Manifest.parse(s3.text("/pack/gtnh/metadata/client/releases/2.9.0.json"), "release");
-            assertEquals("2.9.0", manifest.releaseId());
-            assertEquals(List.of("mmc-pack.json", "mods/a.jar", "mods/b.jar"), List.copyOf(manifest.files().keySet()));
-            assertEquals(hash, manifest.files().get("mods/a.jar").hash());
-            assertTrue(s3.text("/pack/gtnh/metadata/client/latest.json").contains("2.9.0"));
+            String release = s3.text(releasePath("2.9.0"));
+            assertTrue(release.contains("\"version\": 2"), release);
+            Manifest manifest = Manifest.parse(release, "release");
+            assertEquals(List.of("mmc-pack.json", "mods/a.jar", "mods/b.jar"),
+                    List.copyOf(manifest.files().keySet()));
+            assertEquals(Sha256.ofBytes("A".getBytes(StandardCharsets.UTF_8)), manifest.files().get("mods/a.jar").hash());
+            assertEquals(tableA, manifest.files().get("mods/a.jar").chunks());
+            assertEquals(tableA, manifest.files().get("mods/b.jar").chunks());
+            ChunkTable stored = ChunkTable.parse(s3.text(indexKey(tableA)), "chunk table");
+            assertEquals(List.of(chunkA), stored.chunks());
+            assertEquals(1, stored.size());
+            assertEquals(Chunking.DEFAULT, stored.chunking());
+            assertTrue(s3.text(latestPath()).contains("2.9.0"));
             assertTrue(printed.toString().contains("3 files"), printed.toString());
         }
     }
@@ -95,9 +129,9 @@ class PublishTest {
             Publish.run(workspace, "client", "2.9.0", false, ticking);
 
             String frames = bar.toString();
-            assertTrue(frames.contains("2/3 blobs"), frames);
+            assertTrue(frames.contains("2/3 chunks"), frames);
             assertTrue(frames.endsWith("\r\u001b[K"), "the bar is erased when the transfer ends: " + frames);
-            assertFalse(frames.contains("3/3 blobs"), "the last file does not draw a bar: " + frames);
+            assertFalse(frames.contains("3/3 chunks"), "the last chunk does not draw a bar: " + frames);
         }
     }
 
@@ -135,7 +169,7 @@ class PublishTest {
     }
 
     @Test
-    void storesEachDistinctFileOnceAcrossReleases(@TempDir Path workspace) throws IOException {
+    void storesEachDistinctChunkOnceAcrossReleases(@TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
@@ -144,11 +178,72 @@ class PublishTest {
             write(workspace, "client/base/mods/b.jar", "B");
             Publish.run(workspace, "client", "2.9.1", false, log);
 
-            long blobWrites = s3.requests().stream().filter(r -> r.startsWith("PUT /pack/gtnh/blobs/")).count();
-            assertEquals(2, blobWrites, s3.requests().toString());
-            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
-            assertNotNull(s3.object("/pack/gtnh/blobs/" + hash.substring(0, 2) + "/" + hash));
-            assertEquals(5, s3.objectCount());
+            List<String> requests = s3.requests();
+            assertEquals(2, requests.stream().filter(r -> r.startsWith("PUT /pack/gtnh/blob/")).count(),
+                    "one chunk per distinct content: " + requests);
+            assertEquals(2, requests.stream().filter(r -> r.startsWith("PUT /pack/gtnh/index/")).count(),
+                    "one chunk table per distinct content: " + requests);
+            assertNotNull(s3.object(chunkKey(chunkOf("A"))));
+            assertEquals(7, s3.objectCount(), "2 chunks, 2 chunk tables, 2 manifests and the pointer");
+        }
+    }
+
+    @Test
+    void uploadsOnlyTheChunksAroundTheChange(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            byte[] before = random(300_000, 21);
+            byte[] after = before.clone();
+            after[150_000] ^= 0x7f;
+            write(workspace, "client/base/mods/a.jar", before);
+            Publish.run(workspace, "client", "2.9.0", false, log);
+            long uploaded = s3.uploadedBytes();
+
+            write(workspace, "client/base/mods/a.jar", after);
+            Publish.run(workspace, "client", "2.9.1", false, log);
+            long delta = s3.uploadedBytes() - uploaded;
+
+            assertTrue(delta > 0, "something was uploaded");
+            assertTrue(delta < before.length / 2,
+                    "only the chunks around the change are uploaded: " + delta + " of " + before.length);
+            ChunkTable first = ChunkTable.parse(s3.text(indexKey(
+                    Manifest.parse(s3.text(releasePath("2.9.0")), "release").files().get("mods/a.jar").chunks())),
+                    "chunk table");
+            ChunkTable second = ChunkTable.parse(s3.text(indexKey(
+                    Manifest.parse(s3.text(releasePath("2.9.1")), "release").files().get("mods/a.jar").chunks())),
+                    "chunk table");
+            Set<String> shared = new HashSet<>(first.chunks());
+            shared.retainAll(second.chunks());
+            assertTrue(shared.size() >= first.chunks().size() - 2,
+                    "the two versions share almost every chunk: " + shared.size() + " of " + first.chunks().size());
+            assertFalse(first.indexId().equals(second.indexId()), "the changed file has its own chunk table");
+        }
+    }
+
+    @Test
+    void sharesChunksAndTablesBetweenTags(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            configure(workspace, s3);
+            write(workspace, "client/base/mods/a.jar", "A");
+            write(workspace, "client-extra/base/config/a.cfg", "A");
+            Publish.run(workspace, "client", "1.0", false, log);
+            int before = s3.requests().size();
+            printed.reset();
+
+            Publish.run(workspace, "client-extra", "1.0", false, log);
+
+            List<String> second = s3.requests().subList(before, s3.requests().size());
+            assertTrue(printed.toString().contains("plan     0 chunks to upload, 1 chunk already there"),
+                    printed.toString());
+            assertFalse(second.stream().anyMatch(request -> request.startsWith("PUT /pack/gtnh/blob/")),
+                    second.toString());
+            assertFalse(second.stream().anyMatch(request -> request.startsWith("PUT /pack/gtnh/index/")),
+                    second.toString());
+            String client = Manifest.parse(s3.text(releasePath("1.0")), "release")
+                    .files().get("mods/a.jar").chunks();
+            String extra = Manifest.parse(s3.text("/pack/gtnh/metadata/client-extra/releases/1.0.json"), "release")
+                    .files().get("config/a.cfg").chunks();
+            assertEquals(client, extra, "the same content under two tags is one chunk table");
         }
     }
 
@@ -184,9 +279,9 @@ class PublishTest {
             Publish.run(workspace, "client", "2.9.1", false, log);
 
             String text = printed.toString();
-            assertTrue(text.contains("plan     1 blob to upload, 2 blobs already there"), text);
-            assertTrue(text.contains("upload   1 blob"), text);
-            assertTrue(text.contains("skip     2 blobs"), text);
+            assertTrue(text.contains("plan     1 chunk to upload, 2 chunks already there"), text);
+            assertTrue(text.contains("upload   1 chunk"), text);
+            assertTrue(text.contains("skip     2 chunks"), text);
         }
     }
 
@@ -200,7 +295,7 @@ class PublishTest {
     }
 
     @Test
-    void takesOverlayFilesAndPrefersThemOverBase(@TempDir Path workspace) throws IOException {
+    void chunksTheOverlayNotTheFileItReplaces(@TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "base");
@@ -210,12 +305,12 @@ class PublishTest {
 
             Publish.run(workspace, "client", "2.9.0", false, log);
 
-            Manifest manifest = Manifest.parse(s3.text("/pack/gtnh/metadata/client/releases/2.9.0.json"), "release");
+            Manifest manifest = Manifest.parse(s3.text(releasePath("2.9.0")), "release");
             assertEquals(List.of("config/mine.json", "mods/a.jar", "mods/b.jar"),
                     List.copyOf(manifest.files().keySet()));
-            String hash = Sha256.ofFile(workspace.resolve("client/overlay/mods/a.jar"));
-            assertEquals(hash, manifest.files().get("mods/a.jar").hash(), "overlay wins the same path");
-            assertEquals("overlay", new String(s3.object(blobKey(hash)), StandardCharsets.UTF_8));
+            assertEquals(Sha256.ofBytes("overlay".getBytes(StandardCharsets.UTF_8)),
+                    manifest.files().get("mods/a.jar").hash(), "overlay wins the same path");
+            assertEquals("overlay", new String(s3.object(chunkKey(chunkOf("overlay"))), StandardCharsets.UTF_8));
             String text = printed.toString();
             assertTrue(text.contains("replace  mods/a.jar"), text);
             assertTrue(text.contains("add      config/mine.json"), text);
@@ -235,7 +330,7 @@ class PublishTest {
 
             Publish.run(workspace, "client", "2.9.0", false, log);
 
-            Manifest manifest = Manifest.parse(s3.text("/pack/gtnh/metadata/client/releases/2.9.0.json"), "release");
+            Manifest manifest = Manifest.parse(s3.text(releasePath("2.9.0")), "release");
             assertEquals(List.of("mods/a.jar"), List.copyOf(manifest.files().keySet()));
             String text = printed.toString();
             assertTrue(text.contains("remove   3 files"), text);
@@ -256,10 +351,10 @@ class PublishTest {
 
             Publish.run(workspace, "client", "2.9.0", false, log);
 
-            Manifest manifest = Manifest.parse(s3.text("/pack/gtnh/metadata/client/releases/2.9.0.json"), "release");
+            Manifest manifest = Manifest.parse(s3.text(releasePath("2.9.0")), "release");
             assertEquals(List.of("mods/example-mod.jar", "mods/other.jar"),
                     List.copyOf(manifest.files().keySet()));
-            assertEquals(Sha256.ofFile(workspace.resolve("client/overlay/mods/example-mod.jar")),
+            assertEquals(Sha256.ofBytes("mine".getBytes(StandardCharsets.UTF_8)),
                     manifest.files().get("mods/example-mod.jar").hash());
         }
     }
@@ -318,74 +413,78 @@ class PublishTest {
             assertTrue(lines.get(inputs - 1).isEmpty(), "a stage is set off by a blank line: " + lines);
             assertTrue(lines.get(done + 1).startsWith("  contents  "), lines.toString());
             assertTrue(lines.get(lines.size() - 1).startsWith("  log       "), lines.toString());
+            assertTrue(lines.stream().anyMatch(line -> line.startsWith("  chunk    ")), lines.toString());
+            assertTrue(lines.stream().anyMatch(line -> line.startsWith("  upload   ")), lines.toString());
         }
     }
 
-
     @Test
-    void asksTheBucketOnlyAboutBlobsTheCacheDoesNotKnow(@TempDir Path workspace) throws IOException {
+    void asksTheBucketOnlyAboutObjectsTheCacheDoesNotKnow(@TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
             Publish.run(workspace, "client", "2.9.0", false, log);
-            String hashA = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
+            String chunkA = chunkOf("A");
+            String tableA = tableOf("A").indexId();
             int before = s3.requests().size();
 
             write(workspace, "client/base/mods/b.jar", "B");
             Publish.run(workspace, "client", "2.9.1", false, log);
             List<String> second = s3.requests().subList(before, s3.requests().size());
 
-            assertFalse(second.contains("HEAD " + blobKey(hashA)), second.toString());
-            String hashB = Sha256.ofFile(workspace.resolve("client/base/mods/b.jar"));
-            assertEquals(1, second.stream().filter(request -> request.equals("HEAD " + blobKey(hashB))).count(),
+            assertFalse(second.contains("HEAD " + chunkKey(chunkA)), second.toString());
+            assertFalse(second.contains("HEAD " + indexKey(tableA)), second.toString());
+            assertEquals(1, second.stream().filter(request -> request.equals("HEAD " + chunkKey(chunkOf("B")))).count(),
+                    second.toString());
+            assertEquals(1, second.stream().filter(request -> request.equals("HEAD " + indexKey(tableOf("B").indexId()))).count(),
                     second.toString());
         }
     }
 
     @Test
-    void remembersBlobsItFoundInTheBucket(@TempDir Path workspace) throws IOException {
+    void remembersObjectsItFoundInTheBucket(@TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
-            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
-            s3.put(blobKey(hash), "A".getBytes(StandardCharsets.UTF_8));
+            String chunk = chunkOf("A");
+            s3.put(chunkKey(chunk), "A".getBytes(StandardCharsets.UTF_8));
 
             Publish.run(workspace, "client", "2.9.0", false, log);
 
-            assertTrue(cache(workspace).contains(hash), cache(workspace));
-            assertFalse(s3.requests().stream().anyMatch(request -> request.startsWith("PUT " + blobKey(hash))),
+            assertTrue(cache(workspace).contains(chunk), cache(workspace));
+            assertFalse(s3.requests().stream().anyMatch(request -> request.startsWith("PUT " + chunkKey(chunk))),
                     s3.requests().toString());
-            assertTrue(printed.toString().contains("skip     1 blob"), printed.toString());
+            assertTrue(printed.toString().contains("skip     1 chunk"), printed.toString());
         }
     }
 
     @Test
-    void keepsConfirmedBlobsWhenALaterStepFails(@TempDir Path workspace) throws IOException {
+    void keepsConfirmedChunksWhenALaterStepFails(@TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
-            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
-            s3.put(blobKey(hash), "A".getBytes(StandardCharsets.UTF_8));
-            s3.failPut("/pack/gtnh/metadata/client/releases/2.9.0.json");
+            String chunk = chunkOf("A");
+            s3.put(chunkKey(chunk), "A".getBytes(StandardCharsets.UTF_8));
+            s3.failPut(releasePath("2.9.0"));
 
             assertThrows(UserError.class, () -> Publish.run(workspace, "client", "2.9.0", false, log));
 
-            assertTrue(cache(workspace).contains(hash), cache(workspace));
+            assertTrue(cache(workspace).contains(chunk), cache(workspace));
         }
     }
 
     @Test
-    void keepsUploadedBlobsWhenALaterStepFails(@TempDir Path workspace) throws IOException {
+    void keepsUploadedChunksWhenALaterStepFails(@TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
-            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
-            s3.failPut("/pack/gtnh/metadata/client/releases/2.9.0.json");
+            String chunk = chunkOf("A");
+            s3.failPut(releasePath("2.9.0"));
 
             assertThrows(UserError.class, () -> Publish.run(workspace, "client", "2.9.0", false, log));
 
-            assertNotNull(s3.object(blobKey(hash)));
-            assertTrue(cache(workspace).contains(hash), cache(workspace));
+            assertNotNull(s3.object(chunkKey(chunk)));
+            assertTrue(cache(workspace).contains(chunk), cache(workspace));
         }
     }
 
@@ -394,16 +493,17 @@ class PublishTest {
         try (FakeS3 s3 = new FakeS3()) {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
-            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
-            s3.failPut(blobKey(hash));
+            String chunk = chunkOf("A");
+            s3.failPut(chunkKey(chunk));
 
             assertThrows(UserError.class, () -> Publish.run(workspace, "client", "2.9.0", false, log));
-            assertFalse(cache(workspace).contains(hash), cache(workspace));
+            assertFalse(cache(workspace).contains(chunk), cache(workspace));
 
             s3.clearFailures();
+            printed.reset();
             Publish.run(workspace, "client", "2.9.0", false, log);
-            assertTrue(cache(workspace).contains(hash), cache(workspace));
-            assertNotNull(s3.object(blobKey(hash)));
+            assertTrue(cache(workspace).contains(chunk), cache(workspace));
+            assertNotNull(s3.object(chunkKey(chunk)));
         }
     }
 
@@ -413,7 +513,7 @@ class PublishTest {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
             Publish.run(workspace, "client", "2.9.0", false, log);
-            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
+            String chunk = chunkOf("A");
             int before = s3.requests().size();
 
             write(workspace, ".modpack-updater/config.json", "{\"endpoint\": \"" + s3.url()
@@ -422,8 +522,8 @@ class PublishTest {
             Publish.run(workspace, "client", "2.9.1", false, log);
             List<String> second = s3.requests().subList(before, s3.requests().size());
 
-            String otherBlob = "/other/gtnh/blobs/" + hash.substring(0, 2) + "/" + hash;
-            assertTrue(second.contains("HEAD " + otherBlob), second.toString());
+            String otherChunk = "/other/gtnh/blob/" + chunk.substring(0, 2) + "/" + chunk;
+            assertTrue(second.contains("HEAD " + otherChunk), second.toString());
         }
     }
 
@@ -433,20 +533,20 @@ class PublishTest {
             configure(workspace, s3);
             write(workspace, "client/base/mods/a.jar", "A");
             Publish.run(workspace, "client", "2.9.0", false, log);
-            String hash = Sha256.ofFile(workspace.resolve("client/base/mods/a.jar"));
+            String chunk = chunkOf("A");
             Files.writeString(Layout.knownBlobsFile(workspace), "not a cache\n", StandardCharsets.UTF_8);
             int before = s3.requests().size();
 
             Publish.run(workspace, "client", "2.9.1", false, log);
             List<String> second = s3.requests().subList(before, s3.requests().size());
 
-            assertTrue(second.contains("HEAD " + blobKey(hash)), second.toString());
-            assertTrue(cache(workspace).contains(hash), cache(workspace));
+            assertTrue(second.contains("HEAD " + chunkKey(chunk)), second.toString());
+            assertTrue(cache(workspace).contains(chunk), cache(workspace));
         }
     }
 
     @Test
-    void remembersEveryBlobUploadedInParallel(@TempDir Path workspace) throws IOException {
+    void remembersEveryObjectUploadedInParallel(@TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             configure(workspace, s3);
             for (int i = 0; i < 8; i++) {
@@ -457,10 +557,32 @@ class PublishTest {
 
             String cache = cache(workspace);
             for (int i = 0; i < 8; i++) {
-                String hash = Sha256.ofFile(workspace.resolve("client/base/mods/" + i + ".jar"));
-                assertTrue(cache.contains(hash), cache);
+                assertTrue(cache.contains(chunkOf("content-" + i)), cache);
+                assertTrue(cache.contains(tableOf("content-" + i).indexId()), cache);
             }
         }
+    }
+
+    private static byte[] random(int length, long seed) {
+        byte[] bytes = new byte[length];
+        new Random(seed).nextBytes(bytes);
+        return bytes;
+    }
+
+    private static String releasePath(String releaseId) {
+        return "/pack/gtnh/metadata/client/releases/" + releaseId + ".json";
+    }
+
+    private static String releasePut(String releaseId) {
+        return "PUT " + releasePath(releaseId);
+    }
+
+    private static String latestPath() {
+        return "/pack/gtnh/metadata/client/latest.json";
+    }
+
+    private static String latestPut() {
+        return "PUT " + latestPath();
     }
 
     private static String cache(Path workspace) throws IOException {
@@ -468,8 +590,12 @@ class PublishTest {
         return Files.exists(file) ? Files.readString(file, StandardCharsets.UTF_8) : "";
     }
 
-    private static String blobKey(String hash) {
-        return "/pack/gtnh/blobs/" + hash.substring(0, 2) + "/" + hash;
+    private static String chunkKey(String hash) {
+        return "/pack/gtnh/blob/" + hash.substring(0, 2) + "/" + hash;
+    }
+
+    private static String indexKey(String id) {
+        return "/pack/gtnh/index/" + id.substring(0, 2) + "/" + id;
     }
 
     private static String line(String text, String marker) {

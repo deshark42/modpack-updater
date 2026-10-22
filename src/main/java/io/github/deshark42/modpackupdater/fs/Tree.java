@@ -1,7 +1,6 @@
 package io.github.deshark42.modpackupdater.fs;
 
 import io.github.deshark42.modpackupdater.UserError;
-import io.github.deshark42.modpackupdater.model.FileEntry;
 import java.io.IOException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -11,23 +10,23 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Map;
 import java.util.TreeMap;
 
-/** Walks a directory and records every regular file as a path-relative entry. */
+/** Walks a directory and records every regular file with its size, reading none of its content. */
 public final class Tree {
 
     private Tree() {
     }
 
-    public static Map<String, FileEntry> scan(Path root) {
+    public static Map<String, Long> list(Path root) {
         if (!Files.isDirectory(root)) {
             throw new UserError("no such directory: " + root);
         }
-        Map<String, FileEntry> files = new TreeMap<>();
+        Map<String, Long> files = new TreeMap<>();
         try {
             Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
                 @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                     if (attrs.isRegularFile()) {
-                        files.put(relative(root, file), new FileEntry(Sha256.ofFile(file), attrs.size()));
+                        files.put(relative(root, file), attrs.size());
                     }
                     return FileVisitResult.CONTINUE;
                 }

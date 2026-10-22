@@ -15,6 +15,7 @@ public final class Layout {
     public static final String BASE = "base";
     public static final String OVERLAY = "overlay";
     public static final String REMOVE = "remove.txt";
+    public static final String TMP = "tmp";
 
     private Layout() {
     }
@@ -29,6 +30,11 @@ public final class Layout {
 
     public static Path logsDir(Path workspaceRoot) {
         return stateDir(workspaceRoot).resolve(LOGS);
+    }
+
+    /** Where an update stages the chunks it downloads before assembling them into files. */
+    public static Path tempDir(Path workspaceRoot) {
+        return stateDir(workspaceRoot).resolve(TMP);
     }
 
     /** The append-only record of blobs this workspace has confirmed in the bucket. */

@@ -14,11 +14,12 @@ class PlanTest {
 
     private static final String A = "a".repeat(64);
     private static final String B = "b".repeat(64);
+    private static final String CHUNKS = "c".repeat(64);
 
     private static Manifest manifest(String... pathsAndHashes) {
         Map<String, FileEntry> files = new LinkedHashMap<>();
         for (int i = 0; i < pathsAndHashes.length; i += 2) {
-            files.put(pathsAndHashes[i], new FileEntry(pathsAndHashes[i + 1], 10));
+            files.put(pathsAndHashes[i], new FileEntry(pathsAndHashes[i + 1], 10, CHUNKS));
         }
         return new Manifest("client", "2.9.0-RC1", Instant.parse("2026-10-14T01:30:00Z"), Manifest.SHA256, files);
     }

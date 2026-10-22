@@ -1,30 +1,16 @@
 package io.github.deshark42.modpackupdater.fs;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
-/** Content hashes of tracked files. */
+/** Content hashes of chunks and of whole files. */
 public final class Sha256 {
-
-    private static final int BUFFER_SIZE = 1 << 16;
 
     private Sha256() {
     }
 
-    public static String ofFile(Path file) throws IOException {
-        MessageDigest digest = newDigest();
-        try (InputStream in = Files.newInputStream(file)) {
-            byte[] buffer = new byte[BUFFER_SIZE];
-            int read;
-            while ((read = in.read(buffer)) >= 0) {
-                digest.update(buffer, 0, read);
-            }
-        }
-        return hex(digest.digest());
+    public static String ofBytes(byte[] content) {
+        return hex(newDigest().digest(content));
     }
 
     public static String hex(byte[] bytes) {

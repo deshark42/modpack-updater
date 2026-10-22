@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** A minimal object store for tests: keys are raw request paths, objects live in a map. */
 public final class FakeS3 implements AutoCloseable {
@@ -18,6 +19,8 @@ public final class FakeS3 implements AutoCloseable {
     private final HttpServer server;
     private final Map<String, byte[]> objects = new ConcurrentHashMap<>();
     private final List<String> requests = Collections.synchronizedList(new ArrayList<>());
+    private final AtomicLong uploaded = new AtomicLong();
+    private final AtomicLong downloaded = new AtomicLong();
     private volatile String failPutPath;
 
     public FakeS3() throws IOException {
@@ -38,6 +41,16 @@ public final class FakeS3 implements AutoCloseable {
 
     public int objectCount() {
         return objects.size();
+    }
+
+    /** The bytes the store has received over PUT, so a test can assert what a run had to send. */
+    public long uploadedBytes() {
+        return uploaded.get();
+    }
+
+    /** The bytes the store has served over GET, so a test can assert what a run had to fetch. */
+    public long downloadedBytes() {
+        return downloaded.get();
     }
 
     public byte[] object(String key) {
@@ -70,6 +83,7 @@ public final class FakeS3 implements AutoCloseable {
         byte[] content = objects.get(path);
         if ("PUT".equals(method)) {
             byte[] body = exchange.getRequestBody().readAllBytes();
+            uploaded.addAndGet(body.length);
             if (path.equals(failPutPath)) {
                 byte[] message = "InjectedFailure".getBytes(StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(500, message.length);
@@ -84,6 +98,7 @@ public final class FakeS3 implements AutoCloseable {
             if ("HEAD".equals(method)) {
                 exchange.sendResponseHeaders(200, -1);
             } else {
+                downloaded.addAndGet(content.length);
                 exchange.sendResponseHeaders(200, content.length);
                 try (OutputStream body = exchange.getResponseBody()) {
                     body.write(content);

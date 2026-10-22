@@ -75,17 +75,15 @@ class S3StoreTest {
     }
 
     @Test
-    void uploadsHashedBlobsAndReadsThemBack(@TempDir Path dir) throws IOException {
-        Path file = dir.resolve("mods/a.jar");
-        Files.createDirectories(file.getParent());
-        Files.writeString(file, "content");
+    void uploadsHashedBytesAndReadsThemBack(@TempDir Path dir) throws IOException {
+        byte[] content = "content".getBytes(StandardCharsets.UTF_8);
         S3Store store = new S3Store(config(true, false));
 
-        String relative = "blobs/" + Sha256.ofFile(file).substring(0, 2) + "/" + Sha256.ofFile(file);
-        store.putFile(relative, file);
+        String relative = "blob/" + Sha256.ofBytes(content).substring(0, 2) + "/" + Sha256.ofBytes(content);
+        store.putBytes(relative, content);
 
         assertEquals("PUT /pack/gtnh/" + relative, requests.poll());
-        assertEquals(Sha256.ofFile(file), lastHeaders.get("x-amz-content-sha256"));
+        assertEquals(Sha256.ofBytes(content), lastHeaders.get("x-amz-content-sha256"));
         assertTrue(lastHeaders.get("authorization").startsWith("AWS4-HMAC-SHA256 Credential=AK/"));
         assertTrue(lastHeaders.get("authorization").contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
         assertArrayEquals("content".getBytes(StandardCharsets.UTF_8), objects.get("/pack/gtnh/" + relative));

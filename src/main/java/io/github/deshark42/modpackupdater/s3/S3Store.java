@@ -132,21 +132,6 @@ public final class S3Store {
         }
     }
 
-    public void putFile(String relative, Path file) {
-        String objectKey = key(relative);
-        String payloadHash;
-        try {
-            payloadHash = Sha256.ofFile(file);
-        } catch (IOException e) {
-            throw new UserError("cannot read " + file + ": " + e.getMessage(), e);
-        }
-        HttpRequest request = request("PUT", objectKey, payloadHash, fileBody(file));
-        HttpResponse<String> response = send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        if (!isSuccess(response)) {
-            throw failure("write", objectKey, response.statusCode(), response.body());
-        }
-    }
-
     public void putBytes(String relative, byte[] content) {
         String objectKey = key(relative);
         HttpRequest request = request("PUT", objectKey, Sha256.hex(digest(content)),
@@ -154,14 +139,6 @@ public final class S3Store {
         HttpResponse<String> response = send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (!isSuccess(response)) {
             throw failure("write", objectKey, response.statusCode(), response.body());
-        }
-    }
-
-    private static HttpRequest.BodyPublisher fileBody(Path file) {
-        try {
-            return HttpRequest.BodyPublishers.ofFile(file);
-        } catch (IOException e) {
-            throw new UserError("cannot read " + file + ": " + e.getMessage(), e);
         }
     }
 

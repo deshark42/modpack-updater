@@ -14,11 +14,14 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 
-/** The complete list of tracked files for one release of one tag. */
+/**
+ * The complete list of tracked files for one release of one tag. Version 2 records, per file, the
+ * id of the chunk table that splits it as well as the whole-content hash.
+ */
 public record Manifest(String tag, String releaseId, Instant publishedAt, String hashAlgorithm,
                        Map<String, FileEntry> files) {
 
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
     public static final String SHA256 = "sha256";
 
     private static final Pattern SHA256_HEX = Pattern.compile("[0-9a-f]{64}");
@@ -49,6 +52,12 @@ public record Manifest(String tag, String releaseId, Instant publishedAt, String
         }
     }
 
+    public static void requireChunks(String chunks) {
+        if (chunks == null || !SHA256_HEX.matcher(chunks).matches()) {
+            throw new UserError("not a chunk table id: " + chunks);
+        }
+    }
+
     public static Manifest read(Path file) {
         return parse(AtomicFile.read(file), file.toString());
     }
@@ -67,9 +76,10 @@ public record Manifest(String tag, String releaseId, Instant publishedAt, String
         for (Map.Entry<String, Object> entry : Fields.object(object, "files", what).entrySet()) {
             String path = SafePath.require(entry.getKey());
             Map<String, Object> value = Json.asObject(entry.getValue(), what + ": files[\"" + path + "\"]");
-            String hash = Fields.string(value, "hash", what + ": files[\"" + path + "\"]");
-            requireHash(hash);
-            files.put(path, new FileEntry(hash, Fields.longValue(value, "size", what + ": files[\"" + path + "\"]")));
+            String entryWhat = what + ": files[\"" + path + "\"]";
+            String hash = Fields.string(value, "hash", entryWhat);
+            String chunks = Fields.string(value, "chunks", entryWhat);
+            files.put(path, new FileEntry(hash, Fields.longValue(value, "size", entryWhat), chunks));
         }
         String publishedAt = Fields.string(object, "published_at", what);
         return new Manifest(
@@ -86,6 +96,7 @@ public record Manifest(String tag, String releaseId, Instant publishedAt, String
             Map<String, Object> value = new LinkedHashMap<>();
             value.put("hash", entry.getValue().hash());
             value.put("size", entry.getValue().size());
+            value.put("chunks", entry.getValue().chunks());
             filesOut.put(entry.getKey(), value);
         }
         Map<String, Object> out = new LinkedHashMap<>();

@@ -25,8 +25,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * The blobs a workspace has already confirmed in the bucket, kept in one local append-only JSON
- * Lines file.
+ * The objects a workspace has already confirmed in the bucket (chunks and chunk tables alike),
+ * kept in one local append-only JSON Lines file.
  *
  * <p>Only confirmed objects are written: a hash in the cache may be skipped without asking the
  * store, and a hash missing from it is merely unknown, never absent. The cache can be deleted at
@@ -96,15 +96,22 @@ public final class BlobCache {
                 log, known, !usable);
     }
 
-    /**
-     * Whether {@code hash} is in the bucket, answering from the cache and asking the store only on
-     * a miss. A confirmed object is remembered before this returns.
-     */
-    public boolean exists(S3Store store, String hash) {
+    /** Whether the chunk with this hash is in the bucket, asking the store only on a cache miss. */
+    public boolean chunkExists(S3Store store, String hash) {
+        return exists(store, ObjectKeys.blob(hash), hash);
+    }
+
+    /** Whether the chunk table with this id is in the bucket, asking the store only on a cache miss. */
+    public boolean indexExists(S3Store store, String hash) {
+        return exists(store, ObjectKeys.index(hash), hash);
+    }
+
+    /** Answers from the cache and asks the store only on a miss; a confirmed object is remembered. */
+    private boolean exists(S3Store store, String key, String hash) {
         if (known.contains(hash)) {
             return true;
         }
-        if (!store.exists(ObjectKeys.blob(hash))) {
+        if (!store.exists(key)) {
             return false;
         }
         remember(hash);

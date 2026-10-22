@@ -16,15 +16,17 @@ import org.junit.jupiter.api.io.TempDir;
 class ManifestTest {
 
     private static final String HASH = "a".repeat(64);
+    private static final String CHUNKS = "c".repeat(64);
 
     private static String manifest(String files) {
-        return "{\"version\": 1, \"tag\": \"client\", \"release_id\": \"2.9.0-RC1\","
+        return "{\"version\": 2, \"tag\": \"client\", \"release_id\": \"2.9.0-RC1\","
                 + " \"published_at\": \"2026-10-14T01:30:00Z\", \"hash_algorithm\": \"sha256\","
                 + " \"files\": {" + files + "}}";
     }
 
     private static String entry(String path, String hash, long size) {
-        return "\"" + path.replace("\\", "\\\\") + "\": {\"hash\": \"" + hash + "\", \"size\": " + size + "}";
+        return "\"" + path.replace("\\", "\\\\") + "\": {\"hash\": \"" + hash + "\", \"size\": " + size
+                + ", \"chunks\": \"" + CHUNKS + "\"}";
     }
 
     @Test
@@ -34,7 +36,7 @@ class ManifestTest {
         assertEquals("2.9.0-RC1", manifest.releaseId());
         assertEquals(Instant.parse("2026-10-14T01:30:00Z"), manifest.publishedAt());
         assertEquals(Manifest.SHA256, manifest.hashAlgorithm());
-        assertEquals(new FileEntry(HASH, 12), manifest.files().get("mods/x.jar"));
+        assertEquals(new FileEntry(HASH, 12, CHUNKS), manifest.files().get("mods/x.jar"));
         assertEquals(12, manifest.totalSize());
     }
 
@@ -42,8 +44,9 @@ class ManifestTest {
     void roundTripsThroughItsOwnJson() {
         Manifest manifest = Manifest.parse(manifest(entry("mods/x.jar", HASH, 12)), "m.json");
         assertEquals(manifest, Manifest.parse(manifest.toJson(), "round trip"));
-        assertTrue(manifest.toJson().contains("\"version\": 1"));
+        assertTrue(manifest.toJson().contains("\"version\": 2"));
         assertTrue(manifest.toJson().contains("\"hash_algorithm\": \"sha256\""));
+        assertTrue(manifest.toJson().contains("\"chunks\": \"" + CHUNKS + "\""));
     }
 
     @Test
@@ -55,18 +58,34 @@ class ManifestTest {
     }
 
     @Test
-    void rejectsUnknownVersion() {
+    void rejectsTheOlderVersion() {
         UserError error = assertThrows(UserError.class, () -> Manifest.parse(
-                "{\"version\": 2, \"tag\": \"client\", \"release_id\": \"r\","
-                        + " \"published_at\": \"2026-10-14T01:30:00Z\", \"hash_algorithm\": \"sha256\", \"files\": {}}",
+                "{\"version\": 1, \"tag\": \"client\", \"release_id\": \"r\","
+                        + " \"published_at\": \"2026-10-14T01:30:00Z\", \"hash_algorithm\": \"sha256\","
+                        + " \"files\": {}}",
                 "m.json"));
-        assertTrue(error.getMessage().contains("version 2"));
+        assertTrue(error.getMessage().contains("version 1"), error.getMessage());
+    }
+
+    @Test
+    void rejectsAnEntryWithoutAChunkTable() {
+        UserError error = assertThrows(UserError.class, () -> Manifest.parse(
+                manifest("\"mods/x.jar\": {\"hash\": \"" + HASH + "\", \"size\": 1}"), "m.json"));
+        assertTrue(error.getMessage().contains("chunks"), error.getMessage());
+    }
+
+    @Test
+    void rejectsMalformedChunkTableId() {
+        UserError error = assertThrows(UserError.class, () -> Manifest.parse(
+                manifest("\"mods/x.jar\": {\"hash\": \"" + HASH + "\", \"size\": 1, \"chunks\": \"abc\"}"),
+                "m.json"));
+        assertTrue(error.getMessage().contains("chunk table id"), error.getMessage());
     }
 
     @Test
     void rejectsUnknownAlgorithm() {
         UserError error = assertThrows(UserError.class, () -> Manifest.parse(
-                "{\"version\": 1, \"tag\": \"client\", \"release_id\": \"r\","
+                "{\"version\": 2, \"tag\": \"client\", \"release_id\": \"r\","
                         + " \"published_at\": \"2026-10-14T01:30:00Z\", \"hash_algorithm\": \"md5\", \"files\": {}}",
                 "m.json"));
         assertTrue(error.getMessage().contains("md5"));
