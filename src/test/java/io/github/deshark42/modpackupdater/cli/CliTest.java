@@ -56,8 +56,8 @@ class CliTest {
         assertTrue(printedErrors.toString().contains("needs --tag"), printedErrors.toString());
         assertEquals(Cli.USAGE_ERROR, run(cwd, "publish", "--tag", "client"));
         assertTrue(printedErrors.toString().contains("needs --id"), printedErrors.toString());
-        assertEquals(Cli.USAGE_ERROR, run(cwd, "update", "--tag", "client", "--id", "1.0"));
-        assertTrue(printedErrors.toString().contains("does not take --id"), printedErrors.toString());
+        assertEquals(Cli.USAGE_ERROR, run(cwd, "init", "--tag", "client", "--id", "1.0"));
+        assertTrue(printedErrors.toString().contains("init does not take --id"), printedErrors.toString());
         assertEquals(Cli.USAGE_ERROR, run(cwd, "update", "--tag"));
         assertTrue(printedErrors.toString().contains("needs a value"), printedErrors.toString());
     }
@@ -121,6 +121,30 @@ class CliTest {
                     printedErrors.toString());
 
             assertEquals("A", Files.readString(player.resolve("mods/a.jar")));
+            assertTrue(printed.toString().contains("is now at 2.9.0"), printed.toString());
+        }
+    }
+
+    @Test
+    void updateTakesTheReleaseIdToApplyThroughTheCli(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            configure(publisher, s3);
+            write(publisher, "client/base/mods/a.jar", "A");
+            assertEquals(Cli.OK, run(publisher, "publish", "--tag", "client", "--id", "2.9.0"),
+                    printedErrors.toString());
+            write(publisher, "client/base/mods/a.jar", "A2");
+            assertEquals(Cli.OK, run(publisher, "publish", "--tag", "client", "--id", "2.9.1"),
+                    printedErrors.toString());
+
+            Path player = root.resolve("player");
+            configure(player, s3);
+            printed.reset();
+            assertEquals(Cli.OK, run(root, "update", "--tag", "client", "--id", "2.9.0",
+                    "--workspace", player.toString()), printedErrors.toString());
+
+            assertEquals("A", Files.readString(player.resolve("mods/a.jar")),
+                    "the named release, not the latest one, was applied");
             assertTrue(printed.toString().contains("is now at 2.9.0"), printed.toString());
         }
     }

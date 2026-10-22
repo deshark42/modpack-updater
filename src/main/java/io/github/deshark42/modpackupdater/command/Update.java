@@ -44,9 +44,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Update one tag to the release the bucket says is latest: diff the applied manifest against the
- * target one, move the files that change out of the way, fetch only the chunks the workspace does
- * not already have, then assemble the new files and record the new state.
+ * Update one tag to the release the bucket says is latest, or to the one named on the command line:
+ * diff the applied manifest against the target one, move the files that change out of the way, fetch
+ * only the chunks the workspace does not already have, then assemble the new files and record the new
+ * state.
  *
  * <p>The chunk tables say how each target file is split; splitting the copies the previous release
  * left in {@code backup/} with the same parameters finds the chunks already on disk, so a changed
@@ -61,17 +62,27 @@ public final class Update {
     private Update() {
     }
 
-    public static void run(Path workspace, String tag, boolean dryRun, Log log) {
+    public static void run(Path workspace, String tag, String releaseId, boolean dryRun, Log log) {
         Names.requireTag(tag);
+        if (releaseId != null) {
+            Names.requireReleaseId(releaseId);
+        }
         log.headline("update " + tag);
         log.phase("plan");
         // a dry run writes nothing at all, not even the defaults this file is missing
         Config config = dryRun ? Config.load(workspace) : Workspace.load(workspace, log);
         S3Store store = new S3Store(config);
 
-        String latestKey = ObjectKeys.latest(tag);
-        Pointer latest = Pointer.parse(new String(store.getBytes(latestKey), StandardCharsets.UTF_8),
-                store.key(latestKey));
+        // an explicit release id bypasses latest.json entirely, so a pinned update works even while
+        // the pointer is missing or names a release the caller does not want
+        String targetId = releaseId;
+        if (targetId == null) {
+            String latestKey = ObjectKeys.latest(tag);
+            Pointer latest = Pointer.parse(new String(store.getBytes(latestKey), StandardCharsets.UTF_8),
+                    store.key(latestKey));
+            targetId = latest.releaseId();
+        }
+        String verb = releaseId == null ? "latest" : "release";
 
         String applied = null;
         Manifest local = null;
@@ -86,18 +97,18 @@ public final class Update {
             local = Manifest.read(appliedManifest);
         }
 
-        if (latest.releaseId().equals(applied)) {
-            log.step("latest", tag + " is already at " + applied);
+        if (targetId.equals(applied)) {
+            log.step(verb, tag + " is already at " + applied);
             log.done(tag + " is already at " + applied);
             log.summary("version", applied + ", unchanged");
             return;
         }
 
-        String targetKey = ObjectKeys.release(tag, latest.releaseId());
+        String targetKey = ObjectKeys.release(tag, targetId);
         Manifest target = Manifest.parse(new String(store.getBytes(targetKey), StandardCharsets.UTF_8),
                 store.key(targetKey));
         Plan plan = Plan.between(local, target);
-        log.step("latest", applied == null
+        log.step(verb, applied == null
                 ? tag + " -> " + target.releaseId()
                 : tag + " " + applied + " -> " + target.releaseId(),
                 applied == null ? "first update of this tag" : "");

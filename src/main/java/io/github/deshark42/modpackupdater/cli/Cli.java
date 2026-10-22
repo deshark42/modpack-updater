@@ -19,9 +19,10 @@ public final class Cli {
 
     private static final String USAGE = String.join(System.lineSeparator(),
             "usage: modpack-updater publish --tag <tag> --id <release-id> [options]",
-            "       modpack-updater update --tag <tag> [options]",
+            "       modpack-updater update --tag <tag> [--id <release-id>] [options]",
             "       modpack-updater init [--tag <tag>] [options]",
             "options: --workspace <dir>   work in this directory instead of the current one",
+            "         --id <release-id>   update: apply this release instead of the latest one",
             "         --cache-max-age-days <days>",
             "                             how long the local blob cache stays usable (default "
                     + Publish.DEFAULT_CACHE_MAX_AGE_DAYS + ")",
@@ -95,13 +96,10 @@ public final class Cli {
                     if (tag == null) {
                         return usage(err, "update needs --tag <tag>");
                     }
-                    if (options.containsKey("id")) {
-                        return usage(err, "update does not take --id");
-                    }
                     if (options.containsKey("cache-max-age-days")) {
                         return usage(err, "update does not take --cache-max-age-days");
                     }
-                    Update.run(workspace, tag, dryRun, log);
+                    Update.run(workspace, tag, options.get("id"), dryRun, log);
                     return OK;
                 }
                 case "init" -> {

@@ -202,7 +202,7 @@ class UpdateTest {
             configure(player, s3);
             printed.reset();
 
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
 
             assertArrayEquals(jar, Files.readAllBytes(player.resolve("mods/a.jar")));
             assertEquals("L", Files.readString(player.resolve("mods/b.jar")));
@@ -231,7 +231,7 @@ class UpdateTest {
                     s3.downloadedBytes(), "a first update fetches every distinct chunk once");
 
             printed.reset();
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             assertTrue(printed.toString().contains("already at 2.9.0"), printed.toString());
             assertTrue(printed.toString().contains("  version   2.9.0, unchanged"), printed.toString());
         }
@@ -258,12 +258,12 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", before));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             long already = s3.downloadedBytes();
 
             publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", after));
             printed.reset();
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             long delta = s3.downloadedBytes() - already;
 
             assertArrayEquals(after, Files.readAllBytes(player.resolve("mods/a.jar")));
@@ -296,12 +296,12 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", original, "mods/b.jar", other));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             long already = s3.downloadedBytes();
 
             publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", changed, "mods/b.jar", original));
             printed.reset();
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             long delta = s3.downloadedBytes() - already;
 
             assertArrayEquals(changed, Files.readAllBytes(player.resolve("mods/a.jar")));
@@ -338,12 +338,12 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("mods/a-1.0.jar", before));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             long already = s3.downloadedBytes();
 
             publish(publisher, "client", "2.9.1", Map.of("mods/a-1.1.jar", after));
             printed.reset();
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             long delta = s3.downloadedBytes() - already;
 
             assertArrayEquals(after, Files.readAllBytes(player.resolve("mods/a-1.1.jar")));
@@ -373,13 +373,13 @@ class UpdateTest {
                     "mods/a.jar", bytes("A"), "mods/b.jar", bytes("B"), "config/x.cfg", bytes("X")));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             FileTime untouched = Files.getLastModifiedTime(player.resolve("config/x.cfg"));
 
             publish(publisher, "client", "2.9.1", Map.of(
                     "mods/a.jar", bytes("A2"), "mods/c.jar", bytes("C"), "config/x.cfg", bytes("X")));
             printed.reset();
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
 
             assertEquals("A2", Files.readString(player.resolve("mods/a.jar")));
             assertEquals("C", Files.readString(player.resolve("mods/c.jar")));
@@ -405,14 +405,14 @@ class UpdateTest {
                     "config/x.cfg", bytes("X"), "mods/b.jar", bytes("B")));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
 
             write(player, "config/x.cfg", "my own settings");
             Files.delete(player.resolve("mods/b.jar"));
 
             publish(publisher, "client", "2.9.1", Map.of(
                     "config/x.cfg", bytes("X"), "mods/b.jar", bytes("B"), "mods/c.jar", bytes("C")));
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
 
             assertEquals("my own settings", Files.readString(player.resolve("config/x.cfg")));
             assertFalse(Files.exists(player.resolve("mods/b.jar")), "a file the player removed is not put back");
@@ -431,13 +431,13 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", before));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             long already = s3.downloadedBytes();
 
             Files.delete(player.resolve("mods/a.jar"));
             publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", after));
             printed.reset();
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             long delta = s3.downloadedBytes() - already;
 
             assertArrayEquals(after, Files.readAllBytes(player.resolve("mods/a.jar")));
@@ -460,7 +460,7 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", before));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             long already = s3.downloadedBytes();
 
             Path local = player.resolve("mods/a.jar");
@@ -468,7 +468,7 @@ class UpdateTest {
             assumeFalse(Files.isReadable(local), "this user can read the backup copy anyway");
             publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", after));
             printed.reset();
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             long delta = s3.downloadedBytes() - already;
 
             assertArrayEquals(after, Files.readAllBytes(player.resolve("mods/a.jar")));
@@ -490,14 +490,14 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", before));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
 
             publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", after));
             List<String> missing = newHashes(cuts(root, after), hashes(cuts(root, before)));
             assertFalse(missing.isEmpty(), "the changed content has a chunk of its own");
             s3.put(chunkKey(missing.get(0)), bytes("not the chunk it is named after"));
 
-            UserError error = assertThrows(UserError.class, () -> Update.run(player, "client", false, log));
+            UserError error = assertThrows(UserError.class, () -> Update.run(player, "client", null, false, log));
 
             assertTrue(error.getMessage().contains("manifest"), error.getMessage());
             assertFalse(Files.exists(player.resolve("mods/a.jar")),
@@ -520,7 +520,7 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", before));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
 
             publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", after));
             long already = s3.downloadedBytes();
@@ -528,7 +528,7 @@ class UpdateTest {
             int logsBefore = logs(player).size();
             printed.reset();
 
-            Update.run(player, "client", true, log);
+            Update.run(player, "client", null, true, log);
 
             List<String> requests = s3.requests().subList(requestsBefore, s3.requests().size());
             assertTrue(requests.stream().noneMatch(request -> request.startsWith("GET /pack/gtnh/blob/")
@@ -551,10 +551,10 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", bytes("A")));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             Files.delete(Layout.releaseFile(player, "client", "2.9.0"));
 
-            UserError error = assertThrows(UserError.class, () -> Update.run(player, "client", false, log));
+            UserError error = assertThrows(UserError.class, () -> Update.run(player, "client", null, false, log));
             assertTrue(error.getMessage().contains("is missing"), error.getMessage());
         }
     }
@@ -565,8 +565,44 @@ class UpdateTest {
             Path player = root.resolve("player");
             configure(player, s3);
 
-            UserError error = assertThrows(UserError.class, () -> Update.run(player, "client", false, log));
+            UserError error = assertThrows(UserError.class, () -> Update.run(player, "client", null, false, log));
             assertTrue(error.getMessage().contains("not found"), error.getMessage());
+        }
+    }
+
+    @Test
+    void appliesTheReleaseNamedOnTheCommandLineInsteadOfLatest(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            configure(publisher, s3);
+            publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", bytes("A"), "mods/b.jar", bytes("B")));
+            publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", bytes("A2"), "mods/b.jar", bytes("B")));
+            Path player = root.resolve("player");
+            configure(player, s3);
+            printed.reset();
+
+            Update.run(player, "client", "2.9.0", false, log);
+
+            assertEquals("2.9.0", applied(player, "client"), "the named release, not the latest one");
+            assertEquals("A", Files.readString(player.resolve("mods/a.jar")));
+            assertEquals(0, getCount(s3, latestKey()), "a pinned update never reads latest: " + s3.requests());
+
+            printed.reset();
+            Update.run(player, "client", "2.9.1", false, log);
+            assertEquals("2.9.1", applied(player, "client"));
+            assertEquals("A2", Files.readString(player.resolve("mods/a.jar")));
+
+            printed.reset();
+            Update.run(player, "client", "2.9.0", false, log);
+            assertEquals("2.9.0", applied(player, "client"), "the same option rolls the workspace back");
+            assertEquals("A", Files.readString(player.resolve("mods/a.jar")));
+            assertEquals("A2", Files.readString(
+                    Layout.backupDir(player, "client", "2.9.1").resolve("mods/a.jar")));
+            assertEquals(0, getCount(s3, latestKey()));
+
+            printed.reset();
+            Update.run(player, "client", "2.9.0", false, log);
+            assertTrue(printed.toString().contains("is already at 2.9.0"), printed.toString());
         }
     }
 
@@ -580,8 +616,8 @@ class UpdateTest {
             Path player = root.resolve("player");
             configure(player, s3);
 
-            Update.run(player, "client", false, log);
-            Update.run(player, "client-extra", false, log);
+            Update.run(player, "client", null, false, log);
+            Update.run(player, "client-extra", null, false, log);
 
             assertEquals("1.0", applied(player, "client"));
             assertEquals("1.0", applied(player, "client-extra"));
@@ -599,7 +635,7 @@ class UpdateTest {
             Path player = root.resolve("player");
             configure(player, s3);
 
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
 
             List<Path> logs = logs(player);
             assertEquals(1, logs.size(), logs.toString());
@@ -614,7 +650,7 @@ class UpdateTest {
             assertTrue(text.contains("done: client is now at 2.9.0"), text);
 
             printed.reset();
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
             assertEquals(1, logs(player).size(), "a run with nothing to transfer leaves no second log");
         }
     }
@@ -627,10 +663,10 @@ class UpdateTest {
             publish(publisher, "client", "2.9.0", Map.of("mods/a.jar", bytes("A")));
             Path player = root.resolve("player");
             configure(player, s3);
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
 
             publish(publisher, "client", "2.9.1", Map.of("mods/a.jar", bytes("A2")));
-            Update.run(player, "client", true, log);
+            Update.run(player, "client", null, true, log);
 
             assertEquals(1, logs(player).size(), "a dry run adds no log");
         }
@@ -647,7 +683,7 @@ class UpdateTest {
             configure(player, s3);
             printed.reset();
 
-            Update.run(player, "client", false, log);
+            Update.run(player, "client", null, false, log);
 
             List<String> lines = printed.toString().lines().toList();
             int plan = lines.indexOf("plan");

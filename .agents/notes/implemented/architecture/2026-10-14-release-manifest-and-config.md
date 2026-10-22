@@ -40,7 +40,7 @@ Status: implemented
 { "version": 1, "release_id": "2.9.0-RC1" }
 ```
 
-只回答"这个 tag 现在最新是哪个 release"，其余信息一律去 release 清单取：它要足够小，订阅者每次更新都先读它。
+只回答"这个 tag 现在最新是哪个 release"，其余信息一律去 release 清单取：它要足够小，订阅者每次更新都先读它；`update --id` 指定 release 时跳过这次读取。
 
 **config.json（发布者与订阅者共用字段定义）**
 
