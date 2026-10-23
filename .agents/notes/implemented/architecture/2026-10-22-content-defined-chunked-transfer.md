@@ -25,7 +25,7 @@ Status: implemented
 
 ### 三层结构
 
-- 清单 `metadata/<tag>/releases/<release_id>.json`：每个文件多一个 `chunks` 字段，指向块表 id；`hash` 仍是整文件 sha256，因此「比较两份清单得出动哪些路径」的模型不变。字段定义见[发布内容格式与连接配置](2026-10-14-release-manifest-and-config.md)。
+- 清单 `metadata/<tag>/releases/<release_id>.json`：每个文件多一个 `index_id` 字段，就是它的块表 id；`hash` 仍是整文件 sha256，因此「比较两份清单得出动哪些路径」的模型不变。字段定义见[发布内容格式与连接配置](2026-10-14-release-manifest-and-config.md)。
 - 块表：一份文件内容的有序块列表，本身也内容寻址，同样的文件内容只有一份块表。
 - 块：文件的一段字节；块与块表按内容哈希寻址、只增不改不删，路径规则见[对象存储布局](2026-10-13-object-storage-layout.md)。
 

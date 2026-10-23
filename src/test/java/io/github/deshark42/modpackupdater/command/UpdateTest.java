@@ -117,7 +117,7 @@ class UpdateTest {
         long bytes = s3.object(latestKey()).length + s3.object(releaseKey(releaseId)).length;
         Set<String> tables = new HashSet<>();
         for (String path : paths) {
-            tables.add(manifest.files().get(path).chunks());
+            tables.add(manifest.files().get(path).indexId());
         }
         for (String table : tables) {
             bytes += s3.object(indexKey(table)).length;
@@ -223,7 +223,7 @@ class UpdateTest {
             assertEquals(1, getCount(s3, chunkKey(Sha256.ofBytes(bytes("L")))),
                     "a chunk two files share is fetched once: " + s3.requests());
             assertEquals(1, getCount(s3, indexKey(split.table().indexId())));
-            String shared = manifest(s3, "2.9.0").files().get("mods/b.jar").chunks();
+            String shared = manifest(s3, "2.9.0").files().get("mods/b.jar").indexId();
             assertEquals(1, getCount(s3, indexKey(shared)),
                     "two files with the same content share one chunk table: " + s3.requests());
             assertEquals(metadataBytes(s3, "2.9.0", List.of("mods/a.jar", "mods/b.jar",
@@ -597,7 +597,7 @@ class UpdateTest {
             assertEquals(hashes(cuts(root, before)).size(), reportedReuse(printed.toString()),
                     "every target chunk came from the copy kept under backup/2.9.0: " + printed);
             assertFalse(hasStep(printed.toString(), "download"), printed.toString());
-            String table = manifest(s3, "2.9.0").files().get("mods/a.jar").chunks();
+            String table = manifest(s3, "2.9.0").files().get("mods/a.jar").indexId();
             assertEquals(s3.object(indexKey(table)).length + s3.object(releaseKey("2.9.0")).length, delta,
                     "only the chunk table and the manifest came over the wire: " + s3.requests());
         }

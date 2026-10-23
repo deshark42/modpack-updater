@@ -16,7 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 class ManifestTest {
 
     private static final String HASH = "a".repeat(64);
-    private static final String CHUNKS = "c".repeat(64);
+    private static final String INDEX_ID = "c".repeat(64);
 
     private static String manifest(String files) {
         return "{\"version\": 2, \"tag\": \"client\", \"release_id\": \"2.9.0-RC1\","
@@ -26,7 +26,7 @@ class ManifestTest {
 
     private static String entry(String path, String hash, long size) {
         return "\"" + path.replace("\\", "\\\\") + "\": {\"hash\": \"" + hash + "\", \"size\": " + size
-                + ", \"chunks\": \"" + CHUNKS + "\"}";
+                + ", \"index_id\": \"" + INDEX_ID + "\"}";
     }
 
     @Test
@@ -36,7 +36,7 @@ class ManifestTest {
         assertEquals("2.9.0-RC1", manifest.releaseId());
         assertEquals(Instant.parse("2026-10-14T01:30:00Z"), manifest.publishedAt());
         assertEquals(Manifest.SHA256, manifest.hashAlgorithm());
-        assertEquals(new FileEntry(HASH, 12, CHUNKS), manifest.files().get("mods/x.jar"));
+        assertEquals(new FileEntry(HASH, 12, INDEX_ID), manifest.files().get("mods/x.jar"));
         assertEquals(12, manifest.totalSize());
     }
 
@@ -46,7 +46,7 @@ class ManifestTest {
         assertEquals(manifest, Manifest.parse(manifest.toJson(), "round trip"));
         assertTrue(manifest.toJson().contains("\"version\": 2"));
         assertTrue(manifest.toJson().contains("\"hash_algorithm\": \"sha256\""));
-        assertTrue(manifest.toJson().contains("\"chunks\": \"" + CHUNKS + "\""));
+        assertTrue(manifest.toJson().contains("\"index_id\": \"" + INDEX_ID + "\""));
     }
 
     @Test
@@ -71,13 +71,13 @@ class ManifestTest {
     void rejectsAnEntryWithoutAChunkTable() {
         UserError error = assertThrows(UserError.class, () -> Manifest.parse(
                 manifest("\"mods/x.jar\": {\"hash\": \"" + HASH + "\", \"size\": 1}"), "m.json"));
-        assertTrue(error.getMessage().contains("chunks"), error.getMessage());
+        assertTrue(error.getMessage().contains("index_id"), error.getMessage());
     }
 
     @Test
     void rejectsMalformedChunkTableId() {
         UserError error = assertThrows(UserError.class, () -> Manifest.parse(
-                manifest("\"mods/x.jar\": {\"hash\": \"" + HASH + "\", \"size\": 1, \"chunks\": \"abc\"}"),
+                manifest("\"mods/x.jar\": {\"hash\": \"" + HASH + "\", \"size\": 1, \"index_id\": \"abc\"}"),
                 "m.json"));
         assertTrue(error.getMessage().contains("chunk table id"), error.getMessage());
     }

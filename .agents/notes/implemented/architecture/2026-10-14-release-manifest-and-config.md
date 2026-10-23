@@ -20,16 +20,16 @@ Status: implemented
   "published_at": "2026-10-14T01:30:00Z",
   "hash_algorithm": "sha256",
   "files": {
-    "config/foo.cfg":          { "hash": "1c0b…", "size": 2048,    "chunks": "5a3e…" },
-    "libraries/patches/p.jar": { "hash": "77de…", "size": 8192,    "chunks": "0b91…" },
-    "mods/GTNH-2.9.0.jar":     { "hash": "9f2a…", "size": 1234567, "chunks": "c4d7…" }
+    "config/foo.cfg":          { "hash": "1c0b…", "size": 2048,    "index_id": "5a3e…" },
+    "libraries/patches/p.jar": { "hash": "77de…", "size": 8192,    "index_id": "0b91…" },
+    "mods/GTNH-2.9.0.jar":     { "hash": "9f2a…", "size": 1234567, "index_id": "c4d7…" }
   }
 }
 ```
 
 - 一次发布就是一份完整清单：files 覆盖该 tag 本次追踪的全部文件，路径相对工作区根，按路径排序。
-- files 的值是 {hash, size, chunks}：hash 是整文件 sha256，chunks 是该文件块表的 index_id；哈希算法由 hash_algorithm 声明（当前只有 sha256）；size 让 --dry-run 能报出将下载的文件数与总量。分块与块表的来源见[按内容定义分块传输发布内容](2026-10-22-content-defined-chunked-transfer.md)。
-- 清单不记块与块表的路径：路径由 chunks 与块哈希推导，所以调整 blob/、index/ 内部布局不必重写任何清单。
+- files 的值是 {hash, size, index_id}：hash 是整文件 sha256；index_id 是块表（chunk table，桶里存于 index/ 下）的 id；哈希算法由 hash_algorithm 声明（当前只有 sha256）；size 让 --dry-run 能报出将下载的文件数与总量。分块与块表的来源见[按内容定义分块传输发布内容](2026-10-22-content-defined-chunked-transfer.md)。
+- 清单不记块与块表的路径：路径由 index_id 与块哈希推导，所以调整 blob/、index/ 内部布局不必重写任何清单。
 - 只记文件：空目录、权限位、符号链接都不进清单。
 - published_at 只作信息，不参与任何判断；tag 与 release_id 是冗余记录，只为清单被单独取出时仍能自证身份。
 - version 是格式版本：清单是 2，latest 与订阅者的 current.json 仍带各自的 version 1。
@@ -73,9 +73,9 @@ Status: implemented
 
 ## 曾考虑的替代方案
 
-**files 用 [{path, hash, size, chunks}, …] 列表。** 不采用：列表天然有序、可流式读，但订阅者每一步都是按路径查（本地清单与目标清单相减），映射省掉一层建索引；排序后的映射已经具备列表的可读性。
+**files 用 [{path, hash, size, index_id}, …] 列表。** 不采用：列表天然有序、可流式读，但订阅者每一步都是按路径查（本地清单与目标清单相减），映射省掉一层建索引；排序后的映射已经具备列表的可读性。
 
-**清单里直接记每个文件的块与块表路径。** 不采用：路径由算法、块哈希与 chunks 推导即可，写进清单会把清单与存储布局绑死，日后调整 blob/、index/ 内部布局就要重写全部历史清单。
+**清单里直接记每个文件的块与块表路径。** 不采用：路径由算法、块哈希与 index_id 推导即可，写进清单会把清单与存储布局绑死，日后调整 blob/、index/ 内部布局就要重写全部历史清单。
 
 ## 后果
 

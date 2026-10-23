@@ -52,9 +52,9 @@ public record Manifest(String tag, String releaseId, Instant publishedAt, String
         }
     }
 
-    public static void requireChunks(String chunks) {
-        if (chunks == null || !SHA256_HEX.matcher(chunks).matches()) {
-            throw new UserError("not a chunk table id: " + chunks);
+    public static void requireIndexId(String indexId) {
+        if (indexId == null || !SHA256_HEX.matcher(indexId).matches()) {
+            throw new UserError("not a chunk table id: " + indexId);
         }
     }
 
@@ -78,8 +78,8 @@ public record Manifest(String tag, String releaseId, Instant publishedAt, String
             Map<String, Object> value = Json.asObject(entry.getValue(), what + ": files[\"" + path + "\"]");
             String entryWhat = what + ": files[\"" + path + "\"]";
             String hash = Fields.string(value, "hash", entryWhat);
-            String chunks = Fields.string(value, "chunks", entryWhat);
-            files.put(path, new FileEntry(hash, Fields.longValue(value, "size", entryWhat), chunks));
+            String indexId = Fields.string(value, "index_id", entryWhat);
+            files.put(path, new FileEntry(hash, Fields.longValue(value, "size", entryWhat), indexId));
         }
         String publishedAt = Fields.string(object, "published_at", what);
         return new Manifest(
@@ -96,7 +96,7 @@ public record Manifest(String tag, String releaseId, Instant publishedAt, String
             Map<String, Object> value = new LinkedHashMap<>();
             value.put("hash", entry.getValue().hash());
             value.put("size", entry.getValue().size());
-            value.put("chunks", entry.getValue().chunks());
+            value.put("index_id", entry.getValue().indexId());
             filesOut.put(entry.getKey(), value);
         }
         Map<String, Object> out = new LinkedHashMap<>();

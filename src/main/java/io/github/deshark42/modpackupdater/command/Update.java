@@ -163,7 +163,7 @@ public final class Update {
                 Map<String, Local> existing = reuse.chunks();
                 Set<String> needed = new LinkedHashSet<>();
                 for (String path : downloads) {
-                    needed.addAll(tables.get(target.files().get(path).chunks()).chunks());
+                    needed.addAll(tables.get(target.files().get(path).indexId()).chunks());
                 }
                 List<String> missing = new ArrayList<>();
                 for (String hash : needed) {
@@ -225,7 +225,7 @@ public final class Update {
             int concurrency) {
         Set<String> ids = new TreeSet<>();
         for (String path : downloads) {
-            ids.add(target.files().get(path).chunks());
+            ids.add(target.files().get(path).indexId());
         }
         Map<String, ChunkTable> tables = new ConcurrentHashMap<>();
         Parallel.forEach(ids, concurrency, id -> {
@@ -239,7 +239,7 @@ public final class Update {
         });
         for (String path : downloads) {
             FileEntry entry = target.files().get(path);
-            ChunkTable table = tables.get(entry.chunks());
+            ChunkTable table = tables.get(entry.indexId());
             if (table.size() != entry.size()) {
                 throw new UserError("the chunk table of " + path + " covers " + table.size()
                         + " bytes, the manifest says " + entry.size());
@@ -328,7 +328,7 @@ public final class Update {
     private static List<Chunking> chunkingsFor(String path, Manifest target, Map<String, ChunkTable> tables,
             Set<Chunking> all) {
         FileEntry entry = target.files().get(path);
-        ChunkTable table = entry == null ? null : tables.get(entry.chunks());
+        ChunkTable table = entry == null ? null : tables.get(entry.indexId());
         return table == null ? List.copyOf(all) : List.of(table.chunking());
     }
 
@@ -360,7 +360,7 @@ public final class Update {
             Map<String, ChunkTable> tables, Map<String, Local> existing, Path tempDir, int concurrency) {
         Parallel.forEach(downloads, concurrency, path -> {
             FileEntry entry = target.files().get(path);
-            assemble(workspace, path, entry, tables.get(entry.chunks()), existing, tempDir);
+            assemble(workspace, path, entry, tables.get(entry.indexId()), existing, tempDir);
         });
     }
 

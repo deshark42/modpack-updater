@@ -103,8 +103,8 @@ class PublishTest {
             assertEquals(List.of("mmc-pack.json", "mods/a.jar", "mods/b.jar"),
                     List.copyOf(manifest.files().keySet()));
             assertEquals(Sha256.ofBytes("A".getBytes(StandardCharsets.UTF_8)), manifest.files().get("mods/a.jar").hash());
-            assertEquals(tableA, manifest.files().get("mods/a.jar").chunks());
-            assertEquals(tableA, manifest.files().get("mods/b.jar").chunks());
+            assertEquals(tableA, manifest.files().get("mods/a.jar").indexId());
+            assertEquals(tableA, manifest.files().get("mods/b.jar").indexId());
             ChunkTable stored = ChunkTable.parse(s3.text(indexKey(tableA)), "chunk table");
             assertEquals(List.of(chunkA), stored.chunks());
             assertEquals(1, stored.size());
@@ -207,10 +207,10 @@ class PublishTest {
             assertTrue(delta < before.length / 2,
                     "only the chunks around the change are uploaded: " + delta + " of " + before.length);
             ChunkTable first = ChunkTable.parse(s3.text(indexKey(
-                    Manifest.parse(s3.text(releasePath("2.9.0")), "release").files().get("mods/a.jar").chunks())),
+                    Manifest.parse(s3.text(releasePath("2.9.0")), "release").files().get("mods/a.jar").indexId())),
                     "chunk table");
             ChunkTable second = ChunkTable.parse(s3.text(indexKey(
-                    Manifest.parse(s3.text(releasePath("2.9.1")), "release").files().get("mods/a.jar").chunks())),
+                    Manifest.parse(s3.text(releasePath("2.9.1")), "release").files().get("mods/a.jar").indexId())),
                     "chunk table");
             Set<String> shared = new HashSet<>(first.chunks());
             shared.retainAll(second.chunks());
@@ -240,9 +240,9 @@ class PublishTest {
             assertFalse(second.stream().anyMatch(request -> request.startsWith("PUT /pack/gtnh/index/")),
                     second.toString());
             String client = Manifest.parse(s3.text(releasePath("1.0")), "release")
-                    .files().get("mods/a.jar").chunks();
+                    .files().get("mods/a.jar").indexId();
             String extra = Manifest.parse(s3.text("/pack/gtnh/metadata/client-extra/releases/1.0.json"), "release")
-                    .files().get("config/a.cfg").chunks();
+                    .files().get("config/a.cfg").indexId();
             assertEquals(client, extra, "the same content under two tags is one chunk table");
         }
     }
