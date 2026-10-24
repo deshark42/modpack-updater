@@ -2,6 +2,7 @@ package io.github.deshark42.modpackupdater.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,6 +25,7 @@ class ConfigTest {
         assertEquals("", config.prefix());
         assertFalse(config.pathStyle());
         assertTrue(config.anonymous());
+        assertNull(config.readEndpoint(), "without a CDN the objects are read from the store itself");
     }
 
     @Test
@@ -62,6 +64,57 @@ class ConfigTest {
                 "config.json");
         assertEquals("https://s3.example.com", config.endpoint());
         assertEquals("gtnh/", config.prefix());
+    }
+
+    @Test
+    void readsTheAddressOfTheCdnInFrontOfTheBucket() {
+        Config config = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
+                + " \"read_endpoint\": \"https://cdn.example.com/modpacks///\"}", "config.json");
+        assertEquals("https://cdn.example.com/modpacks", config.readEndpoint(),
+                "a path survives, the trailing slashes that would double the key's separator do not");
+    }
+
+    @Test
+    void takesABlankReadEndpointAsNoCdn() {
+        Config config = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
+                + " \"read_endpoint\": \"\"}", "config.json");
+        assertNull(config.readEndpoint(), "the empty entry of a fresh template is not an address");
+    }
+
+    @Test
+    void allowsAPathAndAnIpAddressInTheReadEndpoint() {
+        Config config = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
+                + " \"read_endpoint\": \"http://127.0.0.1:9000/edge\"}", "config.json");
+        assertEquals("http://127.0.0.1:9000/edge", config.readEndpoint(),
+                "the read address is used as given, so neither a path nor an IP address needs path_style");
+    }
+
+    @Test
+    void rejectsAReadEndpointThatIsNotAnHttpUrl() {
+        UserError error = assertThrows(UserError.class, () -> Config.parse(
+                "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
+                        + " \"read_endpoint\": \"cdn.example.com\"}", "config.json"));
+        assertTrue(error.getMessage().contains("\"read_endpoint\" must be an http(s) URL"), error.getMessage());
+    }
+
+    @Test
+    void rejectsAReadEndpointWithoutAHost() {
+        UserError error = assertThrows(UserError.class, () -> Config.parse(
+                "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
+                        + " \"read_endpoint\": \"http://\"}", "config.json"));
+        assertTrue(error.getMessage().contains("\"read_endpoint\" must be an http(s) URL with a host"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsAReadEndpointThatCarriesMoreThanAHostAndPath() {
+        for (String read : new String[]{"https://cdn.example.com?x=1", "https://cdn.example.com#x",
+                "https://user:secret@cdn.example.com"}) {
+            UserError error = assertThrows(UserError.class, () -> Config.parse(
+                    "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
+                            + " \"read_endpoint\": \"" + read + "\"}", "config.json"), read);
+            assertTrue(error.getMessage().contains("no query or credentials"), read + ": " + error.getMessage());
+        }
     }
 
     @Test
@@ -153,7 +206,7 @@ class ConfigTest {
                 }
                 """);
 
-        assertTrue(Config.fillMissing(root), "region, prefix, path_style and concurrency were missing");
+        assertTrue(Config.fillMissing(root), "region, prefix, path_style, read_endpoint and concurrency were missing");
         assertFalse(Config.fillMissing(root), "the second look finds nothing to add");
 
         Config config = Config.load(root);
@@ -163,6 +216,7 @@ class ConfigTest {
         assertEquals(Config.DEFAULT_CONCURRENCY, config.concurrency());
         String written = Files.readString(file);
         assertTrue(written.contains("\"endpoint\": \"https://s3.example.com\""), written);
+        assertTrue(written.contains("\"read_endpoint\": \"\""), written);
         assertTrue(written.contains("\"concurrency\": " + Config.DEFAULT_CONCURRENCY), written);
     }
 

@@ -26,21 +26,21 @@ import org.junit.jupiter.api.io.TempDir;
 class S3StoreTest {
 
     private static Config config(FakeS3 s3) {
-        return config(s3, TestWorkspace.SECRET_KEY);
+        return TestWorkspace.config(s3);
     }
 
     private static Config config(FakeS3 s3, String secretKey) {
-        return new Config(s3.url(), TestWorkspace.REGION, TestWorkspace.BUCKET, TestWorkspace.PREFIX,
+        return new Config(s3.url(), null, TestWorkspace.REGION, TestWorkspace.BUCKET, TestWorkspace.PREFIX,
                 true, TestWorkspace.ACCESS_KEY, secretKey, Config.DEFAULT_CONCURRENCY);
     }
 
     private static Config anonymous(FakeS3 s3) {
-        return new Config(s3.url(), TestWorkspace.REGION, TestWorkspace.BUCKET, TestWorkspace.PREFIX,
+        return new Config(s3.url(), null, TestWorkspace.REGION, TestWorkspace.BUCKET, TestWorkspace.PREFIX,
                 true, null, null, Config.DEFAULT_CONCURRENCY);
     }
 
     private static Config plain(String endpoint) {
-        return new Config(endpoint, TestWorkspace.REGION, TestWorkspace.BUCKET, "", true, null, null,
+        return new Config(endpoint, null, TestWorkspace.REGION, TestWorkspace.BUCKET, "", true, null, null,
                 Config.DEFAULT_CONCURRENCY);
     }
 
@@ -61,7 +61,7 @@ class S3StoreTest {
             String authorization = sent.get(0).headers().get("authorization");
             assertTrue(authorization.startsWith("AWS4-HMAC-SHA256 Credential=" + TestWorkspace.ACCESS_KEY + "/"),
                     authorization);
-            assertTrue(authorization.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"),
+            assertTrue(authorization.contains("SignedHeaders=cache-control;host;x-amz-content-sha256;x-amz-date"),
                     authorization);
             assertArrayEquals(content, s3.object(TestWorkspace.bucketPath(relative)));
 
@@ -226,12 +226,12 @@ class S3StoreTest {
             assertEquals(URI.create("https://s3.example.com/" + TestWorkspace.BUCKET + "/" + objectKey),
                     new S3Store(plain("https://s3.example.com")).uri(objectKey));
 
-            Config prefixed = new Config("https://s3.example.com", TestWorkspace.REGION, TestWorkspace.BUCKET,
-                    TestWorkspace.PREFIX, true, null, null, Config.DEFAULT_CONCURRENCY);
+            Config prefixed = new Config("https://s3.example.com", null, TestWorkspace.REGION,
+                    TestWorkspace.BUCKET, TestWorkspace.PREFIX, true, null, null, Config.DEFAULT_CONCURRENCY);
             assertEquals(URI.create("https://s3.example.com" + TestWorkspace.bucketPath(objectKey)),
                     new S3Store(prefixed).uri(objectKey));
 
-            Config virtualHost = new Config("https://s3.example.com", TestWorkspace.REGION,
+            Config virtualHost = new Config("https://s3.example.com", null, TestWorkspace.REGION,
                     TestWorkspace.BUCKET, "", false, null, null, Config.DEFAULT_CONCURRENCY);
             assertEquals(URI.create("https://" + TestWorkspace.BUCKET + ".s3.example.com/" + objectKey),
                     new S3Store(virtualHost).uri(objectKey));
@@ -240,7 +240,7 @@ class S3StoreTest {
 
     @Test
     void anObjectThatCannotBeAddressedIsReportedWithoutAnException() {
-        Config config = new Config("https://s3.example.com", TestWorkspace.REGION, "pack set", "",
+        Config config = new Config("https://s3.example.com", null, TestWorkspace.REGION, "pack set", "",
                 false, null, null, Config.DEFAULT_CONCURRENCY);
         S3Store store = new S3Store(config);
 

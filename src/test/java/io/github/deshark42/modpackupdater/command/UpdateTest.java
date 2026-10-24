@@ -723,6 +723,68 @@ class UpdateTest {
     }
 
     @Test
+    void readsEveryObjectThroughTheReadEndpointWithoutCredentials(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            byte[] jar = TestFiles.random(300_000, 21);
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods/a.jar", jar, "mmc-pack.json", TestFiles.bytes("{}")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, "http://127.0.0.1:1", s3.url() + "/" + TestWorkspace.BUCKET);
+            s3.allowAnonymous(true);
+            int before = s3.requestsDetailed().size();
+
+            update(player, TAG, null);
+
+            assertArrayEquals(jar, Files.readAllBytes(player.resolve("mods/a.jar")));
+            assertEquals("2.9.0", applied(player, TAG));
+            List<FakeS3.Request> reads = s3.requestsDetailed().subList(before, s3.requestsDetailed().size());
+            assertFalse(reads.isEmpty(), "the update read something");
+            for (FakeS3.Request request : reads) {
+                assertEquals("GET", request.method(), request.toString());
+                assertTrue(request.path().startsWith(TestWorkspace.bucketPath("")), request.toString());
+                assertFalse(request.headers().containsKey("authorization"), request.toString());
+                assertFalse(request.headers().containsKey("x-amz-date"), request.toString());
+                assertEquals("identity", request.headers().get("accept-encoding"), request.toString());
+            }
+
+            int beforeSecond = s3.requests().size();
+            update(player, TAG, null);
+            assertEquals(List.of("GET " + latestKey(TAG)),
+                    s3.requests().subList(beforeSecond, s3.requests().size()),
+                    "a workspace that is already at the latest release only reads its pointer");
+        }
+    }
+
+    @Test
+    void refusesToReadThroughTheReadEndpointAndLeavesTheWorkspaceAlone(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods/a.jar", TestFiles.bytes("A")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, "http://127.0.0.1:1", s3.url() + "/" + TestWorkspace.BUCKET);
+            s3.allowAnonymous(true);
+            String latest = latestKey(TAG);
+            s3.fail("GET", latest, 500);
+            int before = s3.requests().size();
+
+            UserError error = assertThrows(UserError.class, () -> update(player, TAG, null));
+
+            String readUrl = s3.url() + latest;
+            assertTrue(error.getMessage().contains(readUrl), error.getMessage());
+            assertTrue(error.getMessage().contains("HTTP 500"), error.getMessage());
+            assertFalse(Files.exists(Layout.currentFile(player, TAG)), "the pointer did not move");
+            assertNothingStaged(player);
+            assertEquals(List.of("GET " + latest), s3.requests().subList(before, s3.requests().size()),
+                    "the failed read did not fall back to the write endpoint");
+            assertEquals(List.of(),
+                    s3.requests().subList(before, s3.requests().size()).stream()
+                            .filter(request -> request.startsWith("PUT ")).toList());
+        }
+    }
+
+    @Test
     void refusesAChunkItCannotDownloadAndLeavesTheWorkspaceRecoverable(@TempDir Path root) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             Path publisher = root.resolve("publisher");

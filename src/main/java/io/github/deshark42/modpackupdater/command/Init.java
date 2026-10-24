@@ -24,6 +24,7 @@ public final class Init {
     private static final String TEMPLATE = """
             {
               "endpoint": "",
+              "read_endpoint": "",
               "region": "us-east-1",
               "bucket": "",
               "prefix": "",

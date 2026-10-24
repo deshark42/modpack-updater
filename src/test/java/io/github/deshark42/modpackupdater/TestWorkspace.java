@@ -1,5 +1,6 @@
 package io.github.deshark42.modpackupdater;
 
+import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -17,10 +18,36 @@ public final class TestWorkspace {
     private TestWorkspace() {
     }
 
+    /** The config of a workspace pointed at this store: writes and reads both go straight to it. */
+    public static Config config(FakeS3 s3) {
+        return config(s3.url(), null);
+    }
+
+    /**
+     * A path-style config with the fixture's bucket, prefix and credentials, whose reads go through
+     * {@code readEndpoint} when one is given.
+     */
+    public static Config config(String endpoint, String readEndpoint) {
+        return new Config(endpoint, readEndpoint, REGION, BUCKET, PREFIX, true, ACCESS_KEY, SECRET_KEY,
+                Config.DEFAULT_CONCURRENCY);
+    }
+
     public static void configure(Path workspace, FakeS3 s3) throws IOException {
-        TestFiles.write(workspace, Layout.STATE_DIR + "/" + Layout.CONFIG, "{\"endpoint\": \"" + s3.url()
-                + "\", \"bucket\": \"" + BUCKET + "\", \"prefix\": \"" + PREFIX + "\", \"path_style\": true,"
-                + " \"access_key\": \"" + ACCESS_KEY + "\", \"secret_key\": \"" + SECRET_KEY + "\"}");
+        configure(workspace, s3.url(), null);
+    }
+
+    /**
+     * Writes the config of a workspace whose writes go to {@code endpoint}, and whose reads, when
+     * {@code readEndpoint} is given, are the URLs of a CDN in front of the same bucket.
+     */
+    public static void configure(Path workspace, String endpoint, String readEndpoint) throws IOException {
+        String json = "{\"endpoint\": \"" + endpoint + "\", \"bucket\": \"" + BUCKET + "\", \"prefix\": \""
+                + PREFIX + "\", \"path_style\": true, \"access_key\": \"" + ACCESS_KEY
+                + "\", \"secret_key\": \"" + SECRET_KEY + "\"";
+        if (readEndpoint != null) {
+            json += ", \"read_endpoint\": \"" + readEndpoint + "\"";
+        }
+        TestFiles.write(workspace, Layout.STATE_DIR + "/" + Layout.CONFIG, json + "}");
     }
 
     /** The request path of a bucket object below the configured prefix, e.g. bucketPath("blob/ab/ab..."). */

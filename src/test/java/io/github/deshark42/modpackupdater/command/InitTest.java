@@ -73,6 +73,7 @@ class InitTest {
         // Pointing the template at a bucket is all a config needs to become loadable.
         Map<String, Object> template = Json.asObject(Json.parse(Files.readString(config)), "config template");
         assertEquals("", template.get("endpoint"));
+        assertEquals("", template.get("read_endpoint"));
         assertEquals("", template.get("bucket"));
         assertEquals("", template.get("access_key"));
         assertEquals("", template.get("secret_key"));

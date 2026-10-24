@@ -39,7 +39,7 @@ class BlobCacheTest {
     private final TestLogs logs = new TestLogs();
 
     private static Config config(String bucket) {
-        return new Config("https://s3.example.com", "us-east-1", bucket, "gtnh/", true, null, null,
+        return new Config("https://s3.example.com", null, "us-east-1", bucket, "gtnh/", true, null, null,
                 Config.DEFAULT_CONCURRENCY);
     }
 

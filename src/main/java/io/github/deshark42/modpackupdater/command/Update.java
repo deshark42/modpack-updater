@@ -18,6 +18,8 @@ import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import io.github.deshark42.modpackupdater.model.Plan;
 import io.github.deshark42.modpackupdater.model.Pointer;
 import io.github.deshark42.modpackupdater.model.SafePath;
+import io.github.deshark42.modpackupdater.s3.ObjectReader;
+import io.github.deshark42.modpackupdater.s3.S3ReadStore;
 import io.github.deshark42.modpackupdater.s3.S3Store;
 import io.github.deshark42.modpackupdater.util.Parallel;
 import java.io.BufferedOutputStream;
@@ -79,7 +81,7 @@ public final class Update {
         LOG.debug("update {}", tag);
         LOG.debug("plan");
         Config config = Workspace.load(workspace);
-        S3Store store = new S3Store(config);
+        ObjectReader store = config.readEndpoint() == null ? new S3Store(config) : new S3ReadStore(config);
 
         // an explicit release id bypasses latest.json entirely, so a pinned update works even while
         // the pointer is missing or names a release the caller does not want
@@ -294,7 +296,7 @@ public final class Update {
      * The chunk table of every file that has to be assembled, asked for once per distinct table and
      * checked against the manifest so a misaddressed object cannot be split into a wrong file.
      */
-    private static Map<String, ChunkTable> chunkTables(S3Store store, Manifest target, List<String> downloads,
+    private static Map<String, ChunkTable> chunkTables(ObjectReader store, Manifest target, List<String> downloads,
             int concurrency) {
         Set<String> ids = new TreeSet<>();
         for (String path : downloads) {
@@ -405,7 +407,7 @@ public final class Update {
     }
 
     /** Fetches the missing chunks into the run's blob directory, one file per chunk. */
-    private static long download(S3Store store, List<String> missing, Path tempDir, int concurrency) {
+    private static long download(ObjectReader store, List<String> missing, Path tempDir, int concurrency) {
         int total = missing.size();
         AtomicInteger done = new AtomicInteger();
         AtomicLong bytes = new AtomicLong();

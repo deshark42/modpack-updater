@@ -11,8 +11,8 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 /** Connection settings, shared by publisher and subscriber and kept in .modpack-updater/config.json. */
-public record Config(String endpoint, String region, String bucket, String prefix, boolean pathStyle,
-                     String accessKey, String secretKey, int concurrency) {
+public record Config(String endpoint, String readEndpoint, String region, String bucket, String prefix,
+                     boolean pathStyle, String accessKey, String secretKey, int concurrency) {
 
     /** Transfers that run at the same time unless config.json says otherwise. */
     public static final int DEFAULT_CONCURRENCY = 8;
@@ -25,6 +25,7 @@ public record Config(String endpoint, String region, String bucket, String prefi
 
     private static Map<String, Object> defaults() {
         Map<String, Object> out = new LinkedHashMap<>();
+        out.put("read_endpoint", "");
         out.put("region", "us-east-1");
         out.put("prefix", "");
         out.put("path_style", false);
@@ -54,6 +55,9 @@ public record Config(String endpoint, String region, String bucket, String prefi
         if (!pathStyle && isIpLiteral(uri.getHost())) {
             throw new UserError("\"path_style\" must be true: " + given
                     + " is an IP address, so the bucket cannot be part of the host name");
+        }
+        if (readEndpoint != null) {
+            readEndpoint = readEndpoint.isBlank() ? null : normalizeReadEndpoint(readEndpoint);
         }
         if (region == null || region.isBlank()) {
             throw new UserError("\"region\" must not be empty");
@@ -111,6 +115,7 @@ public record Config(String endpoint, String region, String bucket, String prefi
         }
         return new Config(
                 Fields.string(object, "endpoint", what),
+                Fields.optionalString(object, "read_endpoint", null, what),
                 Fields.optionalString(object, "region", "us-east-1", what),
                 Fields.string(object, "bucket", what),
                 Fields.optionalString(object, "prefix", "", what),
@@ -122,6 +127,35 @@ public record Config(String endpoint, String region, String bucket, String prefi
 
     public boolean anonymous() {
         return accessKey == null;
+    }
+
+    /**
+     * Checks the shape of a CDN read address and strips the trailing slashes that would double the
+     * slash before the object key. Unlike {@code endpoint} a path is allowed, and an IP literal is
+     * fine, because the read URL is the address itself and no bucket is inserted into it.
+     */
+    private static String normalizeReadEndpoint(String given) {
+        if (!(given.startsWith("http://") || given.startsWith("https://"))) {
+            throw new UserError("\"read_endpoint\" must be an http(s) URL: " + given);
+        }
+        String base = given;
+        while (base.endsWith("/")) {
+            base = base.substring(0, base.length() - 1);
+        }
+        URI uri;
+        try {
+            uri = URI.create(base);
+        } catch (IllegalArgumentException e) {
+            throw new UserError("\"read_endpoint\" must be an http(s) URL with a host: " + given);
+        }
+        if (uri.getHost() == null) {
+            throw new UserError("\"read_endpoint\" must be an http(s) URL with a host: " + given);
+        }
+        if (uri.getRawQuery() != null || uri.getRawFragment() != null || uri.getRawUserInfo() != null) {
+            throw new UserError("\"read_endpoint\" must be an http(s) URL with a host and no query or credentials: "
+                    + given);
+        }
+        return base;
     }
 
     private static boolean isIpLiteral(String host) {

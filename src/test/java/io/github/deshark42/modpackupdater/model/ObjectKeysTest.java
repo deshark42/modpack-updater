@@ -1,6 +1,7 @@
 package io.github.deshark42.modpackupdater.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -32,6 +33,17 @@ class ObjectKeysTest {
     @Test
     void pointsAtTheLatestReleaseOfATag() {
         assertEquals("metadata/client/latest.json", ObjectKeys.latest("client"));
+    }
+
+    @Test
+    void declaresHowLongEachKindOfObjectMayBeCached() {
+        assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL, ObjectKeys.cacheControl(ObjectKeys.blob(HASH)));
+        assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL, ObjectKeys.cacheControl(ObjectKeys.index(HASH)));
+        assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL,
+                ObjectKeys.cacheControl(ObjectKeys.release("client", "2.9.0")));
+        assertEquals(ObjectKeys.NO_STORE_CACHE_CONTROL, ObjectKeys.cacheControl(ObjectKeys.latest("client")));
+        assertNull(ObjectKeys.cacheControl("state/current.json"),
+                "an object of a kind whose caching was not decided is not called immutable");
     }
 
     @Test

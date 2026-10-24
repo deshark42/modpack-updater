@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -132,9 +133,7 @@ class PublishTest {
 
     /** A store pointed at the fake, the way a subscriber would open the same bucket. */
     private static S3Store store(FakeS3 s3) {
-        return new S3Store(new Config(s3.url(), TestWorkspace.REGION, TestWorkspace.BUCKET,
-                TestWorkspace.PREFIX, true, TestWorkspace.ACCESS_KEY, TestWorkspace.SECRET_KEY,
-                Config.DEFAULT_CONCURRENCY));
+        return new S3Store(TestWorkspace.config(s3));
     }
 
     private static List<Path> logs(Path workspace) throws IOException {
@@ -196,6 +195,31 @@ class PublishTest {
             assertEquals(Chunking.DEFAULT, stored.chunking());
             assertEquals("2.9.0", Pointer.parse(s3.text(latestKey()), "latest").releaseId());
             assertTrue(captured.outText().contains("3 files"), captured.outText());
+        }
+    }
+
+    @Test
+    void declaresHowLongEachKindOfObjectMayBeCached(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
+
+            publish(workspace, TAG, "2.9.0");
+
+            Map<String, String> sent = new HashMap<>();
+            for (FakeS3.Request request : s3.requestsDetailed()) {
+                if (request.method().equals("PUT") && request.headers().get("cache-control") != null) {
+                    sent.put(request.path(), request.headers().get("cache-control"));
+                }
+            }
+            String chunk = chunkKey(chunkOf("A"));
+            String table = indexKey(tableOf("A").indexId());
+            String release = releaseKey("2.9.0");
+            assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL, sent.get(chunk), sent.toString());
+            assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL, sent.get(table), sent.toString());
+            assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL, sent.get(release), sent.toString());
+            assertEquals(ObjectKeys.NO_STORE_CACHE_CONTROL, sent.get(latestKey()), sent.toString());
+            assertEquals(4, sent.size(), sent.toString());
         }
     }
 
