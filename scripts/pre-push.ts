@@ -28,7 +28,7 @@ const REPOSITORY_WIDE_PREFIXES = ["gradle/"];
 const SHARED_TEST_FILES = new Set([
     "TestFiles.java",
     "TestWorkspace.java",
-    "LogSink.java",
+    "TestLogs.java",
     "FakeS3.java",
     "SigV4Verifier.java",
 ]);

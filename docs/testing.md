@@ -42,7 +42,7 @@
 
 - 临时目录用 `@TempDir` 方法参数注入；不建字段、不用 `Files.createTempDirectory`、不写仓库或用户目录。每个用例一个独立根。
 - 需要释放的资源实现 `AutoCloseable` 并 `try-with-resources`：fake 服务、文件流、线程池、`Files.walk`/`Files.list` 返回的流。
-- 同一份测试数据或辅助方法在第三个文件出现时，才提取到根测试包，保持无状态、静态方法、不建继承链。三类已经明确的共享基础设施：`TestFiles`（`write`、`bytes`、带 seed 的 `random`）、`TestWorkspace`（写 config、按 tag 布置 `base/`/`overlay/`/`remove.txt`、拼出桶内对象路径）、`LogSink`（捕获 out/err，可按需注入时钟的 `Log`）。
+- 同一份测试数据或辅助方法在第三个文件出现时，才提取到根测试包，保持无状态、静态方法、不建继承链。三类已经明确的共享基础设施：`TestFiles`（`write`、`bytes`、带 seed 的 `random`）、`TestWorkspace`（写 config、按 tag 布置 `base/`/`overlay/`/`remove.txt`、拼出桶内对象路径）、`TestLogs`（捕获 out/err，开始并结束一次日志运行，按需给 transcript 注入 `Clock`）。
 - 测试数据通过生产代码的写入口构造：`Manifest.write`、`Pointer.write`、`ObjectKeys`。生产代码没有写入口的格式（如 `config.json`）集中在一个 `TestWorkspace.configure` 里，字段名由该格式的测试锁住；不要在多个测试里各写一份 JSON 字符串。
 - 假依赖只出现在边界层与集成层；单元层不依赖 `FakeS3`。
 - 测试数据在内存中生成并固定 seed；不提交二进制测试数据。需要固定字节序列时，用常量或小型文本向量，并注明生成方式。

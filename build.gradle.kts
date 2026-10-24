@@ -1,5 +1,6 @@
 plugins {
     java
+    id("com.gradleup.shadow") version "9.6.1"
 }
 
 group = "io.github.deshark42"
@@ -10,7 +11,17 @@ repositories {
 }
 
 dependencies {
-    testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
+    // Source: https://mvnrepository.com/artifact/org.slf4j/slf4j-api
+    implementation("org.slf4j:slf4j-api:2.0.20")
+    // Source: https://mvnrepository.com/artifact/org.tinylog/tinylog-impl
+    implementation("org.tinylog:tinylog-impl:2.8.1")
+    // Source: https://mvnrepository.com/artifact/org.tinylog/slf4j-tinylog
+    runtimeOnly("org.tinylog:slf4j-tinylog:2.8.1")
+
+    // Source: https://mvnrepository.com/artifact/org.junit/junit-bom
+    implementation(platform("org.junit:junit-bom:6.1.3"))
+    // Source: https://mvnrepository.com/artifact/org.junit.jupiter/junit-jupiter
+    testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
@@ -23,8 +34,11 @@ tasks.test {
     useJUnitPlatform()
 }
 
-tasks.jar {
+tasks.shadowJar {
+    archiveClassifier.set("")
+    mergeServiceFiles()
     manifest {
-        attributes["Main-Class"] = "io.github.deshark42.modpackupdater.Main"
+        attributes("Main-Class" to "io.github.deshark42.modpackupdater.Main")
     }
 }
+tasks.jar { enabled = false }

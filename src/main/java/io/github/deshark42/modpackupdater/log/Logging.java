@@ -1,0 +1,144 @@
+package io.github.deshark42.modpackupdater.log;
+
+import io.github.deshark42.modpackupdater.model.Layout;
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.time.Clock;
+import java.time.LocalDate;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Sets up the logging framework once per process and marks out the run being logged: the console
+ * stream, how much of the log to show, and the transcript the run leaves behind.
+ *
+ * <p><strong>One run at a time.</strong> The writers themselves are configured in
+ * {@code tinylog.properties}, because tinylog applies and freezes its configuration as soon as the
+ * first logger is created, which can happen before this class runs. A run's streams, verbosity and
+ * transcript therefore live in {@link Run}, which the writers read on every entry. That is what lets
+ * a test drive several runs in one JVM.
+ */
+public final class Logging {
+
+    /** How much of the log to print. */
+    public enum Mode {
+        /** Milestones only: what is about to happen, and how it went. */
+        QUIET,
+        /** Also the facts each stage reports. */
+        NORMAL,
+        /** Also one line per file the run touches. */
+        VERBOSE
+    }
+
+    /** Transcripts older than this are removed at the start of the next run. */
+    private static final int KEEP_DAYS = 14;
+
+    private static final Logger LOG = LoggerFactory.getLogger(Logging.class);
+
+    private static volatile Run run;
+
+    private Logging() {
+    }
+
+    /**
+     * Starts the run being logged, dating any transcript by the system clock.
+     *
+     * @param transcriptName the name a transcript should get, or null for a run that writes none
+     */
+    public static void begin(Path workspace, String transcriptName, Mode mode, PrintStream out,
+            PrintStream err) {
+        begin(workspace, transcriptName, mode, out, err, Clock.systemDefaultZone());
+    }
+
+    /** Starts the run being logged; {@code clock} dates the transcript and ages out old ones. */
+    public static void begin(Path workspace, String transcriptName, Mode mode, PrintStream out,
+            PrintStream err, Clock clock) {
+        Run next = new Run(workspace, mode, out, err, new Progress(err, bar(err)), transcriptName,
+                transcriptName == null ? null : open(workspace, transcriptName, clock));
+        run = next;
+    }
+
+    /** Flushes the transcript, says where it went, and ends the run. Safe to call twice. */
+    public static void finish() {
+        Run finished = run;
+        if (finished == null) {
+            return;
+        }
+        if (finished.transcript() != null) {
+            LOG.debug("transcript: {}", Text.relativeTo(finished.workspace(), finished.transcript()));
+        } else if (finished.transcriptName() != null) {
+            LOG.warn("could not keep the transcript under {}",
+                    Text.relativeTo(finished.workspace(), Layout.logsDir(finished.workspace())));
+        }
+        run = null;
+        finished.progress().clear();
+        finished.closeTranscript();
+    }
+
+    /** Erases work in flight from the terminal, if one is on screen. */
+    public static void clearProgress() {
+        Run current = run;
+        if (current != null) {
+            current.progress().clear();
+        }
+    }
+
+    /** One file finished, for the bar drawn only on a terminal. */
+    public static void progress(String verb, long done, long total, long bytes, String noun) {
+        Run current = run;
+        if (current != null) {
+            current.progress().update(verb, done, total, bytes, noun);
+        }
+    }
+
+    /** The run the writers should read, or null between runs. */
+    static Run current() {
+        return run;
+    }
+
+    /** A bar only on a terminal that can take one: piped or captured output gets no frames. */
+    private static boolean bar(PrintStream err) {
+        return err == System.err && System.console() != null
+                && !"dumb".equals(System.getenv("TERM"));
+    }
+
+    /** Opens the day's transcript, pruning the ones that have aged out first. */
+    private static Run.Transcript open(Path workspace, String name, Clock clock) {
+        Path directory = Layout.logsDir(workspace);
+        try {
+            Files.createDirectories(directory);
+            prune(directory, clock);
+            Path file = directory.resolve(name + "-" + LocalDate.now(clock) + ".log");
+            return new Run.Transcript(file, Files.newBufferedWriter(file, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND));
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /** Removes the transcripts older than the retention window; a file that cannot be read is kept. */
+    private static void prune(Path directory, Clock clock) {
+        long cutoff = clock.millis() - TimeUnit.DAYS.toMillis(KEEP_DAYS);
+        try (Stream<Path> files = Files.list(directory)) {
+            for (Path file : files.toList()) {
+                try {
+                    if (file.getFileName().toString().endsWith(".log")
+                            && Files.getLastModifiedTime(file).toMillis() < cutoff) {
+                        Files.deleteIfExists(file);
+                    }
+                } catch (IOException e) {
+                    // a file that cannot be inspected is left alone
+                }
+            }
+        } catch (IOException e) {
+            // a directory that cannot be listed simply has nothing to prune
+        }
+    }
+}

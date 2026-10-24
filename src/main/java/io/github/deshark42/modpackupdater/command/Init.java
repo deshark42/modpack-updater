@@ -2,13 +2,15 @@ package io.github.deshark42.modpackupdater.command;
 
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
-import io.github.deshark42.modpackupdater.log.Log;
+import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Lays out a workspace with the files the tool expects to find: the connection config every
@@ -16,6 +18,8 @@ import java.util.List;
  * overwritten.
  */
 public final class Init {
+
+    private static final Logger LOG = LoggerFactory.getLogger(Init.class);
 
     private static final String TEMPLATE = """
             {
@@ -40,52 +44,51 @@ public final class Init {
     private Init() {
     }
 
-    public static void run(Path workspace, String tag, Log log) {
-        log.headline("init " + workspace);
-        log.phase("workspace");
+    public static void run(Path workspace, String tag) {
+        LOG.debug("init {}", workspace);
         Path config = Layout.configFile(workspace);
-        String shown = Log.relativeTo(workspace, config);
+        String shown = Text.relativeTo(workspace, config);
         List<String> created = new ArrayList<>();
         List<String> kept = new ArrayList<>();
         if (Files.exists(config)) {
-            log.step("kept", shown);
+            LOG.debug("kept {}", shown);
             kept.add(shown);
-            Workspace.fillIn(workspace, log);
+            Workspace.fillIn(workspace);
         } else {
             AtomicFile.write(config, TEMPLATE);
-            log.step("created", shown);
+            LOG.debug("created {}", shown);
             created.add(shown);
         }
         if (tag != null) {
-            directory(Layout.baseDir(workspace, tag), workspace, log, created, kept);
-            directory(Layout.overlayDir(workspace, tag), workspace, log, created, kept);
+            directory(Layout.baseDir(workspace, tag), workspace, created, kept);
+            directory(Layout.overlayDir(workspace, tag), workspace, created, kept);
             Path remove = Layout.removeFile(workspace, tag);
-            String ruleFile = Log.relativeTo(workspace, remove);
+            String ruleFile = Text.relativeTo(workspace, remove);
             if (Files.exists(remove)) {
-                log.step("kept", ruleFile);
+                LOG.debug("kept {}", ruleFile);
                 kept.add(ruleFile);
             } else {
                 AtomicFile.write(remove, REMOVE_TEMPLATE);
-                log.step("created", ruleFile);
+                LOG.debug("created {}", ruleFile);
                 created.add(ruleFile);
             }
         }
-        log.done("workspace is ready");
+        LOG.info("workspace is ready");
         if (!created.isEmpty()) {
-            log.summary("created", String.join(", ", created));
+            LOG.debug("created: {}", String.join(", ", created));
         }
         if (!kept.isEmpty()) {
-            log.summary("kept", String.join(", ", kept));
+            LOG.debug("kept: {}", String.join(", ", kept));
         }
         if (created.contains(shown)) {
-            log.summary("next", "fill in \"endpoint\" and \"bucket\" in " + shown);
+            LOG.debug("next: fill in \"endpoint\" and \"bucket\" in {}", shown);
         }
     }
 
-    private static void directory(Path directory, Path workspace, Log log, List<String> created, List<String> kept) {
-        String shown = Log.relativeTo(workspace, directory);
+    private static void directory(Path directory, Path workspace, List<String> created, List<String> kept) {
+        String shown = Text.relativeTo(workspace, directory);
         if (Files.isDirectory(directory)) {
-            log.step("kept", shown);
+            LOG.debug("kept {}", shown);
             kept.add(shown);
             return;
         }
@@ -94,7 +97,7 @@ public final class Init {
         } catch (IOException e) {
             throw new UserError("cannot create " + directory + ": " + e.getMessage(), e);
         }
-        log.step("created", shown);
+        LOG.debug("created {}", shown);
         created.add(shown);
     }
 }

@@ -6,12 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.deshark42.modpackupdater.FakeS3;
-import io.github.deshark42.modpackupdater.LogSink;
 import io.github.deshark42.modpackupdater.TestFiles;
+import io.github.deshark42.modpackupdater.TestLogs;
 import io.github.deshark42.modpackupdater.TestWorkspace;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.json.Json;
-import io.github.deshark42.modpackupdater.log.Log;
+import io.github.deshark42.modpackupdater.log.Logging;
+import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.IOException;
@@ -27,14 +28,22 @@ class InitTest {
 
     private static final String TAG = "client";
 
-    private final LogSink sink = new LogSink();
-    private final Log log = sink.log();
+    /** Starts a VERBOSE run, runs init in it, and returns what it printed. */
+    private static TestLogs init(Path workspace, String tag) {
+        TestLogs logs = new TestLogs();
+        logs.begin(workspace, Logging.Mode.VERBOSE);
+        try {
+            Init.run(workspace, tag);
+        } finally {
+            logs.close();
+        }
+        return logs;
+    }
 
     /** Whether the run printed one step line with this verb about this path. */
-    private boolean said(String verb, Path workspace, Path file) {
-        String shown = Log.relativeTo(workspace, file);
-        return sink.outText().lines()
-                .anyMatch(line -> line.stripLeading().startsWith(verb + " ") && line.contains(shown));
+    private static boolean said(TestLogs logs, String verb, Path workspace, Path file) {
+        String shown = Text.relativeTo(workspace, file);
+        return logs.outText().lines().anyMatch(line -> line.contains(verb + " " + shown));
     }
 
     private static List<String> rulesIn(Path file) throws IOException {
@@ -46,18 +55,18 @@ class InitTest {
 
     @Test
     void writesAConfigTemplateAndThePublishInputsOfATag(@TempDir Path workspace) throws IOException {
-        Init.run(workspace, TAG, log);
+        TestLogs logs = init(workspace, TAG);
 
         Path config = Layout.configFile(workspace);
-        assertTrue(Files.isRegularFile(config), sink.outText());
-        assertTrue(Files.isDirectory(Layout.baseDir(workspace, TAG)), sink.outText());
-        assertTrue(Files.isDirectory(Layout.overlayDir(workspace, TAG)), sink.outText());
-        assertTrue(Files.isRegularFile(Layout.removeFile(workspace, TAG)), sink.outText());
-        assertTrue(said("created", workspace, config), sink.outText());
-        assertTrue(said("created", workspace, Layout.baseDir(workspace, TAG)), sink.outText());
-        assertTrue(said("created", workspace, Layout.overlayDir(workspace, TAG)), sink.outText());
-        assertTrue(said("created", workspace, Layout.removeFile(workspace, TAG)), sink.outText());
-        assertTrue(sink.outText().contains("fill in \"endpoint\" and \"bucket\""), sink.outText());
+        assertTrue(Files.isRegularFile(config), logs.outText());
+        assertTrue(Files.isDirectory(Layout.baseDir(workspace, TAG)), logs.outText());
+        assertTrue(Files.isDirectory(Layout.overlayDir(workspace, TAG)), logs.outText());
+        assertTrue(Files.isRegularFile(Layout.removeFile(workspace, TAG)), logs.outText());
+        assertTrue(said(logs, "created", workspace, config), logs.outText());
+        assertTrue(said(logs, "created", workspace, Layout.baseDir(workspace, TAG)), logs.outText());
+        assertTrue(said(logs, "created", workspace, Layout.overlayDir(workspace, TAG)), logs.outText());
+        assertTrue(said(logs, "created", workspace, Layout.removeFile(workspace, TAG)), logs.outText());
+        assertTrue(logs.outText().contains("fill in \"endpoint\" and \"bucket\""), logs.outText());
         assertEquals(List.of(), rulesIn(Layout.removeFile(workspace, TAG)),
                 Files.readString(Layout.removeFile(workspace, TAG)));
 
@@ -85,7 +94,7 @@ class InitTest {
         TestFiles.write(Layout.overlayDir(workspace, TAG), "mods/a.jar", TestFiles.bytes("mine"));
         TestFiles.write(workspace, TAG + "/" + Layout.REMOVE, "example-mod-*.jar\n");
 
-        Init.run(workspace, TAG, log);
+        TestLogs logs = init(workspace, TAG);
 
         Config keptConfig = Config.load(workspace);
         assertEquals(endpoint, keptConfig.endpoint(), "the existing config is left alone");
@@ -94,11 +103,11 @@ class InitTest {
         assertEquals(TestWorkspace.SECRET_KEY, keptConfig.secretKey());
         assertTrue(keptConfig.pathStyle());
         assertEquals("example-mod-*.jar\n", Files.readString(Layout.removeFile(workspace, TAG)));
-        assertTrue(said("kept", workspace, Layout.configFile(workspace)), sink.outText());
-        assertTrue(said("kept", workspace, Layout.baseDir(workspace, TAG)), sink.outText());
-        assertTrue(said("kept", workspace, Layout.overlayDir(workspace, TAG)), sink.outText());
-        assertTrue(said("kept", workspace, Layout.removeFile(workspace, TAG)), sink.outText());
-        assertFalse(sink.outText().contains("created"), sink.outText());
+        assertTrue(said(logs, "kept", workspace, Layout.configFile(workspace)), logs.outText());
+        assertTrue(said(logs, "kept", workspace, Layout.baseDir(workspace, TAG)), logs.outText());
+        assertTrue(said(logs, "kept", workspace, Layout.overlayDir(workspace, TAG)), logs.outText());
+        assertTrue(said(logs, "kept", workspace, Layout.removeFile(workspace, TAG)), logs.outText());
+        assertFalse(logs.outText().contains("created"), logs.outText());
         assertEquals("A", Files.readString(Layout.baseDir(workspace, TAG).resolve("mods/a.jar")));
         assertEquals("mine", Files.readString(Layout.overlayDir(workspace, TAG).resolve("mods/a.jar")));
     }
@@ -109,19 +118,19 @@ class InitTest {
             TestWorkspace.configure(workspace, s3);
         }
 
-        Init.run(workspace, null, log);
+        TestLogs logs = init(workspace, null);
 
         Config kept = Config.load(workspace);
         assertEquals(Config.DEFAULT_CONCURRENCY, kept.concurrency());
         assertEquals(TestWorkspace.REGION, kept.region());
         assertTrue(kept.pathStyle());
-        assertTrue(said("config", workspace, Layout.configFile(workspace)), sink.outText());
-        assertTrue(sink.outText().contains("filled in the defaults"), sink.outText());
+        assertTrue(said(logs, "config", workspace, Layout.configFile(workspace)), logs.outText());
+        assertTrue(logs.outText().contains("filled in the defaults"), logs.outText());
     }
 
     @Test
     void withoutATagOnlyTheConfigIsWritten(@TempDir Path workspace) throws IOException {
-        Init.run(workspace, null, log);
+        init(workspace, null);
 
         assertTrue(Files.isRegularFile(Layout.configFile(workspace)));
         try (var entries = Files.list(workspace)) {
@@ -131,9 +140,15 @@ class InitTest {
 
     @Test
     void rejectsATagThatWouldEscapeTheWorkspace(@TempDir Path workspace) {
-        UserError error = assertThrows(UserError.class, () -> Init.run(workspace, "../client", log));
+        TestLogs logs = new TestLogs();
+        logs.begin(workspace, Logging.Mode.VERBOSE);
+        try {
+            UserError error = assertThrows(UserError.class, () -> Init.run(workspace, "../client"));
 
-        assertTrue(error.getMessage().contains("invalid tag"), error.getMessage());
-        assertFalse(Files.exists(workspace.resolve("client")), "no tag directory escapes the workspace");
+            assertTrue(error.getMessage().contains("invalid tag"), error.getMessage());
+            assertFalse(Files.exists(workspace.resolve("client")), "no tag directory escapes the workspace");
+        } finally {
+            logs.close();
+        }
     }
 }

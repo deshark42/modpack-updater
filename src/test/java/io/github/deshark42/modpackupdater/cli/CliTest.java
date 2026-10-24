@@ -4,10 +4,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.deshark42.modpackupdater.FakeS3;
-import io.github.deshark42.modpackupdater.LogSink;
 import io.github.deshark42.modpackupdater.TestFiles;
+import io.github.deshark42.modpackupdater.TestLogs;
 import io.github.deshark42.modpackupdater.TestWorkspace;
-import io.github.deshark42.modpackupdater.log.Log;
+import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.Layout;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import io.github.deshark42.modpackupdater.model.Pointer;
@@ -25,17 +25,18 @@ import org.junit.jupiter.params.provider.MethodSource;
 class CliTest {
 
     private static final String TAG = "client";
+    private static final String DRY_RUN = "INFO dry run: nothing was written";
 
-    private LogSink sink = new LogSink();
+    private TestLogs logs = new TestLogs();
 
     private int run(Path cwd, String... args) {
-        sink = new LogSink();
-        return Cli.run(args, cwd, sink.out(), sink.err());
+        logs = new TestLogs();
+        return Cli.run(args, cwd, logs.out(), logs.err());
     }
 
     private void assertUsage(Path cwd, String fragment, String... args) {
-        assertEquals(Cli.USAGE_ERROR, run(cwd, args), sink.errText());
-        assertTrue(sink.errText().contains(fragment), sink.errText());
+        assertEquals(Cli.USAGE_ERROR, run(cwd, args), logs.errText());
+        assertTrue(logs.errText().contains(fragment), logs.errText());
     }
 
     /** Command lines that the parser has to refuse, and the hint it has to print. */
@@ -66,7 +67,7 @@ class CliTest {
     @Test
     void noCommandIsAUsageError(@TempDir Path cwd) {
         assertEquals(Cli.USAGE_ERROR, run(cwd));
-        assertTrue(sink.errText().contains("usage: modpack-updater"), sink.errText());
+        assertTrue(logs.errText().contains("usage: modpack-updater"), logs.errText());
     }
 
     @Test
@@ -91,7 +92,7 @@ class CliTest {
         TestFiles.write(Layout.baseDir(cwd, TAG), "mods/a.jar", TestFiles.bytes("A"));
 
         assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--dry-run",
-                "--cache-max-age-days", "7"), sink.errText());
+                "--cache-max-age-days", "7"), logs.errText());
     }
 
     @ParameterizedTest(name = "{0}")
@@ -107,8 +108,7 @@ class CliTest {
 
         assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--dry-run"));
 
-        assertTrue(sink.outText().lines().anyMatch(line ->
-                line.matches("dry run: nothing was written, \\d+\\.\\ds")), sink.outText());
+        assertTrue(logs.outText().lines().anyMatch(line -> line.contains(DRY_RUN)), logs.outText());
     }
 
     @Test
@@ -118,15 +118,15 @@ class CliTest {
             TestWorkspace.configure(publisher, s3);
             TestFiles.write(Layout.baseDir(publisher, TAG), "mods/a.jar", TestFiles.bytes("A"));
 
-            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.0"), sink.errText());
+            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.0"), logs.errText());
 
             Path player = root.resolve("player");
             TestWorkspace.configure(player, s3);
             assertEquals(Cli.OK, run(root, "update", "--tag", TAG, "--workspace", player.toString()),
-                    sink.errText());
+                    logs.errText());
 
             assertEquals("A", Files.readString(player.resolve("mods/a.jar")));
-            assertTrue(sink.outText().contains("is now at 2.9.0"), sink.outText());
+            assertTrue(logs.outText().contains("is now at 2.9.0"), logs.outText());
         }
     }
 
@@ -136,29 +136,29 @@ class CliTest {
             Path publisher = root.resolve("publisher");
             TestWorkspace.configure(publisher, s3);
             TestFiles.write(Layout.baseDir(publisher, TAG), "mods/a.jar", TestFiles.bytes("A"));
-            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.0"), sink.errText());
+            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.0"), logs.errText());
             TestFiles.write(Layout.baseDir(publisher, TAG), "mods/a.jar", TestFiles.bytes("A2"));
-            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.1"), sink.errText());
+            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.1"), logs.errText());
 
             Path player = root.resolve("player");
             TestWorkspace.configure(player, s3);
             assertEquals(Cli.OK, run(root, "update", "--tag", TAG, "--id", "2.9.0",
-                    "--workspace", player.toString()), sink.errText());
+                    "--workspace", player.toString()), logs.errText());
 
             assertEquals("A", Files.readString(player.resolve("mods/a.jar")),
                     "the named release, not the latest one, was applied");
-            assertTrue(sink.outText().contains("is now at 2.9.0"), sink.outText());
+            assertTrue(logs.outText().contains("is now at 2.9.0"), logs.outText());
         }
     }
 
     @Test
     void initLaysOutAWorkspace(@TempDir Path cwd) {
-        assertEquals(Cli.OK, run(cwd, "init", "--tag", TAG), sink.errText());
+        assertEquals(Cli.OK, run(cwd, "init", "--tag", TAG), logs.errText());
 
         assertTrue(Files.isRegularFile(Layout.configFile(cwd)));
         assertTrue(Files.isDirectory(Layout.baseDir(cwd, TAG)));
-        assertTrue(sink.outText().contains("created "), sink.outText());
-        assertTrue(sink.outText().contains("workspace is ready"), sink.outText());
+        assertTrue(logs.outText().contains("created "), logs.outText());
+        assertTrue(logs.outText().contains("workspace is ready"), logs.outText());
     }
 
     @Test
@@ -172,16 +172,16 @@ class CliTest {
             Path publisher = root.resolve("publisher");
             TestWorkspace.configure(publisher, s3);
             TestFiles.write(Layout.baseDir(publisher, TAG), "mods/a.jar", TestFiles.bytes("A"));
-            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.0"), sink.errText());
+            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.0"), logs.errText());
             String latest = TestWorkspace.bucketPath(ObjectKeys.latest(TAG));
             String before = s3.text(latest);
             s3.fail("PUT", latest, 500);
 
             assertEquals(Cli.FAILURE, run(publisher, "publish", "--tag", TAG, "--id", "2.9.1"),
-                    sink.errText());
+                    logs.errText());
 
-            assertTrue(sink.errText().startsWith("error: "), sink.errText());
-            assertTrue(sink.errText().contains("HTTP 500"), sink.errText());
+            assertTrue(logs.errText().startsWith("error: "), logs.errText());
+            assertTrue(logs.errText().contains("HTTP 500"), logs.errText());
             assertEquals(before, s3.text(latest), "the pointer the failed run did not reach is unchanged");
             assertEquals("2.9.0", Pointer.parse(before, "latest").releaseId());
         }
@@ -191,8 +191,8 @@ class CliTest {
     void updateOutsideAWorkspaceIsAFailureNotAUsageError(@TempDir Path cwd) {
         assertEquals(Cli.FAILURE, run(cwd, "update", "--tag", TAG));
 
-        assertTrue(sink.errText().startsWith("error: "), sink.errText());
-        assertTrue(sink.errText().contains("config"), sink.errText());
+        assertTrue(logs.errText().startsWith("error: "), logs.errText());
+        assertTrue(logs.errText().contains("config"), logs.errText());
     }
 
     @Test
@@ -201,9 +201,8 @@ class CliTest {
 
         assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--dry-run", "--quiet"));
 
-        assertEquals(1, sink.outText().lines().count(), sink.outText());
-        assertTrue(sink.outText().lines().anyMatch(line ->
-                line.matches("dry run: nothing was written, \\d+\\.\\ds")), sink.outText());
+        assertEquals(1, logs.outText().lines().count(), logs.outText());
+        assertTrue(logs.outText().lines().anyMatch(line -> line.contains(DRY_RUN)), logs.outText());
     }
 
     @Test
@@ -212,9 +211,8 @@ class CliTest {
 
         assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--dry-run", "--verbose"));
 
-        String base = Log.relativeTo(cwd, Layout.baseDir(cwd, TAG));
-        assertTrue(sink.outText().lines().anyMatch(line ->
-                line.stripLeading().startsWith("scan") && line.contains(base)), sink.outText());
+        String base = Text.relativeTo(cwd, Layout.baseDir(cwd, TAG));
+        assertTrue(logs.outText().lines().anyMatch(line -> line.contains("scan " + base)), logs.outText());
     }
 
     @Test

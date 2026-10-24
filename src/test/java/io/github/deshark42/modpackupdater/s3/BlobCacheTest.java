@@ -4,10 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.github.deshark42.modpackupdater.LogSink;
 import io.github.deshark42.modpackupdater.TestFiles;
+import io.github.deshark42.modpackupdater.TestLogs;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.json.Json;
+import io.github.deshark42.modpackupdater.log.Logging;
+import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.IOException;
@@ -21,6 +23,8 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -32,19 +36,33 @@ class BlobCacheTest {
     private static final String HASH_B = Sha256.ofBytes(TestFiles.bytes("cached blob b"));
     private static final String HASH_C = Sha256.ofBytes(TestFiles.bytes("cached blob c"));
 
-    private final LogSink sink = new LogSink();
+    private final TestLogs logs = new TestLogs();
 
     private static Config config(String bucket) {
         return new Config("https://s3.example.com", "us-east-1", bucket, "gtnh/", true, null, null,
                 Config.DEFAULT_CONCURRENCY);
     }
 
+    @BeforeEach
+    void beginLogging(@TempDir Path workspace) {
+        logs.begin(workspace, Logging.Mode.NORMAL);
+    }
+
+    @AfterEach
+    void endLogging() {
+        logs.close();
+    }
+
     private BlobCache open(Path workspace) {
-        return BlobCache.open(workspace, config("pack"), sink.log(), Duration.ofDays(30), CLOCK);
+        return BlobCache.open(workspace, config("pack"), Duration.ofDays(30), CLOCK);
     }
 
     private BlobCache open(Path workspace, Config config, Duration maxAge, Clock clock) {
-        return BlobCache.open(workspace, config, sink.log(), maxAge, clock);
+        return BlobCache.open(workspace, config, maxAge, clock);
+    }
+
+    private static String label(Path workspace) {
+        return Text.relativeTo(workspace, Layout.knownBlobsFile(workspace));
     }
 
     private static List<Map<String, Object>> entries(Path workspace) throws IOException {
@@ -177,8 +195,9 @@ class BlobCacheTest {
         cache.remember(HASH_A);
 
         assertFalse(cache.known(HASH_A));
-        assertTrue(sink.outText().contains("cannot write"), sink.outText());
-        assertTrue(sink.outText().contains(Layout.KNOWN_BLOBS), sink.outText());
+        assertTrue(logs.errText().contains("WARN cannot write the blob cache " + label(workspace)),
+                logs.errText());
+        assertTrue(label(workspace).contains(Layout.KNOWN_BLOBS), label(workspace));
     }
 
     @Test
@@ -189,7 +208,8 @@ class BlobCacheTest {
         cache.remember(HASH_A);
         cache.remember(HASH_B);
 
-        String printed = sink.outText();
+        String printed = logs.errText();
         assertEquals(1, printed.split("cannot write", -1).length - 1, printed);
+        assertFalse(logs.outText().contains("cannot write"), logs.outText());
     }
 }

@@ -4,7 +4,7 @@ import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.command.Init;
 import io.github.deshark42.modpackupdater.command.Publish;
 import io.github.deshark42.modpackupdater.command.Update;
-import io.github.deshark42.modpackupdater.log.Log;
+import io.github.deshark42.modpackupdater.log.Logging;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.HashMap;
@@ -64,9 +64,8 @@ public final class Cli {
         }
         Path workspace = cwd.resolve(options.getOrDefault("workspace", ".")).toAbsolutePath().normalize();
         String tag = options.get("tag");
-        Log log = new Log(out, err, quiet ? Log.Level.QUIET : verbose ? Log.Level.VERBOSE : Log.Level.NORMAL,
-                terminal(out, System.out), terminal(err, System.err),
-                System::nanoTime);
+        Logging.Mode mode = quiet ? Logging.Mode.QUIET
+                : verbose ? Logging.Mode.VERBOSE : Logging.Mode.NORMAL;
         try {
             switch (command) {
                 case "publish" -> {
@@ -89,7 +88,8 @@ public final class Cli {
                             return usage(err, "--cache-max-age-days needs a positive number of days: " + value);
                         }
                     }
-                    Publish.run(workspace, tag, releaseId, cacheMaxAgeDays, dryRun, log);
+                    Logging.begin(workspace, dryRun ? null : "publish-" + tag, mode, out, err);
+                    Publish.run(workspace, tag, releaseId, cacheMaxAgeDays, dryRun);
                     return OK;
                 }
                 case "update" -> {
@@ -99,7 +99,8 @@ public final class Cli {
                     if (options.containsKey("cache-max-age-days")) {
                         return usage(err, "update does not take --cache-max-age-days");
                     }
-                    Update.run(workspace, tag, options.get("id"), dryRun, log);
+                    Logging.begin(workspace, dryRun ? null : "update-" + tag, mode, out, err);
+                    Update.run(workspace, tag, options.get("id"), dryRun);
                     return OK;
                 }
                 case "init" -> {
@@ -112,7 +113,8 @@ public final class Cli {
                     if (dryRun) {
                         return usage(err, "init does not take --dry-run");
                     }
-                    Init.run(workspace, tag, log);
+                    Logging.begin(workspace, null, mode, out, err);
+                    Init.run(workspace, tag);
                     return OK;
                 }
                 default -> {
@@ -120,15 +122,12 @@ public final class Cli {
                 }
             }
         } catch (UserError e) {
-            log.clearProgress();
+            Logging.clearProgress();
             err.println("error: " + e.getMessage());
             return FAILURE;
+        } finally {
+            Logging.finish();
         }
-    }
-
-    /** Colour and bars only when the stream is a terminal that is not asking for plain text. */
-    private static boolean terminal(PrintStream stream, PrintStream system) {
-        return stream == system && System.console() != null && !"dumb".equals(System.getenv("TERM"));
     }
 
     private static int usage(PrintStream err, String message) {

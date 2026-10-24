@@ -5,8 +5,8 @@ import io.github.deshark42.modpackupdater.fs.AtomicFile;
 import io.github.deshark42.modpackupdater.fs.Chunker;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.fs.Sizes;
-import io.github.deshark42.modpackupdater.log.Log;
-import io.github.deshark42.modpackupdater.log.LogFile;
+import io.github.deshark42.modpackupdater.log.Logging;
+import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.ChunkTable;
 import io.github.deshark42.modpackupdater.model.Chunking;
 import io.github.deshark42.modpackupdater.model.Config;
@@ -42,6 +42,8 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Update one tag to the release the bucket says is latest, or to the one named on the command line:
@@ -59,18 +61,20 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class Update {
 
+    private static final Logger LOG = LoggerFactory.getLogger(Update.class);
+
     private Update() {
     }
 
-    public static void run(Path workspace, String tag, String releaseId, boolean dryRun, Log log) {
+    public static void run(Path workspace, String tag, String releaseId, boolean dryRun) {
         Names.requireTag(tag);
         if (releaseId != null) {
             Names.requireReleaseId(releaseId);
         }
-        log.headline("update " + tag);
-        log.phase("plan");
+        LOG.debug("update {}", tag);
+        LOG.debug("plan");
         // a dry run writes nothing at all, not even the defaults this file is missing
-        Config config = dryRun ? Config.load(workspace) : Workspace.load(workspace, log);
+        Config config = dryRun ? Config.load(workspace) : Workspace.load(workspace);
         S3Store store = new S3Store(config);
 
         // an explicit release id bypasses latest.json entirely, so a pinned update works even while
@@ -98,9 +102,9 @@ public final class Update {
         }
 
         if (targetId.equals(applied)) {
-            log.step(verb, tag + " is already at " + applied);
-            log.done(tag + " is already at " + applied);
-            log.summary("version", applied + ", unchanged");
+            LOG.debug("{}: {} is already at {}", verb, tag, applied);
+            LOG.info("done: {} is already at {}", tag, applied);
+            LOG.debug("version: {}, unchanged", applied);
             return;
         }
 
@@ -108,28 +112,29 @@ public final class Update {
         Manifest target = Manifest.parse(new String(store.getBytes(targetKey), StandardCharsets.UTF_8),
                 store.key(targetKey));
         Plan plan = Plan.between(local, target);
-        log.step(verb, applied == null
-                ? tag + " -> " + target.releaseId()
-                : tag + " " + applied + " -> " + target.releaseId(),
-                applied == null ? "first update of this tag" : "");
-        log.step("files", plan.describe(),
-                plan.downloadSize() > 0 ? Sizes.human(plan.downloadSize()) + " to download" : "");
+        if (applied == null) {
+            LOG.debug("{}: {} -> {}, first update of this tag", verb, tag, target.releaseId());
+        } else {
+            LOG.debug("{}: {} {} -> {}", verb, tag, applied, target.releaseId());
+        }
+        LOG.debug("files: {}{}", plan.describe(),
+                plan.downloadSize() > 0 ? ", " + Sizes.human(plan.downloadSize()) + " to download" : "");
         for (String path : plan.added()) {
-            log.item("add", path);
+            LOG.trace("add {}", path);
         }
         for (String path : plan.replaced()) {
-            log.item("replace", path);
+            LOG.trace("replace {}", path);
         }
         for (String path : plan.deleted()) {
-            log.item("delete", path);
+            LOG.trace("delete {}", path);
         }
         String version = applied == null
                 ? "first update -> " + target.releaseId()
                 : applied + " -> " + target.releaseId();
         if (dryRun) {
-            log.dryRun();
-            log.summary("version", version);
-            log.summary("changed", changed(plan, plan.downloadSize(), "to download"));
+            LOG.info("dry run: nothing was written");
+            LOG.debug("version: {}", version);
+            LOG.debug("changed: {}", changed(plan, plan.downloadSize(), "to download"));
             return;
         }
 
@@ -146,10 +151,10 @@ public final class Update {
         List<String> downloads = plan.downloads();
         int total = downloads.size();
         if (moved > 0 || total > 0) {
-            log.phase("apply");
+            LOG.debug("apply");
         }
         if (moved > 0) {
-            log.step("backup", Log.count(moved, "file"), Log.relativeTo(workspace, backup));
+            LOG.debug("backup {}: {}", Text.count(moved, "file"), Text.relativeTo(workspace, backup));
         }
 
         int reused = 0;
@@ -173,13 +178,13 @@ public final class Update {
                 }
                 reused = needed.size() - missing.size();
                 if (reused > 0) {
-                    log.step("chunk", Log.count(reuse.files(), "file"),
-                            Log.count(reused, "chunk") + " reused from " + Log.relativeTo(workspace, backups));
+                    LOG.debug("chunk {}: {} reused from {}", Text.count(reuse.files(), "file"),
+                            Text.count(reused, "chunk"), Text.relativeTo(workspace, backups));
                 }
                 if (!missing.isEmpty()) {
                     Files.createDirectories(Layout.tempDir(workspace));
                     tempDir = Files.createTempDirectory(Layout.tempDir(workspace), "update-");
-                    downloadedBytes = download(store, missing, tempDir, config.concurrency(), log);
+                    downloadedBytes = download(store, missing, tempDir, config.concurrency());
                 }
                 assembleAll(workspace, downloads, target, tables, existing, tempDir, config.concurrency());
             } catch (IOException e) {
@@ -190,30 +195,30 @@ public final class Update {
             }
         }
 
-        log.phase("commit");
+        LOG.debug("commit");
         Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
         target.write(releaseFile);
         new Pointer(target.releaseId()).write(currentFile);
-        log.step("write", Log.relativeTo(workspace, releaseFile));
-        log.step("write", Log.relativeTo(workspace, currentFile));
-        log.done(tag + " is now at " + target.releaseId());
-        log.summary("version", version);
-        log.summary("changed", changed(plan, downloadedBytes, "downloaded"));
-        log.summary("reuse", Log.count(reused, "chunk")
-                + (reused > 0 ? " from " + Log.relativeTo(workspace, backups) : ""));
+        LOG.debug("write {}", Text.relativeTo(workspace, releaseFile));
+        LOG.debug("write {}", Text.relativeTo(workspace, currentFile));
+        LOG.info("done: {} is now at {}", tag, target.releaseId());
+        LOG.debug("version: {}", version);
+        LOG.debug("changed: {}", changed(plan, downloadedBytes, "downloaded"));
+        LOG.debug("reuse: {}", Text.count(reused, "chunk")
+                + (reused > 0 ? " from " + Text.relativeTo(workspace, backups) : ""));
         if (moved > 0) {
-            log.summary("backup", Log.count(moved, "file") + " in " + Log.relativeTo(workspace, backup));
+            LOG.debug("backup: {} in {}", Text.count(moved, "file"), Text.relativeTo(workspace, backup));
         }
-        log.summary("release", Log.relativeTo(workspace, releaseFile));
-        log.summary("state", Log.relativeTo(workspace, currentFile) + " now points at " + target.releaseId());
+        LOG.debug("release: {}", Text.relativeTo(workspace, releaseFile));
+        LOG.debug("state: {}", Text.relativeTo(workspace, currentFile) + " now points at "
+                + target.releaseId());
         if (!plan.isEmpty()) {
-            LogFile.keep(workspace, "update-" + tag, log);
         }
     }
 
     /** The closing line's account of what the run changed and how much of it moved over the wire. */
     private static String changed(Plan plan, long bytes, String how) {
-        return Log.count(plan.size(), "file") + " (" + plan.describe() + ")"
+        return Text.count(plan.size(), "file") + " (" + plan.describe() + ")"
                 + (bytes > 0 ? ", " + Sizes.human(bytes) + " " + how : "");
     }
 
@@ -333,7 +338,7 @@ public final class Update {
     }
 
     /** Fetches the missing chunks into the run's temporary directory, one file per chunk. */
-    private static long download(S3Store store, List<String> missing, Path tempDir, int concurrency, Log log) {
+    private static long download(S3Store store, List<String> missing, Path tempDir, int concurrency) {
         int total = missing.size();
         AtomicInteger done = new AtomicInteger();
         AtomicLong bytes = new AtomicLong();
@@ -347,11 +352,11 @@ public final class Update {
             } catch (IOException e) {
                 throw new UserError("cannot read " + file + ": " + e.getMessage(), e);
             }
-            log.progress("download", done.incrementAndGet(), total, bytes.addAndGet(length), "chunk");
+            Logging.progress("download", done.incrementAndGet(), total, bytes.addAndGet(length), "chunk");
         });
         long nanos = System.nanoTime() - startedAt;
-        log.step("download", Log.count(done.get(), "chunk"), Sizes.human(bytes.get()) + " in "
-                + Log.duration(nanos) + " (" + Sizes.rate(bytes.get(), nanos) + ")");
+        LOG.debug("download {}: {} in {} ({})", Text.count(done.get(), "chunk"),
+                Sizes.human(bytes.get()), Text.duration(nanos), Sizes.rate(bytes.get(), nanos));
         return bytes.get();
     }
 

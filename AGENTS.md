@@ -24,7 +24,7 @@ src/main/java/io/github/deshark42/modpackupdater/
   fs/         chunking, hashing, atomic writes, tree scan
   s3/         S3 client (SigV4) and the blob existence cache
   json/       JSON reader/writer
-  log/        terminal output and run transcripts
+  log/        logging setup, console and transcript writers
   util/       parallel execution
 src/test/java/  JUnit 5; FakeS3 serves an in-process S3 endpoint
 .agents/        Agent Notes and skills
@@ -32,7 +32,7 @@ scripts/        Agent Note gates
 build.gradle.kts, gradle/   Java 17 build and Gradle wrapper
 ```
 
-The runtime uses only the JDK: JSON, SigV4 and the HTTP client are implemented in-tree.
+JSON, SigV4 and the HTTP client are implemented in-tree; logging is SLF4J over tinylog, shaded into the runnable jar.
 
 ## Commands
 

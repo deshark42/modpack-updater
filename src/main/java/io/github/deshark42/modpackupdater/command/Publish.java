@@ -5,8 +5,8 @@ import io.github.deshark42.modpackupdater.fs.Chunker;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.fs.Sizes;
 import io.github.deshark42.modpackupdater.fs.Tree;
-import io.github.deshark42.modpackupdater.log.Log;
-import io.github.deshark42.modpackupdater.log.LogFile;
+import io.github.deshark42.modpackupdater.log.Logging;
+import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.Chunking;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.FileEntry;
@@ -36,6 +36,8 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Publish one complete release of a tag: merge the tag's base tree with its overlay, drop what
@@ -51,41 +53,43 @@ public final class Publish {
     /** How long the local blob cache stays usable unless the publish command says otherwise. */
     public static final int DEFAULT_CACHE_MAX_AGE_DAYS = 30;
 
+    private static final Logger LOG = LoggerFactory.getLogger(Publish.class);
+
     private Publish() {
     }
 
-    public static void run(Path workspace, String tag, String releaseId, boolean dryRun, Log log) {
-        run(workspace, tag, releaseId, DEFAULT_CACHE_MAX_AGE_DAYS, dryRun, log);
+    public static void run(Path workspace, String tag, String releaseId, boolean dryRun) {
+        run(workspace, tag, releaseId, DEFAULT_CACHE_MAX_AGE_DAYS, dryRun);
     }
 
     public static void run(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
-            boolean dryRun, Log log) {
+            boolean dryRun) {
         Names.requireTag(tag);
         Names.requireReleaseId(releaseId);
         if (cacheMaxAgeDays < 1) {
             throw new UserError("cache max age must be at least 1 day: " + cacheMaxAgeDays);
         }
-        log.headline("publish " + tag + " " + releaseId);
-        log.phase("inputs");
+        LOG.debug("publish {} {}", tag, releaseId);
+        LOG.debug("inputs");
         Path base = Layout.baseDir(workspace, tag);
         Path overlay = Layout.overlayDir(workspace, tag);
         Map<String, Long> baseFiles = Tree.list(base);
-        log.step("scan", Log.relativeTo(workspace, base),
-                Log.count(baseFiles.size(), "file") + ", " + Sizes.human(total(baseFiles)));
+        LOG.debug("scan {}: {}, {}", Text.relativeTo(workspace, base),
+                Text.count(baseFiles.size(), "file"), Sizes.human(total(baseFiles)));
         boolean hasOverlay = Files.isDirectory(overlay);
         Map<String, Long> overlayFiles = hasOverlay ? Tree.list(overlay) : Map.of();
         if (hasOverlay) {
-            log.step("scan", Log.relativeTo(workspace, overlay),
-                    Log.count(overlayFiles.size(), "file") + ", " + Sizes.human(total(overlayFiles)));
+            LOG.debug("scan {}: {}, {}", Text.relativeTo(workspace, overlay),
+                    Text.count(overlayFiles.size(), "file"), Sizes.human(total(overlayFiles)));
         }
         RemoveRules rules = RemoveRules.read(Layout.removeFile(workspace, tag));
         RemoveRules.Outcome outcome = rules.apply(baseFiles.keySet());
         if (rules.size() > 0) {
-            log.step("remove", Log.count(outcome.removed().size(), "file"),
-                    "from " + Log.count(rules.size(), "rule"));
+            LOG.debug("remove {} from {}", Text.count(outcome.removed().size(), "file"),
+                    Text.count(rules.size(), "rule"));
         }
         if (!outcome.unmatched().isEmpty()) {
-            log.step("stale", Log.count(outcome.unmatched().size(), "rule"),
+            LOG.debug("stale {}: {}", Text.count(outcome.unmatched().size(), "rule"),
                     String.join(", ", outcome.unmatched()));
         }
         Map<String, Long> files = new TreeMap<>(baseFiles);
@@ -96,34 +100,35 @@ public final class Publish {
         for (Map.Entry<String, Long> entry : overlayFiles.entrySet()) {
             if (files.put(entry.getKey(), entry.getValue()) == null) {
                 added++;
-                log.item("add", entry.getKey());
+                LOG.trace("add {}", entry.getKey());
             } else {
                 replaced++;
-                log.item("replace", entry.getKey());
+                LOG.trace("replace {}", entry.getKey());
             }
             overlaid.add(entry.getKey());
         }
-        log.step("merge", Log.count(added, "file") + " added, " + Log.count(replaced, "file") + " replaced",
-                Log.count(files.size(), "file") + ", " + Sizes.human(total(files)));
+        LOG.debug("merge {} added, {} replaced: {}, {}", Text.count(added, "file"),
+                Text.count(replaced, "file"), Text.count(files.size(), "file"),
+                Sizes.human(total(files)));
         String releaseKey = ObjectKeys.release(tag, releaseId);
         String latestKey = ObjectKeys.latest(tag);
         String contents = contents(added, replaced, rules, outcome, files);
         if (dryRun) {
-            log.dryRun();
-            log.summary("contents", contents);
-            log.summary("release", releaseKey);
-            log.summary("latest", latestKey + " would point at " + releaseId);
+            LOG.info("dry run: nothing was written");
+            LOG.debug("contents: {}", contents);
+            LOG.debug("release: {}", releaseKey);
+            LOG.debug("latest: {} would point at {}", latestKey, releaseId);
             return;
         }
 
-        log.phase("transfer");
-        Config config = Workspace.load(workspace, log);
+        LOG.debug("transfer");
+        Config config = Workspace.load(workspace);
         S3Store store = new S3Store(config);
         if (store.exists(releaseKey)) {
             throw new UserError("release " + releaseId + " of tag " + tag
                     + " already exists; a published release is never rewritten");
         }
-        BlobCache cache = BlobCache.open(workspace, config, log, Duration.ofDays(cacheMaxAgeDays));
+        BlobCache cache = BlobCache.open(workspace, config, Duration.ofDays(cacheMaxAgeDays));
 
         // Splitting every file also hashes it, so the manifest is complete before anything moves.
         Map<String, FileEntry> entries = new ConcurrentHashMap<>();
@@ -137,7 +142,8 @@ public final class Publish {
             entries.put(path, new FileEntry(split.hash(), split.table().size(), split.table().indexId()));
             tables.putIfAbsent(split.table().indexId(), split.table().bytes());
         });
-        log.step("chunk", Log.count(entries.size(), "file"), Log.count(placements.size(), "chunk"));
+        LOG.debug("chunk {}: {}", Text.count(entries.size(), "file"),
+                Text.count(placements.size(), "chunk"));
 
         // Ask which chunks and chunk tables are missing before uploading, so progress can count
         // them. Objects the cache already knows cost no request at all.
@@ -160,14 +166,15 @@ public final class Publish {
         for (Placement placement : pendingChunks.values()) {
             pendingBytes += placement.cut().length();
         }
-        log.step("plan", Log.count(toUpload, "chunk") + " to upload, " + Log.count(skipped, "chunk") + " already there",
-                toUpload > 0 ? Sizes.human(pendingBytes) + " to upload" : "");
+        LOG.debug("plan {} to upload, {} already there{}", Text.count(toUpload, "chunk"),
+                Text.count(skipped, "chunk"),
+                toUpload > 0 ? ", " + Sizes.human(pendingBytes) + " to upload" : "");
         Set<String> uploading = new TreeSet<>();
         for (Placement placement : pendingChunks.values()) {
             uploading.add(placement.path());
         }
         for (String path : uploading) {
-            log.item("upload", path);
+            LOG.trace("upload {}", path);
         }
         AtomicInteger uploaded = new AtomicInteger();
         AtomicLong uploadedBytes = new AtomicLong();
@@ -181,16 +188,16 @@ public final class Publish {
             store.putBytes(ObjectKeys.blob(chunk.getKey()), bytes);
             cache.remember(chunk.getKey());
             int done = uploaded.incrementAndGet();
-            log.progress("upload", done, toUpload, uploadedBytes.addAndGet(bytes.length), "chunk");
+            Logging.progress("upload", done, toUpload, uploadedBytes.addAndGet(bytes.length), "chunk");
         });
         long uploadNanos = System.nanoTime() - uploadStartedAt;
         if (toUpload > 0) {
-            log.step("upload", Log.count(uploaded.get(), "chunk"),
-                    Sizes.human(uploadedBytes.get()) + " in " + Log.duration(uploadNanos)
-                            + " (" + Sizes.rate(uploadedBytes.get(), uploadNanos) + ")");
+            LOG.debug("upload {}: {} in {} ({})", Text.count(uploaded.get(), "chunk"),
+                    Sizes.human(uploadedBytes.get()), Text.duration(uploadNanos),
+                    Sizes.rate(uploadedBytes.get(), uploadNanos));
         }
         if (skipped > 0) {
-            log.step("skip", Log.count(skipped, "chunk"), "already in the bucket");
+            LOG.debug("skip {}: already in the bucket", Text.count(skipped, "chunk"));
         }
         if (!pendingTables.isEmpty()) {
             long tableBytes = 0;
@@ -203,38 +210,38 @@ public final class Publish {
                 cache.remember(table.getKey());
             });
             long tableNanos = System.nanoTime() - tableStartedAt;
-            log.step("write", Log.count(pendingTables.size(), "chunk table"),
-                    Sizes.human(tableBytes) + " in " + Log.duration(tableNanos)
-                            + " (" + Sizes.rate(tableBytes, tableNanos) + ")");
+            LOG.debug("write {}: {} in {} ({})", Text.count(pendingTables.size(), "chunk table"),
+                    Sizes.human(tableBytes), Text.duration(tableNanos),
+                    Sizes.rate(tableBytes, tableNanos));
         }
 
         Manifest manifest = new Manifest(tag, releaseId, Instant.now().truncatedTo(ChronoUnit.SECONDS),
                 Manifest.SHA256, new TreeMap<>(entries));
-        log.phase("commit");
-        log.step("write", releaseKey, write(store, releaseKey, manifest.toJson()));
-        log.step("write", latestKey, write(store, latestKey, new Pointer(releaseId).toJson()));
-        log.done(tag + " " + releaseId + " is now the latest");
-        log.summary("contents", contents);
-        log.summary("uploaded", uploaded(toUpload, uploaded.get(), skipped, uploadedBytes.get(), uploadNanos));
-        log.summary("release", releaseKey);
-        log.summary("latest", latestKey + " now points at " + releaseId);
-        LogFile.keep(workspace, "publish-" + tag, log);
+        LOG.debug("commit");
+        LOG.debug("write {}: {}", releaseKey, write(store, releaseKey, manifest.toJson()));
+        LOG.debug("write {}: {}", latestKey, write(store, latestKey, new Pointer(releaseId).toJson()));
+        LOG.info("done: {} {} is now the latest", tag, releaseId);
+        LOG.debug("contents: {}", contents);
+        LOG.debug("uploaded: {}",
+                uploaded(toUpload, uploaded.get(), skipped, uploadedBytes.get(), uploadNanos));
+        LOG.debug("release: {}", releaseKey);
+        LOG.debug("latest: {} now points at {}", latestKey, releaseId);
     }
 
     /** What ended up in the release, and how the base tree and the overlay were narrowed to it. */
     private static String contents(int added, int replaced, RemoveRules rules, RemoveRules.Outcome outcome,
             Map<String, Long> files) {
         StringBuilder text = new StringBuilder(
-                Log.count(files.size(), "file") + ", " + Sizes.human(total(files)));
+                Text.count(files.size(), "file") + ", " + Sizes.human(total(files)));
         List<String> parts = new ArrayList<>();
         if (added + replaced > 0) {
-            parts.add(Log.count(added, "file") + " added, " + Log.count(replaced, "file") + " replaced");
+            parts.add(Text.count(added, "file") + " added, " + Text.count(replaced, "file") + " replaced");
         }
         if (rules.size() > 0) {
-            parts.add(Log.count(outcome.removed().size(), "file") + " removed by " + Log.count(rules.size(), "rule"));
+            parts.add(Text.count(outcome.removed().size(), "file") + " removed by " + Text.count(rules.size(), "rule"));
         }
         if (!outcome.unmatched().isEmpty()) {
-            parts.add(Log.count(outcome.unmatched().size(), "rule") + " matched nothing");
+            parts.add(Text.count(outcome.unmatched().size(), "rule") + " matched nothing");
         }
         if (!parts.isEmpty()) {
             text.append(" (").append(String.join("; ", parts)).append(")");
@@ -244,11 +251,11 @@ public final class Publish {
 
     private static String uploaded(int toUpload, int uploaded, int skipped, long bytes, long nanos) {
         if (toUpload == 0) {
-            return skipped == 0 ? "nothing to upload" : "nothing to upload; " + Log.count(skipped, "chunk") + " already stored";
+            return skipped == 0 ? "nothing to upload" : "nothing to upload; " + Text.count(skipped, "chunk") + " already stored";
         }
-        return Log.count(uploaded, "chunk") + ", " + Sizes.human(bytes) + " in " + Log.duration(nanos)
+        return Text.count(uploaded, "chunk") + ", " + Sizes.human(bytes) + " in " + Text.duration(nanos)
                 + " (" + Sizes.rate(bytes, nanos) + ")"
-                + (skipped > 0 ? "; " + Log.count(skipped, "chunk") + " already stored" : "");
+                + (skipped > 0 ? "; " + Text.count(skipped, "chunk") + " already stored" : "");
     }
 
     private static long total(Map<String, Long> files) {

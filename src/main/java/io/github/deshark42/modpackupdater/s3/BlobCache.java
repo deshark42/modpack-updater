@@ -2,7 +2,7 @@ package io.github.deshark42.modpackupdater.s3;
 
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.json.Json;
-import io.github.deshark42.modpackupdater.log.Log;
+import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.Layout;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
@@ -23,6 +23,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The objects a workspace has already confirmed in the bucket (chunks and chunk tables alike),
@@ -45,6 +47,8 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class BlobCache {
 
+    private static final Logger LOG = LoggerFactory.getLogger(BlobCache.class);
+
     /** The hash of a sha256 content address, as the manifest carries it. */
     private static final int HASH_LENGTH = 64;
     private static final String VERSION = "v1";
@@ -56,30 +60,28 @@ public final class BlobCache {
     private final String fingerprint;
     private final long maxAgeSeconds;
     private final Clock clock;
-    private final Log log;
     private final Set<String> known;
     private boolean reset;
     private boolean writable = true;
     private boolean warned;
 
     private BlobCache(Path file, String label, String fingerprint, long maxAgeSeconds, Clock clock,
-            Log log, Set<String> known, boolean reset) {
+            Set<String> known, boolean reset) {
         this.file = file;
         this.label = label;
         this.fingerprint = fingerprint;
         this.maxAgeSeconds = maxAgeSeconds;
         this.clock = clock;
-        this.log = log;
         this.known = known;
         this.reset = reset;
     }
 
     /** Loads the cache for {@code config}'s bucket location, starting empty if it is unusable. */
-    public static BlobCache open(Path workspace, Config config, Log log, Duration maxAge) {
-        return open(workspace, config, log, maxAge, Clock.systemUTC());
+    public static BlobCache open(Path workspace, Config config, Duration maxAge) {
+        return open(workspace, config, maxAge, Clock.systemUTC());
     }
 
-    static BlobCache open(Path workspace, Config config, Log log, Duration maxAge, Clock clock) {
+    static BlobCache open(Path workspace, Config config, Duration maxAge, Clock clock) {
         Path file = Layout.knownBlobsFile(workspace);
         String fingerprint = fingerprint(config);
         Read read = read(file);
@@ -92,8 +94,8 @@ public final class BlobCache {
         if (usable) {
             known.addAll(read.hashes());
         }
-        return new BlobCache(file, Log.relativeTo(workspace, file), fingerprint, maxAgeSeconds, clock,
-                log, known, !usable);
+        return new BlobCache(file, Text.relativeTo(workspace, file), fingerprint, maxAgeSeconds, clock,
+                known, !usable);
     }
 
     /** Whether the chunk with this hash is in the bucket, asking the store only on a cache miss. */
@@ -213,7 +215,7 @@ public final class BlobCache {
         }
         warned = true;
         String message = e.getMessage() == null ? "write failed" : e.getMessage();
-        log.step("cache", "cannot write " + label, message);
+        LOG.warn("cannot write the blob cache {}: {}", label, message);
     }
 
     private static Read read(Path file) {
