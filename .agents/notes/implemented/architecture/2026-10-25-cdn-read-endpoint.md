@@ -1,6 +1,6 @@
 # Agent Note: 经 CDN 读取对象存储
 
-Status: proposed
+Status: implemented
 
 ## 问题
 
