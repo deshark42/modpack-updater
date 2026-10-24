@@ -23,10 +23,10 @@ class ChunkTableTest {
     @Test
     void writesTheDocumentedShape() {
         String json = table().toJson();
-        assertTrue(json.contains("\"version\": " + ChunkTable.VERSION), json);
-        assertTrue(json.contains("\"algorithm\": \"" + ChunkTable.ALGORITHM + "\""), json);
-        assertTrue(json.contains("\"chunking\": { \"min\": 8192, \"avg\": 32768, \"max\": 131072 }"), json);
-        assertTrue(json.contains("\"size\": 70000"), json);
+        assertTrue(json.contains("\"version\":" + ChunkTable.VERSION), json);
+        assertTrue(json.contains("\"algorithm\":\"" + ChunkTable.ALGORITHM + "\""), json);
+        assertTrue(json.contains("\"chunking\":{\"min\":8192,\"avg\":32768,\"max\":131072}"), json);
+        assertTrue(json.contains("\"size\":70000"), json);
         assertTrue(json.contains("\"" + FIRST + "\""), json);
     }
 

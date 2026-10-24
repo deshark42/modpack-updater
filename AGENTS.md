@@ -23,7 +23,7 @@ src/main/java/io/github/deshark42/modpackupdater/
   model/      manifest, pointer, config, layout, chunk table, path rules
   fs/         chunking, hashing, atomic writes, tree scan
   s3/         S3 client (SigV4) and the blob existence cache
-  json/       JSON reader/writer
+  json/       JSON reading and writing (Gson)
   log/        logging setup, console and transcript writers
   util/       parallel execution
 src/test/java/  JUnit 5; FakeS3 serves an in-process S3 endpoint
@@ -32,7 +32,7 @@ scripts/        Agent Note gates
 build.gradle.kts, gradle/   Java 17 build and Gradle wrapper
 ```
 
-JSON, SigV4 and the HTTP client are implemented in-tree; logging is SLF4J over tinylog, shaded into the runnable jar.
+SigV4 and the HTTP client are implemented in-tree; JSON is read and written through Gson and logging is SLF4J over tinylog, both shaded into the runnable jar.
 
 ## Commands
 

@@ -15,7 +15,7 @@ class PointerTest {
     @Test
     void roundTripsThroughItsOwnJson() {
         Pointer pointer = new Pointer("2.9.0-RC1");
-        assertTrue(pointer.toJson().contains("\"version\": " + Pointer.VERSION));
+        assertTrue(pointer.toJson().contains("\"version\":" + Pointer.VERSION));
         assertEquals(pointer, Pointer.parse(pointer.toJson(), "latest.json"));
     }
 

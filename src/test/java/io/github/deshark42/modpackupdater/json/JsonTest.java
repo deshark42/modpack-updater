@@ -38,12 +38,17 @@ class JsonTest {
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("hash", "abc");
         entry.put("size", 2048L);
-        assertEquals("{ \"hash\": \"abc\", \"size\": 2048 }\n", Json.write(entry));
+        assertEquals("{\"hash\":\"abc\",\"size\":2048}\n", Json.write(entry));
     }
 
     @Test
     void writesArraysOfScalarsOnOneLine() {
-        assertEquals("[ 1, 2, \"x\" ]\n", Json.write(List.of(1L, 2L, "x")));
+        assertEquals("[1,2,\"x\"]\n", Json.write(List.of(1L, 2L, "x")));
+    }
+
+    @Test
+    void writesNestedDocumentsOnOneLine() {
+        assertEquals("{\"files\":{\"mods/x.jar\":{\"size\":1}}}\n", Json.write(nested()));
     }
 
     @Test
@@ -55,14 +60,10 @@ class JsonTest {
     }
 
     @Test
-    void writesNestedObjectsWithIndentation() {
-        Map<String, Object> inner = new LinkedHashMap<>();
-        inner.put("size", 1L);
-        Map<String, Object> innerHolder = new LinkedHashMap<>();
-        innerHolder.put("mods/x.jar", inner);
-        Map<String, Object> outer = new LinkedHashMap<>();
-        outer.put("files", innerHolder);
-        assertEquals("{\n  \"files\": {\n    \"mods/x.jar\": { \"size\": 1 }\n  }\n}\n", Json.write(outer));
+    void writesPrettyNestedObjectsOneFieldPerLine() {
+        assertEquals(
+                "{\n  \"files\": {\n    \"mods/x.jar\": {\n      \"size\": 1\n    }\n  }\n}\n",
+                Json.writePretty(nested()));
     }
 
     @Test
@@ -71,35 +72,45 @@ class JsonTest {
     }
 
     @Test
+    void leavesHtmlCharactersAlone() {
+        assertEquals("\"a<b&c=d'e>f/g\"\n", Json.write("a<b&c=d'e>f/g"));
+    }
+
+    @Test
+    void writesNullsInsteadOfDroppingThem() {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("a", null);
+        assertEquals("{\"a\":null}\n", Json.write(entry));
+    }
+
+    @Test
     void rejectsTrailingContent() {
-        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("{} x")).getMessage().contains("trailing"));
+        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("{} x")).getMessage().contains("malformed JSON"));
     }
 
     @Test
     void rejectsUnterminatedString() {
-        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("\"abc")).getMessage().contains("unterminated"));
+        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("\"abc")).getMessage().contains("Unterminated string"));
     }
 
     @Test
     void rejectsRawControlCharacter() {
-        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("\"a\nb\"")).getMessage().contains("control"));
+        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("\"a\nb\"")).getMessage().contains("Unescaped control character"));
     }
 
     @Test
     void rejectsBadEscape() {
-        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("\"a\\qb\"")).getMessage().contains("escape"));
+        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("\"a\\qb\"")).getMessage().contains("Invalid escape"));
     }
 
     @Test
     void rejectsMissingValue() {
-        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("{\"a\":}")).getMessage().contains("value"));
+        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("{\"a\":}")).getMessage().contains("Expected value"));
     }
 
     @Test
-    void rejectsNestingDeeperThanTheLimit() {
-        String deep = "[".repeat(70) + "0" + "]".repeat(70);
-
-        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse(deep)).getMessage().contains("too deep"));
+    void rejectsAnEmptyDocument() {
+        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("  \n")).getMessage().contains("empty"));
     }
 
     @Test
@@ -114,5 +125,15 @@ class JsonTest {
         UserError error = assertThrows(UserError.class, () -> Json.asArray(Json.parse("{}"), "chunks"));
 
         assertTrue(error.getMessage().contains("expected an array"), error.getMessage());
+    }
+
+    private static Map<String, Object> nested() {
+        Map<String, Object> inner = new LinkedHashMap<>();
+        inner.put("size", 1L);
+        Map<String, Object> innerHolder = new LinkedHashMap<>();
+        innerHolder.put("mods/x.jar", inner);
+        Map<String, Object> outer = new LinkedHashMap<>();
+        outer.put("files", innerHolder);
+        return outer;
     }
 }

@@ -48,9 +48,9 @@ class ManifestTest {
     void roundTripsThroughItsOwnJson() {
         Manifest manifest = Manifest.parse(manifest(entry("mods/x.jar", HASH, 12)), "m.json");
         assertEquals(manifest, Manifest.parse(manifest.toJson(), "round trip"));
-        assertTrue(manifest.toJson().contains("\"version\": " + Manifest.VERSION));
-        assertTrue(manifest.toJson().contains("\"hash_algorithm\": \"" + Manifest.SHA256 + "\""));
-        assertTrue(manifest.toJson().contains("\"index_id\": \"" + INDEX_ID + "\""));
+        assertTrue(manifest.toJson().contains("\"version\":" + Manifest.VERSION));
+        assertTrue(manifest.toJson().contains("\"hash_algorithm\":\"" + Manifest.SHA256 + "\""));
+        assertTrue(manifest.toJson().contains("\"index_id\":\"" + INDEX_ID + "\""));
     }
 
     @Test

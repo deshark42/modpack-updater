@@ -17,6 +17,8 @@ dependencies {
     implementation("org.tinylog:tinylog-impl:2.8.1")
     // Source: https://mvnrepository.com/artifact/org.tinylog/slf4j-tinylog
     runtimeOnly("org.tinylog:slf4j-tinylog:2.8.1")
+    // Source: https://mvnrepository.com/artifact/com.google.code.gson/gson
+    implementation("com.google.code.gson:gson:2.14.0")
 
     // Source: https://mvnrepository.com/artifact/org.junit/junit-bom
     implementation(platform("org.junit:junit-bom:6.1.3"))
