@@ -38,6 +38,7 @@ The runtime uses only the JDK: JSON, SigV4 and the HTTP client are implemented i
 
 ```sh
 npm run verify   # all Agent Note gates: path/class, header/sections, sealed archive
+npm run install-hooks  # make every push run the checks its files need
 ./gradlew test    # JUnit suite
 ./gradlew build   # compile, test, jar (build/libs/modpack-updater-<version>.jar)
 ```
@@ -56,9 +57,11 @@ All commands take `--workspace` and `--verbose`/`--quiet`; `publish` and `update
 
 ## Run relevant checks locally
 
-Before pushing, follow [pre-push-checks](.agents/skills/pre-push-checks/SKILL.md); report only the commands run.
+Before pushing, follow [pre-push-checks](.agents/skills/pre-push-checks/SKILL.md); report only the commands run. `npm run install-hooks` points git at `.githooks/pre-push`, which selects those checks from the files a push carries; `git push --no-verify` is the explicit bypass.
 
-- Never default to the full suite or repeat a passing check for commit or push. CI, once configured, owns exhaustive coverage.
+- Match evidence to the surface: the package tests a production change reaches, `npm run verify` for Agent Notes, docs and the gate scripts, and `./gradlew test` when build files or shared test fixtures change.
+- Never default to the full suite or repeat a passing check for commit or push. CI owns exhaustive coverage and the platform matrix; rehearse everything locally only by explicit request, for CI diagnosis, or for an irreducibly repository-wide change.
+- CI is the gate, not just the suite: [ci.yml](.github/workflows/ci.yml) runs `./gradlew build` on Linux and Windows plus the Agent Note gates. A push is not done until its run is green.
 
 ## Conventions
 

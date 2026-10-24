@@ -1,0 +1,3 @@
+#!/bin/sh
+# Runs the checks the files a push carries need; see AGENTS.md.
+exec node "$(git rev-parse --show-toplevel)/scripts/pre-push.ts"
