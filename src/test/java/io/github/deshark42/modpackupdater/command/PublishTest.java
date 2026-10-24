@@ -45,20 +45,19 @@ class PublishTest {
         captured = new TestLogs();
     }
 
-    private void publish(Path workspace, String tag, String releaseId, boolean dryRun) {
-        publish(workspace, tag, releaseId, Publish.DEFAULT_CACHE_MAX_AGE_DAYS, dryRun);
+    private void publish(Path workspace, String tag, String releaseId) {
+        publish(workspace, tag, releaseId, Publish.DEFAULT_CACHE_MAX_AGE_DAYS);
     }
 
-    private void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays, boolean dryRun) {
-        publish(workspace, tag, releaseId, cacheMaxAgeDays, dryRun, Logging.Mode.VERBOSE);
+    private void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays) {
+        publish(workspace, tag, releaseId, cacheMaxAgeDays, Logging.Mode.VERBOSE);
     }
 
-    private void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays, boolean dryRun,
-            Logging.Mode mode) {
+    private void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays, Logging.Mode mode) {
         resetLog();
-        captured.begin(workspace, dryRun ? null : "publish-" + tag, mode);
+        captured.begin(workspace, "publish-" + tag, mode);
         try {
-            Publish.run(workspace, tag, releaseId, cacheMaxAgeDays, dryRun);
+            Publish.run(workspace, tag, releaseId, cacheMaxAgeDays);
         } finally {
             captured.close();
         }
@@ -71,15 +70,6 @@ class PublishTest {
         return second < 0 ? line : line.substring(second + 1);
     }
 
-    /** The message body of the first output line containing this marker, or null. */
-    private static String line(String text, String marker) {
-        for (String candidate : text.split("\n")) {
-            if (candidate.contains(marker)) {
-                return body(candidate);
-            }
-        }
-        return null;
-    }
 
     /** Where the stage heading of this name appears, or -1. */
     private static int stageOf(List<String> lines, String stage) {
@@ -165,7 +155,7 @@ class PublishTest {
             TestWorkspace.base(workspace, TAG, "mods/b.jar", "A");
             TestWorkspace.base(workspace, TAG, "mmc-pack.json", "{}");
 
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
 
             String chunk = chunkOf("A");
             String table = tableOf("A").indexId();
@@ -205,12 +195,12 @@ class PublishTest {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
             int before = s3.objectCount();
 
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "changed");
             UserError error = assertThrows(UserError.class,
-                    () -> publish(workspace, TAG, "2.9.0", false));
+                    () -> publish(workspace, TAG, "2.9.0"));
 
             assertTrue(error.getMessage().contains("already exists"), error.getMessage());
             assertEquals(before, s3.objectCount());
@@ -218,20 +208,9 @@ class PublishTest {
     }
 
     @Test
-    void dryRunUploadsNothingAndNeedsNoConnection(@TempDir Path workspace) throws IOException {
-        TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
-
-        publish(workspace, TAG, "2.9.0", true);
-
-        assertTrue(captured.outText().contains("dry run"), captured.outText());
-        assertTrue(captured.outText().contains("1 file,"), captured.outText());
-        assertFalse(Files.exists(Layout.knownBlobsFile(workspace)), "a dry run writes no cache");
-    }
-
-    @Test
     void reportsATagWithoutABaseDirectory(@TempDir Path workspace) {
         UserError error = assertThrows(UserError.class,
-                () -> publish(workspace, TAG, "2.9.0", false));
+                () -> publish(workspace, TAG, "2.9.0"));
         assertTrue(error.getMessage().contains("no such directory"), error.getMessage());
     }
 
@@ -240,10 +219,10 @@ class PublishTest {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
 
             TestWorkspace.base(workspace, TAG, "mods/b.jar", "B");
-            publish(workspace, TAG, "2.9.1", false);
+            publish(workspace, TAG, "2.9.1");
 
             List<String> requests = s3.requests();
             assertEquals(2, requests.stream().filter(request -> request.startsWith("PUT " + blobsPrefix())).count(),
@@ -263,11 +242,11 @@ class PublishTest {
             byte[] after = before.clone();
             after[150_000] ^= 0x7f;
             TestFiles.write(Layout.baseDir(workspace, TAG), "mods/a.jar", before);
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
             long uploaded = s3.uploadedBytes();
 
             TestFiles.write(Layout.baseDir(workspace, TAG), "mods/a.jar", after);
-            publish(workspace, TAG, "2.9.1", false);
+            publish(workspace, TAG, "2.9.1");
             long delta = s3.uploadedBytes() - uploaded;
 
             assertTrue(delta > 0, "something was uploaded");
@@ -293,11 +272,11 @@ class PublishTest {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
             TestWorkspace.base(workspace, "client-extra", "config/a.cfg", "A");
-            publish(workspace, TAG, "1.0", false);
+            publish(workspace, TAG, "1.0");
             int before = s3.requests().size();
             resetLog();
 
-            publish(workspace, "client-extra", "1.0", false);
+            publish(workspace, "client-extra", "1.0");
 
             List<String> second = s3.requests().subList(before, s3.requests().size());
             assertTrue(captured.outText().contains("plan 0 chunks to upload, 1 chunk already there"),
@@ -320,7 +299,7 @@ class PublishTest {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
 
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
 
             List<Path> logs = logs(workspace);
             assertEquals(1, logs.size(), logs.toString());
@@ -339,26 +318,17 @@ class PublishTest {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
             TestWorkspace.base(workspace, TAG, "mods/b.jar", "B");
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
             resetLog();
 
             TestWorkspace.base(workspace, TAG, "mods/c.jar", "C");
-            publish(workspace, TAG, "2.9.1", false);
+            publish(workspace, TAG, "2.9.1");
 
             String text = captured.outText();
             assertTrue(text.contains("plan 1 chunk to upload, 2 chunks already there"), text);
             assertTrue(text.contains("upload 1 chunk"), text);
             assertTrue(text.contains("skip 2 chunks: already in the bucket"), text);
         }
-    }
-
-    @Test
-    void writesNoTranscriptForADryRun(@TempDir Path workspace) throws IOException {
-        TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
-
-        publish(workspace, TAG, "2.9.0", true);
-
-        assertFalse(Files.exists(Layout.logsDir(workspace)));
     }
 
     @Test
@@ -370,7 +340,7 @@ class PublishTest {
             TestWorkspace.overlay(workspace, TAG, "mods/a.jar", "overlay");
             TestWorkspace.overlay(workspace, TAG, "config/mine.json", "{}");
 
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
 
             Manifest manifest = Manifest.parse(s3.text(releaseKey("2.9.0")), "release");
             assertEquals(List.of("config/mine.json", "mods/a.jar", "mods/b.jar"),
@@ -394,7 +364,7 @@ class PublishTest {
             TestWorkspace.base(workspace, TAG, "config/deep/other.cfg", "D");
             TestWorkspace.remove(workspace, TAG, "example-mod-*.jar\n/config/\nghost.jar\n");
 
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
 
             Manifest manifest = Manifest.parse(s3.text(releaseKey("2.9.0")), "release");
             assertEquals(List.of("mods/a.jar"), List.copyOf(manifest.files().keySet()));
@@ -415,33 +385,12 @@ class PublishTest {
             TestWorkspace.overlay(workspace, TAG, "mods/example-mod.jar", "mine");
             TestWorkspace.remove(workspace, TAG, "example-mod.jar\n");
 
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
 
             Manifest manifest = Manifest.parse(s3.text(releaseKey("2.9.0")), "release");
             assertEquals(List.of("mods/example-mod.jar", "mods/other.jar"),
                     List.copyOf(manifest.files().keySet()));
             assertEquals(chunkOf("mine"), manifest.files().get("mods/example-mod.jar").hash());
-        }
-    }
-
-    @Test
-    void dryRunReportsTheSameMergeAsTheRealPublish(@TempDir Path workspace) throws IOException {
-        try (FakeS3 s3 = new FakeS3()) {
-            TestWorkspace.base(workspace, TAG, "mods/a.jar", "base");
-            TestWorkspace.overlay(workspace, TAG, "mods/a.jar", "overlay");
-            TestWorkspace.overlay(workspace, TAG, "config/mine.json", "{}");
-            TestWorkspace.remove(workspace, TAG, "ghost.jar\n");
-
-            publish(workspace, TAG, "2.9.0", Publish.DEFAULT_CACHE_MAX_AGE_DAYS, true, Logging.Mode.NORMAL);
-            String dry = line(captured.outText(), "merge");
-            resetLog();
-
-            TestWorkspace.configure(workspace, s3);
-            publish(workspace, TAG, "2.9.0", Publish.DEFAULT_CACHE_MAX_AGE_DAYS, false, Logging.Mode.NORMAL);
-            String real = line(captured.outText(), "merge");
-
-            assertNotNull(dry, "a dry run reports the merge");
-            assertEquals(dry, real);
         }
     }
 
@@ -453,7 +402,7 @@ class PublishTest {
             TestWorkspace.remove(workspace, TAG, "../escape.jar\n");
 
             UserError error = assertThrows(UserError.class,
-                    () -> publish(workspace, TAG, "2.9.0", false));
+                    () -> publish(workspace, TAG, "2.9.0"));
 
             assertTrue(error.getMessage().contains("leaves the tag directory"), error.getMessage());
             assertTrue(s3.requests().isEmpty(), s3.requests().toString());
@@ -465,7 +414,7 @@ class PublishTest {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
 
             List<String> lines = captured.outText().lines().toList();
             List<String> bodies = lines.stream().map(PublishTest::body).toList();
@@ -496,13 +445,13 @@ class PublishTest {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
             String chunkA = chunkOf("A");
             String tableA = tableOf("A").indexId();
             int before = s3.requests().size();
 
             TestWorkspace.base(workspace, TAG, "mods/b.jar", "B");
-            publish(workspace, TAG, "2.9.1", false);
+            publish(workspace, TAG, "2.9.1");
             List<String> second = s3.requests().subList(before, s3.requests().size());
 
             assertFalse(second.contains("HEAD " + chunkKey(chunkA)), second.toString());
@@ -522,7 +471,7 @@ class PublishTest {
             String chunk = chunkOf("A");
             s3.put(chunkKey(chunk), TestFiles.bytes("A"));
 
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
 
             assertTrue(cache(workspace).contains(chunk), cache(workspace));
             assertFalse(s3.requests().stream().anyMatch(request -> request.startsWith("PUT " + chunkKey(chunk))),
@@ -541,7 +490,7 @@ class PublishTest {
             s3.failPut(releaseKey("2.9.0"));
 
             UserError error = assertThrows(UserError.class,
-                    () -> publish(workspace, TAG, "2.9.0", false));
+                    () -> publish(workspace, TAG, "2.9.0"));
 
             assertTrue(error.getMessage().contains("HTTP 500"), error.getMessage());
             assertTrue(cache(workspace).contains(chunk), cache(workspace));
@@ -556,14 +505,14 @@ class PublishTest {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
             String latest = s3.text(latestKey());
             TestWorkspace.base(workspace, TAG, "mods/b.jar", "B");
             String chunk = chunkOf("B");
             s3.failPut(releaseKey("2.9.1"));
 
             UserError error = assertThrows(UserError.class,
-                    () -> publish(workspace, TAG, "2.9.1", false));
+                    () -> publish(workspace, TAG, "2.9.1"));
 
             assertTrue(error.getMessage().contains("HTTP 500"), error.getMessage());
             assertNotNull(s3.object(chunkKey(chunk)), "the chunks uploaded before the failure stay");
@@ -582,13 +531,13 @@ class PublishTest {
             s3.failPut(chunkKey(chunk));
 
             UserError error = assertThrows(UserError.class,
-                    () -> publish(workspace, TAG, "2.9.0", false));
+                    () -> publish(workspace, TAG, "2.9.0"));
             assertTrue(error.getMessage().contains("HTTP 500"), error.getMessage());
             assertFalse(cache(workspace).contains(chunk), cache(workspace));
 
             s3.clearFailures();
             resetLog();
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
             assertTrue(cache(workspace).contains(chunk), cache(workspace));
             assertNotNull(s3.object(chunkKey(chunk)));
         }
@@ -599,11 +548,11 @@ class PublishTest {
         try (FakeS3 first = new FakeS3(); FakeS3 second = new FakeS3()) {
             TestWorkspace.configure(workspace, first);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
             String chunk = chunkOf("A");
 
             TestWorkspace.configure(workspace, second);
-            publish(workspace, TAG, "2.9.1", false);
+            publish(workspace, TAG, "2.9.1");
 
             assertTrue(second.requests().contains("HEAD " + chunkKey(chunk)),
                     "a cache from another bucket location is discarded: " + second.requests());
@@ -615,12 +564,12 @@ class PublishTest {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
             String chunk = chunkOf("A");
             Files.writeString(Layout.knownBlobsFile(workspace), "not a cache\n", StandardCharsets.UTF_8);
             int before = s3.requests().size();
 
-            publish(workspace, TAG, "2.9.1", false);
+            publish(workspace, TAG, "2.9.1");
             List<String> second = s3.requests().subList(before, s3.requests().size());
 
             assertTrue(second.contains("HEAD " + chunkKey(chunk)), second.toString());
@@ -636,7 +585,7 @@ class PublishTest {
                 TestWorkspace.base(workspace, TAG, "mods/" + i + ".jar", "content-" + i);
             }
 
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
 
             String cache = cache(workspace);
             for (int i = 0; i < 8; i++) {
@@ -654,7 +603,7 @@ class PublishTest {
             s3.fail("HEAD", releaseKey("2.9.0"), 500);
 
             UserError error = assertThrows(UserError.class,
-                    () -> publish(workspace, TAG, "2.9.0", false));
+                    () -> publish(workspace, TAG, "2.9.0"));
 
             assertTrue(error.getMessage().contains("HTTP 500"), error.getMessage());
             assertFalse(s3.requests().stream().anyMatch(request -> request.startsWith("PUT ")),
@@ -668,12 +617,12 @@ class PublishTest {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
             String chunk = chunkOf("A");
             ageCache(workspace);
             int before = s3.requests().size();
 
-            publish(workspace, TAG, "2.9.1", 1, false);
+            publish(workspace, TAG, "2.9.1", 1);
 
             List<String> second = s3.requests().subList(before, s3.requests().size());
             assertTrue(second.contains("HEAD " + chunkKey(chunk)),
@@ -687,12 +636,12 @@ class PublishTest {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
             String chunk = chunkOf("A");
             ageCache(workspace);
             int before = s3.requests().size();
 
-            publish(workspace, TAG, "2.9.1", 100_000, false);
+            publish(workspace, TAG, "2.9.1", 100_000);
 
             List<String> second = s3.requests().subList(before, s3.requests().size());
             assertFalse(second.contains("HEAD " + chunkKey(chunk)),
@@ -709,7 +658,7 @@ class PublishTest {
                         TestFiles.random(150_000, 300 + i));
             }
 
-            publish(workspace, TAG, "2.9.0", false);
+            publish(workspace, TAG, "2.9.0");
 
             assertTrue(s3.maxInFlight() > 1, "the run overlaps its requests: " + s3.maxInFlight());
             Set<String> puts = new HashSet<>();

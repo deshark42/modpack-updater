@@ -3,9 +3,13 @@ package io.github.deshark42.modpackupdater.fs;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import io.github.deshark42.modpackupdater.TestFiles;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class Sha256Test {
 
@@ -34,6 +38,23 @@ class Sha256Test {
         byte[] content = TestFiles.bytes("chunk boundary bytes");
 
         assertEquals(Sha256.hex(digest(content)), Sha256.ofBytes(content));
+    }
+
+    @Test
+    void hashesAFileLikeItsBytes(@TempDir Path dir) throws IOException {
+        byte[] content = TestFiles.random(200_000, 9);
+        Path file = dir.resolve("file.bin");
+        Files.write(file, content);
+
+        assertEquals(Sha256.ofBytes(content), Sha256.ofFile(file));
+    }
+
+    @Test
+    void hashesAnEmptyFileToTheEmptyVector(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("empty");
+        Files.write(file, new byte[0]);
+
+        assertEquals(EMPTY, Sha256.ofFile(file));
     }
 
     private static byte[] digest(byte[] content) {

@@ -58,12 +58,11 @@ public final class Publish {
     private Publish() {
     }
 
-    public static void run(Path workspace, String tag, String releaseId, boolean dryRun) {
-        run(workspace, tag, releaseId, DEFAULT_CACHE_MAX_AGE_DAYS, dryRun);
+    public static void run(Path workspace, String tag, String releaseId) {
+        run(workspace, tag, releaseId, DEFAULT_CACHE_MAX_AGE_DAYS);
     }
 
-    public static void run(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
-            boolean dryRun) {
+    public static void run(Path workspace, String tag, String releaseId, int cacheMaxAgeDays) {
         Names.requireTag(tag);
         Names.requireReleaseId(releaseId);
         if (cacheMaxAgeDays < 1) {
@@ -113,13 +112,6 @@ public final class Publish {
         String releaseKey = ObjectKeys.release(tag, releaseId);
         String latestKey = ObjectKeys.latest(tag);
         String contents = contents(added, replaced, rules, outcome, files);
-        if (dryRun) {
-            LOG.info("dry run: nothing was written");
-            LOG.debug("contents: {}", contents);
-            LOG.debug("release: {}", releaseKey);
-            LOG.debug("latest: {} would point at {}", latestKey, releaseId);
-            return;
-        }
 
         LOG.debug("transfer");
         Config config = Workspace.load(workspace);

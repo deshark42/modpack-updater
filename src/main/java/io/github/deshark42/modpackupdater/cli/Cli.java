@@ -26,7 +26,6 @@ public final class Cli {
             "         --cache-max-age-days <days>",
             "                             how long the local blob cache stays usable (default "
                     + Publish.DEFAULT_CACHE_MAX_AGE_DAYS + ")",
-            "         --dry-run           report what would happen, write nothing",
             "         --verbose           list every file the command touches",
             "         --quiet             print only the closing line");
 
@@ -39,13 +38,11 @@ public final class Cli {
         }
         String command = args[0];
         Map<String, String> options = new HashMap<>();
-        boolean dryRun = false;
         boolean verbose = false;
         boolean quiet = false;
         for (int i = 1; i < args.length; i++) {
             String argument = args[i];
             switch (argument) {
-                case "--dry-run" -> dryRun = true;
                 case "--verbose" -> verbose = true;
                 case "--quiet" -> quiet = true;
                 case "--tag", "--id", "--workspace", "--cache-max-age-days" -> {
@@ -88,8 +85,8 @@ public final class Cli {
                             return usage(err, "--cache-max-age-days needs a positive number of days: " + value);
                         }
                     }
-                    Logging.begin(workspace, dryRun ? null : "publish-" + tag, mode, out, err);
-                    Publish.run(workspace, tag, releaseId, cacheMaxAgeDays, dryRun);
+                    Logging.begin(workspace, "publish-" + tag, mode, out, err);
+                    Publish.run(workspace, tag, releaseId, cacheMaxAgeDays);
                     return OK;
                 }
                 case "update" -> {
@@ -99,8 +96,8 @@ public final class Cli {
                     if (options.containsKey("cache-max-age-days")) {
                         return usage(err, "update does not take --cache-max-age-days");
                     }
-                    Logging.begin(workspace, dryRun ? null : "update-" + tag, mode, out, err);
-                    Update.run(workspace, tag, options.get("id"), dryRun);
+                    Logging.begin(workspace, "update-" + tag, mode, out, err);
+                    Update.run(workspace, tag, options.get("id"));
                     return OK;
                 }
                 case "init" -> {
@@ -109,9 +106,6 @@ public final class Cli {
                     }
                     if (options.containsKey("cache-max-age-days")) {
                         return usage(err, "init does not take --cache-max-age-days");
-                    }
-                    if (dryRun) {
-                        return usage(err, "init does not take --dry-run");
                     }
                     Logging.begin(workspace, null, mode, out, err);
                     Init.run(workspace, tag);

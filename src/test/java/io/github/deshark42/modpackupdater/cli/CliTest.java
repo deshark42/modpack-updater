@@ -25,7 +25,6 @@ import org.junit.jupiter.params.provider.MethodSource;
 class CliTest {
 
     private static final String TAG = "client";
-    private static final String DRY_RUN = "INFO dry run: nothing was written";
 
     private TestLogs logs = new TestLogs();
 
@@ -53,10 +52,10 @@ class CliTest {
     private static Stream<Arguments> badCacheMaxAge() {
         return Stream.of(
                 Arguments.of("publish with zero days", "cache-max-age-days needs a positive number of days",
-                        List.of("publish", "--tag", TAG, "--id", "2.9.0", "--dry-run",
+                        List.of("publish", "--tag", TAG, "--id", "2.9.0",
                                 "--cache-max-age-days", "0")),
                 Arguments.of("publish with a word", "cache-max-age-days needs a positive number of days",
-                        List.of("publish", "--tag", TAG, "--id", "2.9.0", "--dry-run",
+                        List.of("publish", "--tag", TAG, "--id", "2.9.0",
                                 "--cache-max-age-days", "soon")),
                 Arguments.of("update with the option", "update does not take --cache-max-age-days",
                         List.of("update", "--tag", TAG, "--cache-max-age-days", "7")),
@@ -89,10 +88,14 @@ class CliTest {
 
     @Test
     void cacheMaxAgeIsAPublishOption(@TempDir Path cwd) throws IOException {
-        TestFiles.write(Layout.baseDir(cwd, TAG), "mods/a.jar", TestFiles.bytes("A"));
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(cwd, s3);
+            TestFiles.write(Layout.baseDir(cwd, TAG), "mods/a.jar", TestFiles.bytes("A"));
 
-        assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--dry-run",
-                "--cache-max-age-days", "7"), logs.errText());
+            assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0",
+                    "--cache-max-age-days", "7"), logs.errText());
+            assertTrue(Files.exists(Layout.knownBlobsFile(cwd)), logs.errText());
+        }
     }
 
     @ParameterizedTest(name = "{0}")
@@ -100,15 +103,6 @@ class CliTest {
     void rejectsACacheMaxAgeItCannotUse(String description, String fragment, List<String> args,
             @TempDir Path cwd) {
         assertUsage(cwd, fragment, args.toArray(String[]::new));
-    }
-
-    @Test
-    void dryRunPublishNeedsNoConnection(@TempDir Path cwd) throws IOException {
-        TestFiles.write(Layout.baseDir(cwd, TAG), "mods/a.jar", TestFiles.bytes("A"));
-
-        assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--dry-run"));
-
-        assertTrue(logs.outText().lines().anyMatch(line -> line.contains(DRY_RUN)), logs.outText());
     }
 
     @Test
@@ -162,8 +156,8 @@ class CliTest {
     }
 
     @Test
-    void initDoesNotTakeDryRun(@TempDir Path cwd) {
-        assertUsage(cwd, "init does not take --dry-run", "init", "--dry-run");
+    void dryRunIsNoLongerAnOption(@TempDir Path cwd) {
+        assertUsage(cwd, "unknown option: --dry-run", "update", "--tag", TAG, "--dry-run");
     }
 
     @Test
@@ -196,23 +190,29 @@ class CliTest {
     }
 
     @Test
-    void quietPrintsOnlyTheDryRunLine(@TempDir Path cwd) throws IOException {
-        TestFiles.write(Layout.baseDir(cwd, TAG), "mods/a.jar", TestFiles.bytes("A"));
+    void quietPrintsOnlyTheClosingLine(@TempDir Path cwd) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(cwd, s3);
+            TestFiles.write(Layout.baseDir(cwd, TAG), "mods/a.jar", TestFiles.bytes("A"));
 
-        assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--dry-run", "--quiet"));
+            assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--quiet"));
 
-        assertEquals(1, logs.outText().lines().count(), logs.outText());
-        assertTrue(logs.outText().lines().anyMatch(line -> line.contains(DRY_RUN)), logs.outText());
+            assertEquals(1, logs.outText().lines().count(), logs.outText());
+            assertTrue(logs.outText().contains("is now the latest"), logs.outText());
+        }
     }
 
     @Test
     void verboseNamesEachScannedPath(@TempDir Path cwd) throws IOException {
-        TestFiles.write(Layout.baseDir(cwd, TAG), "mods/a.jar", TestFiles.bytes("A"));
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(cwd, s3);
+            TestFiles.write(Layout.baseDir(cwd, TAG), "mods/a.jar", TestFiles.bytes("A"));
 
-        assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--dry-run", "--verbose"));
+            assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--verbose"));
 
-        String base = Text.relativeTo(cwd, Layout.baseDir(cwd, TAG));
-        assertTrue(logs.outText().lines().anyMatch(line -> line.contains("scan " + base)), logs.outText());
+            String base = Text.relativeTo(cwd, Layout.baseDir(cwd, TAG));
+            assertTrue(logs.outText().lines().anyMatch(line -> line.contains("scan " + base)), logs.outText());
+        }
     }
 
     @Test

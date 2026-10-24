@@ -27,6 +27,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
@@ -46,15 +47,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Update one tag to the release the bucket says is latest, or to the one named on the command line:
- * diff the applied manifest against the target one, move the files that change out of the way, fetch
- * only the chunks the workspace does not already have, then assemble the new files and record the new
- * state.
+ * Update one tag to the release the bucket says is latest, or to the one named on the command line.
  *
- * <p>The chunk tables say how each target file is split; splitting the copies the previous release
- * left in {@code backup/} with the same parameters finds the chunks already on disk, so a changed
- * file only fetches the chunks around the change. A copy that is missing or unreadable simply
- * contributes no chunks, and the file is fetched whole.
+ * <p>The run has two phases. The plan is derived from the two manifests alone: it decides which
+ * paths change and never looks at the files on disk, so a path both releases agree on is left alone
+ * even when the player edited it. The download phase then looks at the target paths: one that
+ * already holds the target content costs nothing, one that holds other content is split for reuse
+ * before it is moved aside, and a path with nothing on disk has to be fetched whole.
+ *
+ * <p>The chunk tables say how each target file is split; splitting the target path's current file,
+ * the files of the paths this run deletes, and the copies an earlier run left in
+ * {@code backup/<target release>/} with the same parameters finds the chunks already on disk, so a
+ * changed file only fetches the chunks around the change. A copy that is missing or unreadable
+ * simply contributes no chunks, and the file is fetched whole.
  *
  * <p>The run is reported in three stages: what the diff came to, what it does to the workspace,
  * and what is written to record the new state.
@@ -66,15 +71,14 @@ public final class Update {
     private Update() {
     }
 
-    public static void run(Path workspace, String tag, String releaseId, boolean dryRun) {
+    public static void run(Path workspace, String tag, String releaseId) {
         Names.requireTag(tag);
         if (releaseId != null) {
             Names.requireReleaseId(releaseId);
         }
         LOG.debug("update {}", tag);
         LOG.debug("plan");
-        // a dry run writes nothing at all, not even the defaults this file is missing
-        Config config = dryRun ? Config.load(workspace) : Workspace.load(workspace);
+        Config config = Workspace.load(workspace);
         S3Store store = new S3Store(config);
 
         // an explicit release id bypasses latest.json entirely, so a pinned update works even while
@@ -117,8 +121,7 @@ public final class Update {
         } else {
             LOG.debug("{}: {} {} -> {}", verb, tag, applied, target.releaseId());
         }
-        LOG.debug("files: {}{}", plan.describe(),
-                plan.downloadSize() > 0 ? ", " + Sizes.human(plan.downloadSize()) + " to download" : "");
+        LOG.debug("files: {}", plan.describe());
         for (String path : plan.added()) {
             LOG.trace("add {}", path);
         }
@@ -131,68 +134,117 @@ public final class Update {
         String version = applied == null
                 ? "first update -> " + target.releaseId()
                 : applied + " -> " + target.releaseId();
-        if (dryRun) {
-            LOG.info("dry run: nothing was written");
-            LOG.debug("version: {}", version);
-            LOG.debug("changed: {}", changed(plan, plan.downloadSize(), "to download"));
-            return;
-        }
 
-        Path backups = Layout.backupsDir(workspace, tag);
-        Path backup = applied == null ? null : Layout.backupDir(workspace, tag, applied);
-        int moved = 0;
-        for (String path : plan.deleted()) {
-            moved += moveAside(workspace, backup, path) ? 1 : 0;
-        }
-        for (String path : plan.replaced()) {
-            moved += moveAside(workspace, backup, path) ? 1 : 0;
-        }
-
+        // files moved out of the way are named after the release they came from; a first update has
+        // no such release, so it gets a directory no release id can name
+        Path backup = applied == null
+                ? Layout.initialBackupDir(workspace, tag)
+                : Layout.backupDir(workspace, tag, applied);
         List<String> downloads = plan.downloads();
-        int total = downloads.size();
-        if (moved > 0 || total > 0) {
+        if (!downloads.isEmpty() || !plan.deleted().isEmpty()) {
             LOG.debug("apply");
         }
-        if (moved > 0) {
-            LOG.debug("backup {}: {}", Text.count(moved, "file"), Text.relativeTo(workspace, backup));
-        }
 
-        int reused = 0;
+        int moved = 0;
         long downloadedBytes = 0;
-        Path tempDir = null;
-        if (total > 0) {
-            try {
-                Map<String, ChunkTable> tables = chunkTables(store, target, downloads, config.concurrency());
-                Reuse reuse = localChunks(backups, applied, plan, targetId, target, tables,
-                        config.concurrency());
-                Map<String, Local> existing = reuse.chunks();
-                Set<String> needed = new LinkedHashSet<>();
-                for (String path : downloads) {
-                    needed.addAll(tables.get(target.files().get(path).indexId()).chunks());
+        int reused = 0;
+        int reusedFiles = 0;
+        Path blobDir = Layout.blobTempDir(workspace);
+        Path fileDir = Layout.fileTempDir(workspace);
+        try {
+            // The plan says what may have to change; the target paths say what still does. Hashing
+            // happens before any chunk table is fetched, so a file that already matches the target
+            // costs no request beyond the two manifests.
+            Set<String> skipped = ConcurrentHashMap.newKeySet();
+            Parallel.forEach(downloads, config.concurrency(), path -> {
+                if (matchesTarget(workspace, path, target.files().get(path))) {
+                    skipped.add(path);
                 }
-                List<String> missing = new ArrayList<>();
-                for (String hash : needed) {
-                    if (!existing.containsKey(hash)) {
-                        missing.add(hash);
-                    }
+            });
+            List<String> toFetch = new ArrayList<>();
+            for (String path : downloads) {
+                if (!skipped.contains(path)) {
+                    toFetch.add(path);
                 }
-                reused = needed.size() - missing.size();
-                if (reused > 0) {
-                    LOG.debug("chunk {}: {} reused from {}", Text.count(reuse.files(), "file"),
-                            Text.count(reused, "chunk"), Text.relativeTo(workspace, backups));
-                }
-                if (!missing.isEmpty()) {
-                    Files.createDirectories(Layout.tempDir(workspace));
-                    tempDir = Files.createTempDirectory(Layout.tempDir(workspace), "update-");
-                    downloadedBytes = download(store, missing, tempDir, config.concurrency());
-                }
-                assembleAll(workspace, downloads, target, tables, existing, tempDir, config.concurrency());
-            } catch (IOException e) {
-                throw new UserError("cannot stage chunks under " + Layout.tempDir(workspace) + ": "
-                        + e.getMessage(), e);
-            } finally {
-                deleteTree(tempDir);
             }
+            if (!skipped.isEmpty()) {
+                LOG.debug("skip {}: already at the target content", Text.count(skipped.size(), "file"));
+            }
+
+            Map<String, Path> assembled = Map.of();
+            if (!toFetch.isEmpty()) {
+                long neededBytes = 0;
+                for (String path : toFetch) {
+                    neededBytes += target.files().get(path).size();
+                }
+                LOG.debug("fetch {}: {}", Text.count(toFetch.size(), "file"),
+                        Sizes.human(neededBytes) + " to download");
+                deleteTree(blobDir);
+                deleteTree(fileDir);
+                try {
+                    Map<String, ChunkTable> tables = chunkTables(store, target, toFetch, config.concurrency());
+                    Reuse reuse = localChunks(workspace, backup, plan, toFetch, tag, targetId, target, tables,
+                            config.concurrency());
+                    Map<String, Local> existing = reuse.chunks();
+                    Set<String> needed = new LinkedHashSet<>();
+                    for (String path : toFetch) {
+                        needed.addAll(tables.get(target.files().get(path).indexId()).chunks());
+                    }
+                    List<String> missing = new ArrayList<>();
+                    for (String hash : needed) {
+                        if (!existing.containsKey(hash)) {
+                            missing.add(hash);
+                        }
+                    }
+                    reused = needed.size() - missing.size();
+                    reusedFiles = reuse.files();
+                    if (reused > 0) {
+                        LOG.debug("reuse {}: {} reused from {}", Text.count(reusedFiles, "file"),
+                                Text.count(reused, "chunk"), "local copies");
+                    }
+                    if (!missing.isEmpty()) {
+                        Files.createDirectories(blobDir);
+                        downloadedBytes = download(store, missing, blobDir, config.concurrency());
+                    }
+                    assembled = assembleAll(toFetch, target, tables, existing, blobDir, fileDir,
+                            config.concurrency());
+                } catch (IOException e) {
+                    throw new UserError("cannot stage files under " + Layout.tempDir(workspace) + ": "
+                            + e.getMessage(), e);
+                }
+            }
+
+            // Deletions go first, so a path that becomes a file can replace a directory that shrank
+            // out of the manifest. A target that already exists is moved aside before its new
+            // content goes in, which is what makes the old file recoverable.
+            for (String path : plan.deleted()) {
+                moved += moveAside(workspace, backup, path) ? 1 : 0;
+            }
+            for (String path : toFetch) {
+                Path targetPath = SafePath.resolve(workspace, path);
+                if (exists(targetPath)) {
+                    moved += moveAside(workspace, backup, path) ? 1 : 0;
+                }
+                Path staged = assembled.get(path);
+                if (staged == null) {
+                    throw new IllegalStateException("no assembled copy of " + path);
+                }
+                Path parent = targetPath.getParent();
+                try {
+                    if (parent != null) {
+                        Files.createDirectories(parent);
+                    }
+                    AtomicFile.move(staged, targetPath);
+                } catch (IOException e) {
+                    throw new UserError("cannot write " + targetPath + ": " + e.getMessage(), e);
+                }
+            }
+            if (moved > 0) {
+                LOG.debug("backup {}: moved to {}", Text.count(moved, "file"), Text.relativeTo(workspace, backup));
+            }
+        } finally {
+            deleteTree(blobDir);
+            deleteTree(fileDir);
         }
 
         LOG.debug("commit");
@@ -204,22 +256,38 @@ public final class Update {
         LOG.info("done: {} is now at {}", tag, target.releaseId());
         LOG.debug("version: {}", version);
         LOG.debug("changed: {}", changed(plan, downloadedBytes, "downloaded"));
-        LOG.debug("reuse: {}", Text.count(reused, "chunk")
-                + (reused > 0 ? " from " + Text.relativeTo(workspace, backups) : ""));
+        LOG.debug("reuse: {}", Text.count(reused, "chunk"));
         if (moved > 0) {
             LOG.debug("backup: {} in {}", Text.count(moved, "file"), Text.relativeTo(workspace, backup));
         }
         LOG.debug("release: {}", Text.relativeTo(workspace, releaseFile));
         LOG.debug("state: {}", Text.relativeTo(workspace, currentFile) + " now points at "
                 + target.releaseId());
-        if (!plan.isEmpty()) {
-        }
     }
 
     /** The closing line's account of what the run changed and how much of it moved over the wire. */
     private static String changed(Plan plan, long bytes, String how) {
         return Text.count(plan.size(), "file") + " (" + plan.describe() + ")"
                 + (bytes > 0 ? ", " + Sizes.human(bytes) + " " + how : "");
+    }
+
+    /** Whether the target path already holds exactly the content the manifest records. */
+    private static boolean matchesTarget(Path workspace, String path, FileEntry entry) {
+        Path target = SafePath.resolve(workspace, path);
+        try {
+            if (!Files.isRegularFile(target) || Files.size(target) != entry.size()) {
+                return false;
+            }
+            return Sha256.ofFile(target).equals(entry.hash());
+        } catch (IOException | UserError e) {
+            // a path that cannot be read is treated as different, so it is fetched whole
+            return false;
+        }
+    }
+
+    /** Whether something is at this path, including a symbolic link whose target does not exist. */
+    private static boolean exists(Path path) {
+        return Files.exists(path, LinkOption.NOFOLLOW_LINKS);
     }
 
     /**
@@ -257,21 +325,21 @@ public final class Update {
     private record Local(Path file, Chunker.Cut cut) {
     }
 
-    /** The chunks the previous release's copies still hold, and how many of those copies were read. */
+    /** The chunks the workspace's own files still hold, and how many of those files were read. */
     private record Reuse(Map<String, Local> chunks, int files) {
     }
 
     /**
-     * Splits the copies left in {@code backup/} with the parameters the target chunk tables record,
-     * collecting every chunk the new release could reuse. Two kinds of copies qualify: the ones this
-     * run moved aside, under the paths they were removed from, and the ones an earlier run moved aside
-     * when it left the release being applied now, which is what makes a rollback nearly free. A path
-     * without a target table of its own, a deleted one or a kept copy addressed by its old path, is
-     * split with every chunking the run's target tables use. A copy that is missing or cannot be read
-     * contributes nothing.
+     * Splits the local files this run is about to change or delete, plus the copies an earlier run
+     * kept under the target release, with the parameters the target chunk tables record, collecting
+     * every chunk the new release could reuse. The target path's current file is the first source; a
+     * missing or unreadable one falls back to the copy an interrupted earlier run may have left in
+     * {@code backup/}. A path without a target table of its own - a deleted one, or a kept copy
+     * addressed by its old path - is split with every chunking the run's target tables use. A copy
+     * that is missing or cannot be read contributes nothing.
      */
-    private static Reuse localChunks(Path backups, String applied, Plan plan, String targetId,
-            Manifest target, Map<String, ChunkTable> tables, int concurrency) {
+    private static Reuse localChunks(Path workspace, Path backup, Plan plan, List<String> toFetch, String tag,
+            String targetId, Manifest target, Map<String, ChunkTable> tables, int concurrency) {
         Map<String, Local> existing = new ConcurrentHashMap<>();
         Set<Chunking> targetChunkings = new LinkedHashSet<>();
         for (ChunkTable table : tables.values()) {
@@ -281,30 +349,19 @@ public final class Update {
             return new Reuse(existing, 0);
         }
         AtomicInteger read = new AtomicInteger();
-        if (applied != null) {
-            Path backup = backups.resolve(Names.requireReleaseId(applied));
-            List<String> moved = new ArrayList<>(plan.replaced());
-            moved.addAll(plan.deleted());
-            Parallel.forEach(moved, concurrency, path -> {
-                Path copy = SafePath.resolve(backup, path);
-                if (!Files.isRegularFile(copy)) {
-                    return;
-                }
-                Map<String, Local> found = new HashMap<>();
-                try {
-                    for (Chunking chunking : chunkingsFor(path, target, tables, targetChunkings)) {
-                        Chunker.split(copy, chunking, cut -> found.putIfAbsent(cut.hash(), new Local(copy, cut)));
-                    }
-                } catch (UserError e) {
-                    return; // a copy that cannot be read is as good as no copy at all
-                }
+        List<String> changing = new ArrayList<>(toFetch);
+        changing.addAll(plan.deleted());
+        Parallel.forEach(changing, concurrency, path -> {
+            List<Chunking> chunkings = chunkingsFor(path, target, tables, targetChunkings);
+            if (cutInto(SafePath.resolve(workspace, path), chunkings, existing)) {
                 read.incrementAndGet();
-                for (Map.Entry<String, Local> chunk : found.entrySet()) {
-                    existing.putIfAbsent(chunk.getKey(), chunk.getValue());
-                }
-            });
-        }
-        Path kept = backups.resolve(Names.requireReleaseId(targetId));
+                return;
+            }
+            if (cutInto(SafePath.resolve(backup, path), chunkings, existing)) {
+                read.incrementAndGet();
+            }
+        });
+        Path kept = Layout.backupDir(workspace, tag, targetId);
         List<Path> keptCopies;
         try (var walk = Files.walk(kept)) {
             keptCopies = walk.filter(Files::isRegularFile).toList();
@@ -313,20 +370,30 @@ public final class Update {
         }
         Parallel.forEach(keptCopies, concurrency, copy -> {
             String path = kept.relativize(copy).toString().replace('\\', '/');
-            Map<String, Local> found = new HashMap<>();
-            try {
-                for (Chunking chunking : chunkingsFor(path, target, tables, targetChunkings)) {
-                    Chunker.split(copy, chunking, cut -> found.putIfAbsent(cut.hash(), new Local(copy, cut)));
-                }
-            } catch (UserError e) {
-                return;
-            }
-            read.incrementAndGet();
-            for (Map.Entry<String, Local> chunk : found.entrySet()) {
-                existing.putIfAbsent(chunk.getKey(), chunk.getValue());
+            if (cutInto(copy, chunkingsFor(path, target, tables, targetChunkings), existing)) {
+                read.incrementAndGet();
             }
         });
         return new Reuse(existing, read.get());
+    }
+
+    /** Splits one local file with every parameter given, adding the chunks found to {@code into}. */
+    private static boolean cutInto(Path file, List<Chunking> chunkings, Map<String, Local> into) {
+        if (!Files.isRegularFile(file)) {
+            return false;
+        }
+        Map<String, Local> found = new HashMap<>();
+        try {
+            for (Chunking chunking : chunkings) {
+                Chunker.split(file, chunking, cut -> found.putIfAbsent(cut.hash(), new Local(file, cut)));
+            }
+        } catch (UserError e) {
+            return false; // a copy that cannot be read is as good as no copy at all
+        }
+        for (Map.Entry<String, Local> chunk : found.entrySet()) {
+            into.putIfAbsent(chunk.getKey(), chunk.getValue());
+        }
+        return true;
     }
 
     /** The parameters the target table of one path records, or every one the run's target tables use. */
@@ -337,7 +404,7 @@ public final class Update {
         return table == null ? List.copyOf(all) : List.of(table.chunking());
     }
 
-    /** Fetches the missing chunks into the run's temporary directory, one file per chunk. */
+    /** Fetches the missing chunks into the run's blob directory, one file per chunk. */
     private static long download(S3Store store, List<String> missing, Path tempDir, int concurrency) {
         int total = missing.size();
         AtomicInteger done = new AtomicInteger();
@@ -360,35 +427,37 @@ public final class Update {
         return bytes.get();
     }
 
-    /** Writes every fetched file, each one on its own, from the chunks the run has. */
-    private static void assembleAll(Path workspace, List<String> downloads, Manifest target,
-            Map<String, ChunkTable> tables, Map<String, Local> existing, Path tempDir, int concurrency) {
+    /** Writes every fetched file into the run's file directory, each one on its own. */
+    private static Map<String, Path> assembleAll(List<String> downloads, Manifest target,
+            Map<String, ChunkTable> tables, Map<String, Local> existing, Path blobDir, Path fileDir,
+            int concurrency) {
+        Map<String, Path> assembled = new ConcurrentHashMap<>();
         Parallel.forEach(downloads, concurrency, path -> {
             FileEntry entry = target.files().get(path);
-            assemble(workspace, path, entry, tables.get(entry.indexId()), existing, tempDir);
+            assembled.put(path, assemble(path, entry, tables.get(entry.indexId()), existing, blobDir, fileDir));
         });
+        return assembled;
     }
 
     /**
-     * Writes one file from its chunks in table order, hashing as it goes, and moves it into place
-     * only once the whole-file hash matches the manifest. The bytes are written next to the
-     * destination first, so a failed assembly leaves neither a partial target nor a replaced one.
+     * Writes one file from its chunks in table order into the run's file directory, hashing as it
+     * goes. The staged file only counts once the whole-file hash matches the manifest, so a failed
+     * assembly never replaces anything on the target path.
      */
-    private static void assemble(Path workspace, String path, FileEntry entry, ChunkTable table,
-            Map<String, Local> existing, Path tempDir) {
-        Path target = SafePath.resolve(workspace, path);
+    private static Path assemble(String path, FileEntry entry, ChunkTable table,
+            Map<String, Local> existing, Path blobDir, Path fileDir) {
         Path temp = null;
+        Path staged = null;
         Map<Path, FileChannel> sources = new HashMap<>();
         try {
-            Path parent = target.toAbsolutePath().getParent();
-            Files.createDirectories(parent);
-            temp = Files.createTempFile(parent, ".update-", ".part");
+            Files.createDirectories(fileDir);
+            temp = Files.createTempFile(fileDir, "file-", ".part");
             MessageDigest digest = digest();
             try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(temp))) {
                 for (String hash : table.chunks()) {
                     Local local = existing.get(hash);
                     byte[] bytes = local == null
-                            ? Files.readAllBytes(tempDir.resolve(hash))
+                            ? Files.readAllBytes(blobDir.resolve(hash))
                             : read(local, sources);
                     out.write(bytes);
                     digest.update(bytes);
@@ -399,15 +468,17 @@ public final class Update {
                 throw new UserError("the chunks under " + path + " assemble to a different file than the"
                         + " manifest records (" + assembled + " instead of " + entry.hash() + ")");
             }
-            AtomicFile.move(temp, target);
-            temp = null;
+            staged = temp;
+            return staged;
         } catch (IOException e) {
-            throw new UserError("cannot write " + target + ": " + e.getMessage(), e);
+            throw new UserError("cannot assemble " + path + ": " + e.getMessage(), e);
         } finally {
             for (FileChannel channel : sources.values()) {
                 closeQuietly(channel);
             }
-            deleteQuietly(temp);
+            if (staged == null) {
+                deleteQuietly(temp);
+            }
         }
     }
 
@@ -439,7 +510,7 @@ public final class Update {
 
     private static boolean moveAside(Path workspace, Path backup, String path) {
         Path source = SafePath.resolve(workspace, path);
-        if (backup == null || !Files.exists(source)) {
+        if (!exists(source)) {
             return false;
         }
         Path target = SafePath.resolve(backup, path);

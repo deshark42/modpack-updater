@@ -25,6 +25,9 @@ class LayoutTest {
         assertEquals("overlay", Layout.OVERLAY);
         assertEquals("remove.txt", Layout.REMOVE);
         assertEquals("tmp", Layout.TMP);
+        assertEquals("blob", Layout.BLOB);
+        assertEquals("file", Layout.FILE);
+        assertEquals(".initial", Layout.INITIAL);
     }
 
     @Test
@@ -33,6 +36,8 @@ class LayoutTest {
         assertEquals(WORKSPACE.resolve(".modpack-updater/config.json"), Layout.configFile(WORKSPACE));
         assertEquals(WORKSPACE.resolve(".modpack-updater/logs"), Layout.logsDir(WORKSPACE));
         assertEquals(WORKSPACE.resolve(".modpack-updater/tmp"), Layout.tempDir(WORKSPACE));
+        assertEquals(WORKSPACE.resolve(".modpack-updater/tmp/blob"), Layout.blobTempDir(WORKSPACE));
+        assertEquals(WORKSPACE.resolve(".modpack-updater/tmp/file"), Layout.fileTempDir(WORKSPACE));
         assertEquals(WORKSPACE.resolve(".modpack-updater/known-blobs.jsonl"), Layout.knownBlobsFile(WORKSPACE));
     }
 
@@ -47,6 +52,8 @@ class LayoutTest {
         assertEquals(WORKSPACE.resolve(".modpack-updater/client/backup"), Layout.backupsDir(WORKSPACE, "client"));
         assertEquals(WORKSPACE.resolve(".modpack-updater/client/backup/2.9.0"),
                 Layout.backupDir(WORKSPACE, "client", "2.9.0"));
+        assertEquals(WORKSPACE.resolve(".modpack-updater/client/backup/.initial"),
+                Layout.initialBackupDir(WORKSPACE, "client"));
     }
 
     @Test
