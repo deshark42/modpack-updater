@@ -13,7 +13,7 @@ Status: implemented
 ```
 <workspace>/
 ├── .modpack-updater/
-│   ├── config.json              # S3 协议所需的配置
+│   ├── config.json              # 连接与桶位置所需的配置
 │   ├── known-blobs.jsonl        # 发布侧的 blob 存在性缓存，见下文
 │   └── logs/                    # 每次真正发布的运行日志
 ├── <tag>/
@@ -24,7 +24,7 @@ Status: implemented
 ```
 
 - 工作区骨架由 init 铺出：modpack-updater init --tag <tag> 写出 config.json 模板与 <tag>/base/、<tag>/overlay/、<tag>/remove.txt；已经存在的文件只补缺失字段或只创建缺失的输入，不改写已有内容。
-- config.json 只放 S3 协议需要的配置，字段定义见[发布内容格式与连接配置](2026-10-14-release-manifest-and-config.md)：不放 tag 列表，也不放发布状态。
+- config.json 只放连接与桶位置需要的配置，字段定义见[发布内容格式与连接配置](2026-10-14-release-manifest-and-config.md)：不放 tag 列表，也不放发布状态。订阅者的读地址（read_endpoint）也在这里，见[经 CDN 读取对象存储](../../implemented/architecture/2026-10-25-cdn-read-endpoint.md)。
 - `.modpack-updater/known-blobs.jsonl` 是发布侧的 blob 存在性缓存：只追加已确认存在于桶中的块哈希与块表 id，可整份删除，不参与发布内容。用途、格式与失效规则见[降低发布时的 blob 存在性检查成本](2026-10-20-cheap-blob-existence-checks.md)。
 - tag 的发布内容由 `<tag>/base/`、`<tag>/overlay/` 与 `<tag>/remove.txt` 三者合成：base/ 承载官方包解出的树（保留目录结构），overlay/ 承载发布者自己的新增与覆盖，remove.txt 从 base/ 中剔除路径。合并规则与 remove.txt 语法见[发布者 overlay 目录与 base 删除清单](2026-10-14-publisher-overlay.md)；base/ 的更新由发布者手工负责，工具不参与。
 - tag 与 release_id 都由命令行指定，工作区不记录它们：publish --tag <tag> --id <release_id>，例如 --id 2.9.0-RC1。

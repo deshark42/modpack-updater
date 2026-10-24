@@ -48,6 +48,7 @@ Status: implemented
 ```json
 {
   "endpoint": "https://s3.example.com",
+  "read_endpoint": "",
   "region": "us-east-1",
   "bucket": "modpack-updater",
   "prefix": "gtnh/",
@@ -59,11 +60,12 @@ Status: implemented
 ```
 
 - init 写出的模板就是这组键，密钥可以留空，公开桶即整段省掉密钥、工具以匿名方式读取；私有桶才需要。
+- read_endpoint 可选，只用于读侧：订阅者读取对象时的 CDN 地址，对象键直接接在它后面、不插入 bucket。缺失或空串表示直连对象存储；写与发布端始终走 endpoint。见[经 CDN 读取对象存储](../../implemented/architecture/2026-10-25-cdn-read-endpoint.md)。
 - 连接信息与密钥只从 config.json 读取，工具不看环境变量：少一条取值路径，少一处需要解释的行为。
 - path_style 给 MinIO 与自建端点用，AWS 可省略。
 - prefix 可选，默认空。tag 不进 config，由命令参数给出。
 - concurrency 是同时在传的块与块表的数量，默认 8，取值 1–64：块只有几十 KiB，耗时以请求往返为主，4 个并发等不满上行带宽。
-- region、prefix、path_style、concurrency 都可以整段省掉。工具读到缺字段就把默认值补进文件（保留已有值与不认识的键），于是早先版本写的 config.json 不必手工迁移；补过之后文件不再被改写。
+- region、prefix、path_style、concurrency、read_endpoint 都可以整段省掉。工具读到缺字段就把默认值补进文件（保留已有值与不认识的键），read_endpoint 补的是空串，于是早先版本写的 config.json 不必手工迁移；补过之后文件不再被改写。
 
 **取值与字符集**
 

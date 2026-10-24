@@ -27,7 +27,7 @@ Status: implemented
 - metadata/<tag>/ 让每个 TAG（client、server、其他）成为一条独立演进、互不影响的发布流。
 - metadata/<tag>/releases/<release_id>.json 是一次发布的完整清单：列出该发布实例目录的全部路径与每个文件的块表引用，字段与 release_id 形态见[发布内容格式与连接配置](2026-10-14-release-manifest-and-config.md)。清单以 gzip 存放并在对象上声明 Content-Encoding: gzip：一份万级文件的清单从 MB 级降到百 KB 级，而 blob/ 与 index/ 下的对象仍原样存放——块表多是几 KB 的小对象，逐个压缩省不了多少，反而把每个读取者都绑上解压。latest.json 保持明文。
 - metadata/<tag>/latest.json 指向该 tag 当前的发布，是订阅者的唯一入口：读到它就知道该取哪个 release，不需要 LIST 桶。
-- 桶可以是公开读，也可以是私有的：公开桶整段省掉密钥、工具以匿名方式访问；私有桶的订阅者在 config.json 里填 access_key 与 secret_key。
+- 桶可以是公开读，也可以是私有的：公开桶整段省掉密钥、工具以匿名方式访问；私有桶的订阅者在 config.json 里填 access_key 与 secret_key。订阅者也可以用 config.json 的 `read_endpoint` 把读取指向桶前的一层 CDN，此时读请求一律匿名，填了密钥也不签名；见[经 CDN 读取对象存储](../../implemented/architecture/2026-10-25-cdn-read-endpoint.md)。
 - 可变性约定：只有 latest.json 可覆写；blob/、index/ 与 metadata/<tag>/releases/ 下的对象只增不改不删。publish 遇到已存在的 release_id 直接报错，不会覆写它。
 - 发布按固定顺序写入：先写全部块，再写块表，再写 releases/<release_id>.json，最后覆写 latest.json。latest.json 是提交点：订阅者要么看到旧的 latest 与旧清单，要么看到新的，不会读到半个 release。
 
@@ -43,7 +43,7 @@ Status: implemented
 - 中途失败时，桶里不会留下指向不完整 release 的 latest.json——写入顺序保证了这一点。
 - 订阅者只读 metadata/<tag>/latest.json 就能确定要取哪个 release，并据此取回该发布引用的全部块与块表。
 - 同一段字节或同一份块表出现在两个 tag 或两个 release 中时，桶里只存在一份：发布按哈希去重，块或块表已存在就不重复上传。
-- latest.json 是唯一可变点，订阅者可能读到尚未更新的值，表现为晚一次看到新发布；缓存与一致性属于存储服务与部署方，本工具不做约定。
+- latest.json 是唯一可变点，订阅者可能读到尚未更新的值，表现为晚一次看到新发布；缓存与一致性仍属于存储服务与部署方，但写入端现在按对象种类声明缓存语义：latest.json 带 `no-store`，blob/、index/ 与 metadata/<tag>/releases/ 下的对象带 `public, max-age=31536000, immutable`，见[经 CDN 读取对象存储](../../implemented/architecture/2026-10-25-cdn-read-endpoint.md)。
 - 只增不改不删意味着存储随发布历史单调增长，内容去重只能抵消重复的部分，没有清理策略，成本随时间上升。
 - 订阅者取清单时多一次解压，换来的是一次更新少下一次 MB 级的明文清单；没有 Content-Encoding 头的对象照明文读，兼容压缩之前写下的发布。
 - 存储方案的替换成本不在接口而在数据：桶布局一旦落定并有发布数据，换用其他存储要迁移全部块、块表与元数据。

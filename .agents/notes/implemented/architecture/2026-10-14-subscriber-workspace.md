@@ -33,7 +33,7 @@ Status: implemented
 
 - 订阅者只需要 config.json，可以用 modpack-updater init（不带 --tag）生成；它同样只写缺失的部分，不覆盖已有内容。
 - 只有应用了变更的 update 才在 .modpack-updater/logs/ 下留一份运行日志，名字带时间、命令与 tag；"已经是最新"不留文件。日志记的是逐文件的过程，比终端默认显示的多，但只在终端上原地重画的下载进度条不进日志。
-- config.json 与发布者共用同一份字段定义，tag 不进 config。
+- config.json 与发布者共用同一份字段定义，tag 不进 config。读取走哪条连接由 config.json 的 read_endpoint 决定：缺失或空串时直连对象存储，配置后经 CDN 匿名读（写侧与发布端的存在性检查仍走 endpoint）；见[经 CDN 读取对象存储](../../implemented/architecture/2026-10-25-cdn-read-endpoint.md)。
 - 被追踪的是整棵实例目录，不只是 .minecraft/：清单路径相对工作区根解析。按 MultiMC 规范打包的整合包通常在 .minecraft/ 之外还带 libraries/、patches/、instance.cfg、mmc-pack.json 与图标等实例级文件，它们和 .minecraft/ 内的文件一样可能出现在清单里。
 - 本地状态按 tag 分目录：.modpack-updater/<tag>/ 下放 current.json、releases/ 与 backup/。同一个实例被不同 tag 更新时，各自的"当前版本"互不干扰，指针里也就不必再记 tag。
 - 本地状态只有两样：current.json 里的版本标识，以及 releases/ 下已应用过的清单副本；它们既用于判断"是否有新版本"，也用于与新清单比较。
