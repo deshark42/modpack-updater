@@ -15,9 +15,11 @@ import org.junit.jupiter.api.io.TempDir;
 
 class ConfigTest {
 
+    private static final String MINIMAL = "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\"}";
+
     @Test
     void appliesDefaultsForOptionalFields() {
-        Config config = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\"}", "config.json");
+        Config config = Config.parse(MINIMAL, "config.json");
         assertEquals("us-east-1", config.region());
         assertEquals("", config.prefix());
         assertFalse(config.pathStyle());
@@ -25,30 +27,39 @@ class ConfigTest {
     }
 
     @Test
-    void defaultsToFourTransfersAtATime() {
-        Config config = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\"}", "config.json");
-        assertEquals(8, config.concurrency());
+    void defaultsToTheDocumentedTransferCount() {
+        assertEquals(Config.DEFAULT_CONCURRENCY, Config.parse(MINIMAL, "config.json").concurrency());
     }
 
     @Test
     void readsHowManyTransfersMayRunAtOnce() {
         Config config = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
-                + " \"concurrency\": 8}", "config.json");
-        assertEquals(8, config.concurrency());
+                + " \"concurrency\": 3}", "config.json");
+        assertEquals(3, config.concurrency());
     }
 
     @Test
-    void rejectsAConcurrencyThatIsNotAUsableCount() {
+    void rejectsAConcurrencyOutsideTheAllowedRange() {
         String head = "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\", \"concurrency\": ";
-        assertThrows(UserError.class, () -> Config.parse(head + "0}", "config.json"));
-        assertThrows(UserError.class, () -> Config.parse(head + "1000}", "config.json"));
-        assertThrows(UserError.class, () -> Config.parse(head + "\"many\"}", "config.json"));
+        for (String bad : new String[]{"0", String.valueOf(Config.MAX_CONCURRENCY + 1)}) {
+            UserError error = assertThrows(UserError.class, () -> Config.parse(head + bad + "}", "config.json"), bad);
+            assertTrue(error.getMessage().contains("\"concurrency\" must be between 1 and " + Config.MAX_CONCURRENCY),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void rejectsAConcurrencyThatIsNotANumber() {
+        UserError error = assertThrows(UserError.class, () -> Config.parse("{\"endpoint\": \"https://s3.example.com\","
+                + " \"bucket\": \"pack\", \"concurrency\": \"many\"}", "config.json"));
+        assertTrue(error.getMessage().contains("\"concurrency\" must be an integer"), error.getMessage());
     }
 
     @Test
     void normalizesEndpointAndPrefix() {
         Config config = Config.parse(
-                "{\"endpoint\": \"https://s3.example.com/\", \"bucket\": \"pack\", \"prefix\": \"gtnh\"}", "config.json");
+                "{\"endpoint\": \"https://s3.example.com///\", \"bucket\": \"pack\", \"prefix\": \"gtnh\"}",
+                "config.json");
         assertEquals("https://s3.example.com", config.endpoint());
         assertEquals("gtnh/", config.prefix());
     }
@@ -74,23 +85,32 @@ class ConfigTest {
     void rejectsHalfCredentials() {
         UserError error = assertThrows(UserError.class, () -> Config.parse(
                 "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\", \"access_key\": \"a\"}", "config.json"));
-        assertTrue(error.getMessage().contains("both"));
+        assertTrue(error.getMessage().contains("set both"), error.getMessage());
     }
 
     @Test
     void rejectsMissingEndpoint() {
-        assertThrows(UserError.class, () -> Config.parse("{\"bucket\": \"pack\"}", "config.json"));
+        UserError error = assertThrows(UserError.class, () -> Config.parse("{\"bucket\": \"pack\"}", "config.json"));
+        assertTrue(error.getMessage().contains("missing a string \"endpoint\""), error.getMessage());
     }
 
     @Test
     void rejectsNonHttpEndpoint() {
-        assertThrows(UserError.class,
+        UserError error = assertThrows(UserError.class,
                 () -> Config.parse("{\"endpoint\": \"s3.example.com\", \"bucket\": \"pack\"}", "config.json"));
+        assertTrue(error.getMessage().contains("\"endpoint\" must be an http(s) URL"), error.getMessage());
+    }
+
+    @Test
+    void rejectsAnEmptyBucket() {
+        UserError error = assertThrows(UserError.class,
+                () -> Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"\"}", "config.json"));
+        assertTrue(error.getMessage().contains("\"bucket\" must not be empty"), error.getMessage());
     }
 
     @Test
     void loadsFromWorkspace(@TempDir Path root) {
-        AtomicFile.write(Layout.configFile(root), "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\"}");
+        AtomicFile.write(Layout.configFile(root), MINIMAL);
         assertEquals("pack", Config.load(root).bucket());
     }
 
@@ -113,11 +133,10 @@ class ConfigTest {
         assertEquals("us-east-1", config.region());
         assertEquals("", config.prefix());
         assertFalse(config.pathStyle());
-        assertEquals(8, config.concurrency());
+        assertEquals(Config.DEFAULT_CONCURRENCY, config.concurrency());
         String written = Files.readString(file);
         assertTrue(written.contains("\"endpoint\": \"https://s3.example.com\""), written);
-        assertTrue(written.contains("\"concurrency\": 8"), written);
-        assertTrue(written.contains("\n  \"region\": \"us-east-1\",\n"), written);
+        assertTrue(written.contains("\"concurrency\": " + Config.DEFAULT_CONCURRENCY), written);
     }
 
     @Test
@@ -132,6 +151,8 @@ class ConfigTest {
 
     @Test
     void reportsMissingConfig(@TempDir Path root) {
-        assertThrows(UserError.class, () -> Config.load(root));
+        UserError error = assertThrows(UserError.class, () -> Config.load(root));
+        assertTrue(error.getMessage().contains("needs a " + Layout.STATE_DIR + "/" + Layout.CONFIG),
+                error.getMessage());
     }
 }

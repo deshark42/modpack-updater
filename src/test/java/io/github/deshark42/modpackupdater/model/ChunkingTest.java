@@ -34,25 +34,51 @@ class ChunkingTest {
     @Test
     void rejectsAnAverageThatIsNotAPowerOfTwo() {
         UserError error = assertThrows(UserError.class, () -> new Chunking(8192, 40000, 131072));
-        assertTrue(error.getMessage().contains("power of two"), error.getMessage());
+        assertTrue(error.getMessage().contains("must be a power of two"), error.getMessage());
+    }
+
+    @Test
+    void rejectsANonPositiveMinimum() {
+        UserError error = assertThrows(UserError.class, () -> new Chunking(0, 32768, 131072));
+        assertTrue(error.getMessage().contains("min must be positive"), error.getMessage());
     }
 
     @Test
     void rejectsAMinimumThatIsNotBelowTheAverage() {
         UserError error = assertThrows(UserError.class, () -> new Chunking(32768, 32768, 131072));
-        assertTrue(error.getMessage().contains("larger than min"), error.getMessage());
+        assertTrue(error.getMessage().contains("avg must be larger than min"), error.getMessage());
     }
 
     @Test
     void rejectsAMaximumBelowTheAverage() {
         UserError error = assertThrows(UserError.class, () -> new Chunking(8192, 32768, 16384));
-        assertTrue(error.getMessage().contains("smaller than avg"), error.getMessage());
+        assertTrue(error.getMessage().contains("max must not be smaller than avg"), error.getMessage());
     }
 
     @Test
     void rejectsAMissingField() {
         Map<String, Object> json = Chunking.DEFAULT.toJson();
         json.remove("max");
-        assertThrows(UserError.class, () -> Chunking.parse(json, "chunking"));
+
+        UserError error = assertThrows(UserError.class, () -> Chunking.parse(json, "chunking"));
+        assertTrue(error.getMessage().contains("\"max\" must be an integer"), error.getMessage());
+    }
+
+    @Test
+    void rejectsAFieldThatIsNotAnInteger() {
+        Map<String, Object> json = Chunking.DEFAULT.toJson();
+        json.put("min", "8k");
+
+        UserError error = assertThrows(UserError.class, () -> Chunking.parse(json, "chunking"));
+        assertTrue(error.getMessage().contains("\"min\" must be an integer"), error.getMessage());
+    }
+
+    @Test
+    void rejectsAFieldOutsideTheIntegerRange() {
+        Map<String, Object> json = Chunking.DEFAULT.toJson();
+        json.put("min", -1L);
+
+        UserError error = assertThrows(UserError.class, () -> Chunking.parse(json, "chunking"));
+        assertTrue(error.getMessage().contains("\"min\" is out of range: -1"), error.getMessage());
     }
 }

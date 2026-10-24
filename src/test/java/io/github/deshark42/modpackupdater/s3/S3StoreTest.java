@@ -2,149 +2,221 @@ package io.github.deshark42.modpackupdater.s3;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
+import io.github.deshark42.modpackupdater.FakeS3;
+import io.github.deshark42.modpackupdater.TestFiles;
+import io.github.deshark42.modpackupdater.TestWorkspace;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.model.Config;
+import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayDeque;
-import java.util.Deque;
-import java.util.HashMap;
-import java.util.Map;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class S3StoreTest {
 
-    private HttpServer server;
-    private final Map<String, byte[]> objects = new HashMap<>();
-    private final Deque<String> requests = new ArrayDeque<>();
-    private final Map<String, String> lastHeaders = new HashMap<>();
-
-    @BeforeEach
-    void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/", this::handle);
-        server.start();
+    private static Config config(FakeS3 s3) {
+        return config(s3, TestWorkspace.SECRET_KEY);
     }
 
-    @AfterEach
-    void stop() {
-        server.stop(0);
+    private static Config config(FakeS3 s3, String secretKey) {
+        return new Config(s3.url(), TestWorkspace.REGION, TestWorkspace.BUCKET, TestWorkspace.PREFIX,
+                true, TestWorkspace.ACCESS_KEY, secretKey, Config.DEFAULT_CONCURRENCY);
     }
 
-    private void handle(HttpExchange exchange) throws IOException {
-        String path = exchange.getRequestURI().getRawPath();
-        requests.add(exchange.getRequestMethod() + " " + path);
-        lastHeaders.clear();
-        exchange.getRequestHeaders().forEach((name, values) -> lastHeaders.put(name.toLowerCase(), values.get(0)));
-        if ("PUT".equals(exchange.getRequestMethod())) {
-            objects.put(path, exchange.getRequestBody().readAllBytes());
-            exchange.sendResponseHeaders(200, -1);
-        } else {
-            byte[] content = objects.get(path);
-            if (content == null) {
-                byte[] message = "NoSuchKey".getBytes(StandardCharsets.UTF_8);
-                exchange.sendResponseHeaders(404, message.length);
-                exchange.getResponseBody().write(message);
-            } else {
-                exchange.sendResponseHeaders(200, content.length);
-                exchange.getResponseBody().write(content);
-            }
+    private static Config anonymous(FakeS3 s3) {
+        return new Config(s3.url(), TestWorkspace.REGION, TestWorkspace.BUCKET, TestWorkspace.PREFIX,
+                true, null, null, Config.DEFAULT_CONCURRENCY);
+    }
+
+    private static Config plain(String endpoint) {
+        return new Config(endpoint, TestWorkspace.REGION, TestWorkspace.BUCKET, "", true, null, null,
+                Config.DEFAULT_CONCURRENCY);
+    }
+
+    @Test
+    void uploadsHashedBytesAndReadsThemBack() throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            S3Store store = new S3Store(config(s3));
+            byte[] content = TestFiles.bytes("content");
+            String relative = ObjectKeys.blob(Sha256.ofBytes(content));
+
+            store.putBytes(relative, content);
+
+            List<FakeS3.Request> sent = s3.requestsDetailed();
+            assertEquals(1, sent.size(), sent.toString());
+            assertEquals("PUT", sent.get(0).method());
+            assertEquals(TestWorkspace.bucketPath(relative), sent.get(0).path());
+            assertEquals(Sha256.ofBytes(content), sent.get(0).headers().get("x-amz-content-sha256"));
+            String authorization = sent.get(0).headers().get("authorization");
+            assertTrue(authorization.startsWith("AWS4-HMAC-SHA256 Credential=" + TestWorkspace.ACCESS_KEY + "/"),
+                    authorization);
+            assertTrue(authorization.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"),
+                    authorization);
+            assertArrayEquals(content, s3.object(TestWorkspace.bucketPath(relative)));
+
+            assertArrayEquals(content, store.getBytes(relative));
+            sent = s3.requestsDetailed();
+            assertEquals("GET", sent.get(1).method());
+            assertEquals(TestWorkspace.bucketPath(relative), sent.get(1).path());
         }
-        exchange.close();
-    }
-
-    private Config config(boolean pathStyle, boolean anonymous) {
-        String endpoint = "http://127.0.0.1:" + server.getAddress().getPort();
-        String credentials = anonymous ? "" : ", \"access_key\": \"AK\", \"secret_key\": \"SK\"";
-        return Config.parse("{\"endpoint\": \"" + endpoint + "\", \"bucket\": \"pack\", \"prefix\": \"gtnh/\","
-                + " \"path_style\": " + pathStyle + credentials + "}", "config.json");
     }
 
     @Test
-    void uploadsHashedBytesAndReadsThemBack(@TempDir Path dir) throws IOException {
-        byte[] content = "content".getBytes(StandardCharsets.UTF_8);
-        S3Store store = new S3Store(config(true, false));
+    void anonymousStoreSendsNoCredentials() throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            s3.allowAnonymous(true);
+            S3Store store = new S3Store(anonymous(s3));
+            String relative = ObjectKeys.latest("client");
+            s3.put(TestWorkspace.bucketPath(relative), TestFiles.bytes("{}"));
 
-        String relative = "blob/" + Sha256.ofBytes(content).substring(0, 2) + "/" + Sha256.ofBytes(content);
-        store.putBytes(relative, content);
+            assertArrayEquals(TestFiles.bytes("{}"), store.getBytes(relative));
 
-        assertEquals("PUT /pack/gtnh/" + relative, requests.poll());
-        assertEquals(Sha256.ofBytes(content), lastHeaders.get("x-amz-content-sha256"));
-        assertTrue(lastHeaders.get("authorization").startsWith("AWS4-HMAC-SHA256 Credential=AK/"));
-        assertTrue(lastHeaders.get("authorization").contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
-        assertArrayEquals("content".getBytes(StandardCharsets.UTF_8), objects.get("/pack/gtnh/" + relative));
-
-        assertArrayEquals("content".getBytes(StandardCharsets.UTF_8), store.getBytes(relative));
-        assertEquals("GET /pack/gtnh/" + relative, requests.poll());
-    }
-
-    @Test
-    void anonymousStoreSendsNoCredentials(@TempDir Path dir) throws IOException {
-        S3Store store = new S3Store(config(true, true));
-        objects.put("/pack/gtnh/metadata/client/latest.json", "{}".getBytes(StandardCharsets.UTF_8));
-
-        assertArrayEquals("{}".getBytes(StandardCharsets.UTF_8), store.getBytes("metadata/client/latest.json"));
-        assertNull(lastHeaders.get("authorization"));
-        assertNull(lastHeaders.get("x-amz-date"));
+            FakeS3.Request sent = s3.requestsDetailed().get(0);
+            assertNull(sent.headers().get("authorization"), sent.headers().toString());
+            assertNull(sent.headers().get("x-amz-date"), sent.headers().toString());
+        }
     }
 
     @Test
     void downloadsToTheTargetPath(@TempDir Path dir) throws IOException {
-        S3Store store = new S3Store(config(true, true));
-        objects.put("/pack/gtnh/blobs/aa/abc", "bytes".getBytes(StandardCharsets.UTF_8));
-        Path target = dir.resolve("mods/deep/a.jar");
+        try (FakeS3 s3 = new FakeS3()) {
+            S3Store store = new S3Store(config(s3));
+            byte[] content = TestFiles.bytes("bytes");
+            String relative = ObjectKeys.blob(Sha256.ofBytes(content));
+            s3.put(TestWorkspace.bucketPath(relative), content);
+            Path target = dir.resolve("mods/deep/a.jar");
 
-        store.download("blobs/aa/abc", target);
+            store.download(relative, target);
 
-        assertEquals("bytes", Files.readString(target));
-        try (var entries = Files.list(dir.resolve("mods/deep"))) {
-            assertEquals(java.util.List.of(target), entries.toList());
+            assertArrayEquals(content, Files.readAllBytes(target));
+            try (var entries = Files.list(dir.resolve("mods/deep"))) {
+                assertEquals(List.of(target), entries.toList(), "no temporary file is left behind");
+            }
         }
     }
 
     @Test
-    void missingObjectsAreReportedWithTheirKey() {
-        S3Store store = new S3Store(config(true, true));
-        UserError error = assertThrows(UserError.class, () -> store.getBytes("metadata/client/latest.json"));
-        assertTrue(error.getMessage().contains("not found"), error.getMessage());
-        assertTrue(error.getMessage().contains("metadata/client/latest.json"), error.getMessage());
-        assertTrue(error.getMessage().contains("pack"), error.getMessage());
+    void missingObjectsAreReportedWithTheirKey() throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            S3Store store = new S3Store(config(s3));
+            String relative = ObjectKeys.latest("client");
+
+            UserError error = assertThrows(UserError.class, () -> store.getBytes(relative));
+
+            assertTrue(error.getMessage().contains("not found"), error.getMessage());
+            assertTrue(error.getMessage().contains(TestWorkspace.bucketPath(relative)), error.getMessage());
+            assertTrue(error.getMessage().contains("pack"), error.getMessage());
+            assertTrue(error.getMessage().contains("NoSuchKey"),
+                    "the store's error body is reported: " + error.getMessage());
+        }
     }
 
     @Test
-    void urlAvoidsADoubleSlashWhenThereIsNoPrefix() {
-        Config plain = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
-                + " \"path_style\": true}", "config.json");
-        assertEquals(URI.create("https://s3.example.com/pack/blobs/ab/abc"), new S3Store(plain).uri("blobs/ab/abc"));
+    void aRequestSignedWithAnotherSecretIsRefused() throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            S3Store store = new S3Store(config(s3, "not-the-secret"));
+            String relative = ObjectKeys.latest("client");
+            s3.put(TestWorkspace.bucketPath(relative), TestFiles.bytes("{}"));
 
-        Config prefixed = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
-                + " \"prefix\": \"gtnh\", \"path_style\": true}", "config.json");
-        assertEquals(URI.create("https://s3.example.com/pack/gtnh/blobs/ab/abc"),
-                new S3Store(prefixed).uri("blobs/ab/abc"));
+            UserError error = assertThrows(UserError.class, () -> store.getBytes(relative));
 
-        Config virtualHost = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\"}", "config.json");
-        assertEquals(URI.create("https://pack.s3.example.com/blobs/ab/abc"), new S3Store(virtualHost).uri("blobs/ab/abc"));
+            assertTrue(error.getMessage().contains("access denied"), error.getMessage());
+            assertTrue(error.getMessage().contains("SignatureDoesNotMatch"), error.getMessage());
+        }
+    }
+
+    @Test
+    void serverErrorsAreReportedWithTheirStatus() throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            S3Store store = new S3Store(config(s3));
+            String relative = ObjectKeys.latest("client");
+            s3.fail("GET", TestWorkspace.bucketPath(relative), 500);
+
+            UserError error = assertThrows(UserError.class, () -> store.getBytes(relative));
+
+            assertTrue(error.getMessage().contains("HTTP 500"), error.getMessage());
+            assertTrue(error.getMessage().contains("InternalError"), error.getMessage());
+        }
+    }
+
+    @Test
+    void aFailedUploadReportsTheStatusAndStoresNothing() throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            S3Store store = new S3Store(config(s3));
+            byte[] content = TestFiles.bytes("content");
+            String relative = ObjectKeys.blob(Sha256.ofBytes(content));
+            s3.fail("PUT", TestWorkspace.bucketPath(relative), 500);
+
+            UserError error = assertThrows(UserError.class, () -> store.putBytes(relative, content));
+
+            assertTrue(error.getMessage().contains("HTTP 500"), error.getMessage());
+            assertNull(s3.object(TestWorkspace.bucketPath(relative)));
+        }
+    }
+
+    @Test
+    void existsIsFalseOnlyForAMissingObject() throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            S3Store store = new S3Store(config(s3));
+            String missing = ObjectKeys.blob(Sha256.ofBytes(TestFiles.bytes("missing")));
+            String present = ObjectKeys.blob(Sha256.ofBytes(TestFiles.bytes("present")));
+            s3.put(TestWorkspace.bucketPath(present), TestFiles.bytes("present"));
+
+            assertFalse(store.exists(missing));
+            assertTrue(store.exists(present));
+        }
+    }
+
+    @Test
+    void existsFailsOnAnErrorOtherThanNotFound() throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            S3Store store = new S3Store(config(s3));
+            String relative = ObjectKeys.latest("client");
+            s3.fail("HEAD", TestWorkspace.bucketPath(relative), 500);
+
+            UserError error = assertThrows(UserError.class, () -> store.exists(relative));
+
+            assertTrue(error.getMessage().contains("HTTP 500"), error.getMessage());
+        }
+    }
+
+    @Test
+    void urlAvoidsADoubleSlashWhenThereIsNoPrefix() throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            String hash = Sha256.ofBytes(TestFiles.bytes("content"));
+            String objectKey = ObjectKeys.blob(hash);
+            assertEquals(URI.create("https://s3.example.com/" + TestWorkspace.BUCKET + "/" + objectKey),
+                    new S3Store(plain("https://s3.example.com")).uri(objectKey));
+
+            Config prefixed = new Config("https://s3.example.com", TestWorkspace.REGION, TestWorkspace.BUCKET,
+                    TestWorkspace.PREFIX, true, null, null, Config.DEFAULT_CONCURRENCY);
+            assertEquals(URI.create("https://s3.example.com" + TestWorkspace.bucketPath(objectKey)),
+                    new S3Store(prefixed).uri(objectKey));
+
+            Config virtualHost = new Config("https://s3.example.com", TestWorkspace.REGION,
+                    TestWorkspace.BUCKET, "", false, null, null, Config.DEFAULT_CONCURRENCY);
+            assertEquals(URI.create("https://" + TestWorkspace.BUCKET + ".s3.example.com/" + objectKey),
+                    new S3Store(virtualHost).uri(objectKey));
+        }
     }
 
     @Test
     void objectKeysAreEscapedButSlashesSurvive() {
-        Config plain = Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
-                + " \"path_style\": true}", "config.json");
-        assertEquals(URI.create("https://s3.example.com/pack/metadata/a%20b/latest.json"),
-                new S3Store(plain).uri("metadata/a b/latest.json"));
+        URI escaped = new S3Store(plain("https://s3.example.com")).uri("metadata/a b/latest.json");
+        assertEquals(URI.create("https://s3.example.com/" + TestWorkspace.BUCKET
+                + "/metadata/a%20b/latest.json"), escaped);
+        assertEquals("metadata/a b/latest.json", escaped.getPath().substring(
+                ("/" + TestWorkspace.BUCKET + "/").length()), "slashes stay slashes");
     }
 }

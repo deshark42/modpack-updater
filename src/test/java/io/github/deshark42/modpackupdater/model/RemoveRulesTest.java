@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 class RemoveRulesTest {
 
@@ -102,17 +104,18 @@ class RemoveRulesTest {
         assertEquals(List.of(), rules.apply(Set.of("a.jar", "ghost.jar")).unmatched());
     }
 
-    @Test
-    void refusesRulesThatLeaveTheTagDirectory() {
-        assertThrows(UserError.class, () -> rules("../escape.jar"));
-        assertThrows(UserError.class, () -> rules("mods/../../escape.jar"));
-        assertThrows(UserError.class, () -> rules(".."));
-    }
-
-    @Test
-    void refusesRulesThatAreNotAPlainRelativePath() {
-        assertThrows(UserError.class, () -> rules("C:/escape.jar"));
-        assertThrows(UserError.class, () -> rules("/"));
+    @ParameterizedTest(name = "rule \"{0}\" is rejected: {1}")
+    @CsvSource({
+            "../escape.jar, leaves the tag directory",
+            "mods/../../escape.jar, leaves the tag directory",
+            ".., leaves the tag directory",
+            "C:/escape.jar, not a plain relative path",
+            "a\\b.jar, not a plain relative path",
+            "/, names no path"
+    })
+    void refusesRulesThatLeaveTheTagDirectoryOrAreNotAPlainPath(String rule, String message) {
+        UserError error = assertThrows(UserError.class, () -> rules(rule), rule);
+        assertTrue(error.getMessage().contains(message), rule + ": " + error.getMessage());
     }
 
     @Test

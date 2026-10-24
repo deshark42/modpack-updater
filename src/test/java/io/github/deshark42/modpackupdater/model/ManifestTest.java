@@ -4,7 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.deshark42.modpackupdater.TestFiles;
 import io.github.deshark42.modpackupdater.UserError;
+import io.github.deshark42.modpackupdater.fs.Sha256;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -12,11 +14,13 @@ import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class ManifestTest {
 
-    private static final String HASH = "a".repeat(64);
-    private static final String INDEX_ID = "c".repeat(64);
+    private static final String HASH = Sha256.ofBytes(TestFiles.bytes("manifest hash"));
+    private static final String INDEX_ID = Sha256.ofBytes(TestFiles.bytes("manifest index"));
 
     private static String manifest(String files) {
         return "{\"version\": 2, \"tag\": \"client\", \"release_id\": \"2.9.0-RC1\","
@@ -44,8 +48,8 @@ class ManifestTest {
     void roundTripsThroughItsOwnJson() {
         Manifest manifest = Manifest.parse(manifest(entry("mods/x.jar", HASH, 12)), "m.json");
         assertEquals(manifest, Manifest.parse(manifest.toJson(), "round trip"));
-        assertTrue(manifest.toJson().contains("\"version\": 2"));
-        assertTrue(manifest.toJson().contains("\"hash_algorithm\": \"sha256\""));
+        assertTrue(manifest.toJson().contains("\"version\": " + Manifest.VERSION));
+        assertTrue(manifest.toJson().contains("\"hash_algorithm\": \"" + Manifest.SHA256 + "\""));
         assertTrue(manifest.toJson().contains("\"index_id\": \"" + INDEX_ID + "\""));
     }
 
@@ -64,14 +68,14 @@ class ManifestTest {
                         + " \"published_at\": \"2026-10-14T01:30:00Z\", \"hash_algorithm\": \"sha256\","
                         + " \"files\": {}}",
                 "m.json"));
-        assertTrue(error.getMessage().contains("version 1"), error.getMessage());
+        assertTrue(error.getMessage().contains("unsupported version 1"), error.getMessage());
     }
 
     @Test
     void rejectsAnEntryWithoutAChunkTable() {
         UserError error = assertThrows(UserError.class, () -> Manifest.parse(
                 manifest("\"mods/x.jar\": {\"hash\": \"" + HASH + "\", \"size\": 1}"), "m.json"));
-        assertTrue(error.getMessage().contains("index_id"), error.getMessage());
+        assertTrue(error.getMessage().contains("missing a string \"index_id\""), error.getMessage());
     }
 
     @Test
@@ -79,28 +83,40 @@ class ManifestTest {
         UserError error = assertThrows(UserError.class, () -> Manifest.parse(
                 manifest("\"mods/x.jar\": {\"hash\": \"" + HASH + "\", \"size\": 1, \"index_id\": \"abc\"}"),
                 "m.json"));
-        assertTrue(error.getMessage().contains("chunk table id"), error.getMessage());
+        assertTrue(error.getMessage().contains("not a chunk table id: abc"), error.getMessage());
     }
 
     @Test
-    void rejectsUnknownAlgorithm() {
+    void rejectsAnUnsupportedHashAlgorithm() {
         UserError error = assertThrows(UserError.class, () -> Manifest.parse(
                 "{\"version\": 2, \"tag\": \"client\", \"release_id\": \"r\","
                         + " \"published_at\": \"2026-10-14T01:30:00Z\", \"hash_algorithm\": \"md5\", \"files\": {}}",
                 "m.json"));
-        assertTrue(error.getMessage().contains("md5"));
+        assertTrue(error.getMessage().contains("unsupported hash_algorithm \"md5\""), error.getMessage());
+    }
+
+    @Test
+    void rejectsATimestampThatIsNotAnInstant() {
+        UserError error = assertThrows(UserError.class, () -> Manifest.parse(
+                "{\"version\": 2, \"tag\": \"client\", \"release_id\": \"r\","
+                        + " \"published_at\": \"2026-10-14\", \"hash_algorithm\": \"sha256\", \"files\": {}}",
+                "m.json"));
+        assertTrue(error.getMessage().contains("not an ISO-8601 instant"), error.getMessage());
     }
 
     @Test
     void rejectsMalformedHash() {
-        assertThrows(UserError.class, () -> Manifest.parse(manifest(entry("mods/x.jar", "abc", 1)), "m.json"));
+        UserError error = assertThrows(UserError.class,
+                () -> Manifest.parse(manifest(entry("mods/x.jar", "abc", 1)), "m.json"));
+        assertTrue(error.getMessage().contains("not a sha256 hash: abc"), error.getMessage());
     }
 
-    @Test
-    void rejectsPathsThatLeaveTheWorkspace() {
-        for (String path : new String[]{"../escape", "/etc/passwd", "a\\b", "C:/x", "mods/../../x", ""}) {
-            assertThrows(UserError.class, () -> Manifest.parse(manifest(entry(path, HASH, 1)), "m.json"), path);
-        }
+    @ParameterizedTest(name = "\"{0}\" is not a manifest path")
+    @ValueSource(strings = {"../escape", "/etc/passwd", "a\\b", "C:/x", "mods/../../x", ""})
+    void rejectsPathsThatLeaveTheWorkspace(String path) {
+        UserError error = assertThrows(UserError.class,
+                () -> Manifest.parse(manifest(entry(path, HASH, 1)), "m.json"), path);
+        assertTrue(error.getMessage().contains("manifest path"), path + ": " + error.getMessage());
     }
 
     @Test
@@ -111,15 +127,17 @@ class ManifestTest {
 
     @Test
     void rejectsNegativeSize() {
-        assertThrows(UserError.class, () -> Manifest.parse(manifest(entry("mods/x.jar", HASH, -1)), "m.json"));
+        UserError error = assertThrows(UserError.class,
+                () -> Manifest.parse(manifest(entry("mods/x.jar", HASH, -1)), "m.json"));
+        assertTrue(error.getMessage().contains("negative size: -1"), error.getMessage());
     }
 
     @Test
     void writesAndReadsFromDisk(@TempDir Path root) {
-        Path file = root.resolve("releases/2.9.0-RC1.json");
+        Path file = Layout.releaseFile(root, "client", "2.9.0-RC1");
         Manifest manifest = Manifest.parse(manifest(entry("mods/x.jar", HASH, 12)), "m.json");
         manifest.write(file);
-        assertTrue(Files.exists(file));
+        assertTrue(Files.exists(file), file.toString());
         assertEquals(manifest, Manifest.read(file));
     }
 }

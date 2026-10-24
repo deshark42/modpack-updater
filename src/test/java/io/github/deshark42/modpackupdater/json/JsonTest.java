@@ -4,8 +4,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.deshark42.modpackupdater.UserError;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -25,11 +27,23 @@ class JsonTest {
     }
 
     @Test
+    void roundTripsEveryEscapeThroughItsWriter() {
+        String text = "a\"b\\c\nd\re\tf\bg\fh/i\u0001j";
+
+        assertEquals(text, Json.parse(Json.write(text)));
+    }
+
+    @Test
     void writesObjectsOfScalarsOnOneLine() {
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("hash", "abc");
         entry.put("size", 2048L);
         assertEquals("{ \"hash\": \"abc\", \"size\": 2048 }\n", Json.write(entry));
+    }
+
+    @Test
+    void writesArraysOfScalarsOnOneLine() {
+        assertEquals("[ 1, 2, \"x\" ]\n", Json.write(List.of(1L, 2L, "x")));
     }
 
     @Test
@@ -78,6 +92,27 @@ class JsonTest {
 
     @Test
     void rejectsMissingValue() {
-        assertThrows(Json.JsonException.class, () -> Json.parse("{\"a\":}"));
+        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse("{\"a\":}")).getMessage().contains("value"));
+    }
+
+    @Test
+    void rejectsNestingDeeperThanTheLimit() {
+        String deep = "[".repeat(70) + "0" + "]".repeat(70);
+
+        assertTrue(assertThrows(Json.JsonException.class, () -> Json.parse(deep)).getMessage().contains("too deep"));
+    }
+
+    @Test
+    void rejectsAnArrayWhereAnObjectIsExpected() {
+        UserError error = assertThrows(UserError.class, () -> Json.asObject(Json.parse("[]"), "config.json"));
+
+        assertTrue(error.getMessage().contains("expected an object"), error.getMessage());
+    }
+
+    @Test
+    void rejectsAnObjectWhereAnArrayIsExpected() {
+        UserError error = assertThrows(UserError.class, () -> Json.asArray(Json.parse("{}"), "chunks"));
+
+        assertTrue(error.getMessage().contains("expected an array"), error.getMessage());
     }
 }
