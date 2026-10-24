@@ -61,9 +61,10 @@ class LogTest {
 
     @Test
     void showsPathsRelativeToTheWorkspace() {
-        Path workspace = Path.of("/ws");
+        Path workspace = Path.of("ws");
 
-        assertEquals("client/base", Log.relativeTo(workspace, Path.of("/ws/client/base")));
+        assertEquals(Path.of("client", "base").toString(),
+                Log.relativeTo(workspace, workspace.resolve("client").resolve("base")));
     }
 
     @Test

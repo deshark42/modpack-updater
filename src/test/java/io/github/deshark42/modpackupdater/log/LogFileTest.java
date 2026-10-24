@@ -40,9 +40,9 @@ class LogFileTest {
 
         LogFile.keep(workspace, "publish-client", sink.log());
 
-        String directory = Log.relativeTo(workspace, Layout.logsDir(workspace));
-        assertTrue(sink.outText().contains("  log       " + directory + "/"), sink.outText());
-        assertTrue(sink.outText().contains("-publish-client.log"), sink.outText());
+        String line = sink.outText();
+        assertTrue(line.contains("  log       " + Log.relativeTo(workspace, Layout.logsDir(workspace))), line);
+        assertTrue(line.contains("-publish-client.log"), line);
     }
 
     @Test
