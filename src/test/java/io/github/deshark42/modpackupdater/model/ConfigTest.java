@@ -102,6 +102,33 @@ class ConfigTest {
     }
 
     @Test
+    void rejectsAnEndpointWithoutAHost() {
+        UserError error = assertThrows(UserError.class,
+                () -> Config.parse("{\"endpoint\": \"http://\", \"bucket\": \"pack\"}", "config.json"));
+        assertTrue(error.getMessage().contains("\"endpoint\" must be an http(s) URL with a host"), error.getMessage());
+    }
+
+    @Test
+    void rejectsAnEndpointThatCarriesMoreThanAHost() {
+        for (String endpoint : new String[]{"https://s3.example.com/base", "https://s3.example.com?x=1"}) {
+            UserError error = assertThrows(UserError.class, () -> Config.parse(
+                    "{\"endpoint\": \"" + endpoint + "\", \"bucket\": \"pack\"}", "config.json"), endpoint);
+            assertTrue(error.getMessage().contains("no path, query or credentials"), endpoint + ": " + error.getMessage());
+        }
+    }
+
+    @Test
+    void rejectsAVirtualHostBucketOnAnIpAddress() {
+        UserError error = assertThrows(UserError.class, () -> Config.parse(
+                "{\"endpoint\": \"http://127.0.0.1:9000\", \"bucket\": \"pack\"}", "config.json"));
+        assertTrue(error.getMessage().contains("\"path_style\" must be true"), error.getMessage());
+
+        Config pathStyle = Config.parse("{\"endpoint\": \"http://127.0.0.1:9000\", \"bucket\": \"pack\","
+                + " \"path_style\": true}", "config.json");
+        assertTrue(pathStyle.pathStyle(), "path style addresses the bucket in the path");
+    }
+
+    @Test
     void rejectsAnEmptyBucket() {
         UserError error = assertThrows(UserError.class,
                 () -> Config.parse("{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"\"}", "config.json"));

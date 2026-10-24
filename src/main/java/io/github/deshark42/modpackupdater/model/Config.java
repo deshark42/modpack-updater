@@ -3,10 +3,12 @@ package io.github.deshark42.modpackupdater.model;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
 import io.github.deshark42.modpackupdater.json.Json;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /** Connection settings, shared by publisher and subscriber and kept in .modpack-updater/config.json. */
 public record Config(String endpoint, String region, String bucket, String prefix, boolean pathStyle,
@@ -15,6 +17,8 @@ public record Config(String endpoint, String region, String bucket, String prefi
     /** Transfers that run at the same time unless config.json says otherwise. */
     public static final int DEFAULT_CONCURRENCY = 8;
     public static final int MAX_CONCURRENCY = 64;
+
+    private static final Pattern IPV4 = Pattern.compile("\\d{1,3}(\\.\\d{1,3}){3}");
 
     /** The fields a config may leave out, and the values the tool uses and writes back for them. */
     private static final Map<String, Object> DEFAULTS = defaults();
@@ -32,8 +36,24 @@ public record Config(String endpoint, String region, String bucket, String prefi
         if (endpoint == null || !(endpoint.startsWith("http://") || endpoint.startsWith("https://"))) {
             throw new UserError("\"endpoint\" must be an http(s) URL: " + endpoint);
         }
+        String given = endpoint;
         while (endpoint.endsWith("/")) {
             endpoint = endpoint.substring(0, endpoint.length() - 1);
+        }
+        URI uri;
+        try {
+            uri = URI.create(endpoint);
+        } catch (IllegalArgumentException e) {
+            throw new UserError("\"endpoint\" must be an http(s) URL with a host: " + given);
+        }
+        if (uri.getHost() == null || !uri.getRawPath().isEmpty() || uri.getRawQuery() != null
+                || uri.getRawFragment() != null || uri.getRawUserInfo() != null) {
+            throw new UserError("\"endpoint\" must be an http(s) URL with a host and no path, query or"
+                    + " credentials: " + given);
+        }
+        if (!pathStyle && isIpLiteral(uri.getHost())) {
+            throw new UserError("\"path_style\" must be true: " + given
+                    + " is an IP address, so the bucket cannot be part of the host name");
         }
         if (region == null || region.isBlank()) {
             throw new UserError("\"region\" must not be empty");
@@ -102,5 +122,9 @@ public record Config(String endpoint, String region, String bucket, String prefi
 
     public boolean anonymous() {
         return accessKey == null;
+    }
+
+    private static boolean isIpLiteral(String host) {
+        return host.startsWith("[") || IPV4.matcher(host).matches();
     }
 }

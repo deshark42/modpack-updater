@@ -162,7 +162,12 @@ public final class S3Store {
 
     private HttpRequest request(String method, String objectKey, String payloadHash, HttpRequest.BodyPublisher body) {
         URI uri = rawUri(objectKey);
-        HttpRequest.Builder builder = HttpRequest.newBuilder(uri).timeout(timeout).method(method, body);
+        HttpRequest.Builder builder;
+        try {
+            builder = HttpRequest.newBuilder(uri).timeout(timeout).method(method, body);
+        } catch (IllegalArgumentException e) {
+            throw new UserError("cannot address " + objectKey + " on " + config.endpoint() + ": " + e.getMessage());
+        }
         if (config.anonymous()) {
             return builder.build();
         }

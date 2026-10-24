@@ -212,6 +212,18 @@ class S3StoreTest {
     }
 
     @Test
+    void anObjectThatCannotBeAddressedIsReportedWithoutAnException() {
+        Config config = new Config("https://s3.example.com", TestWorkspace.REGION, "pack set", "",
+                false, null, null, Config.DEFAULT_CONCURRENCY);
+        S3Store store = new S3Store(config);
+
+        UserError error = assertThrows(UserError.class, () -> store.getBytes(ObjectKeys.latest("client")));
+
+        assertTrue(error.getMessage().contains("cannot address"), error.getMessage());
+        assertTrue(error.getMessage().contains("unsupported URI"), error.getMessage());
+    }
+
+    @Test
     void objectKeysAreEscapedButSlashesSurvive() {
         URI escaped = new S3Store(plain("https://s3.example.com")).uri("metadata/a b/latest.json");
         assertEquals(URI.create("https://s3.example.com/" + TestWorkspace.BUCKET
