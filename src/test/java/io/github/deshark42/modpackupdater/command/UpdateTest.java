@@ -317,6 +317,25 @@ class UpdateTest {
     }
 
     @Test
+    void readsAManifestStoredBeforeCompression(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            byte[] jar = TestFiles.random(30_000, 73);
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods/a.jar", jar));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            s3.put(releaseKey(TAG, "2.9.0"), TestFiles.bytes(manifest(s3, TAG, "2.9.0").toJson()));
+            resetLog();
+
+            update(player, TAG, null);
+
+            assertArrayEquals(jar, Files.readAllBytes(player.resolve("mods/a.jar")));
+            assertEquals("2.9.0", applied(player, TAG));
+        }
+    }
+
+    @Test
     void firstUpdateReusesTheChunksOfAnExistingFilesOtherContent(@TempDir Path root) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             byte[] target = TestFiles.random(300_000, 72);

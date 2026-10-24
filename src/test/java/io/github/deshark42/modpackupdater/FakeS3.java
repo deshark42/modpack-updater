@@ -3,7 +3,9 @@ package io.github.deshark42.modpackupdater;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.deshark42.modpackupdater.s3.SigV4Verifier;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.BindException;
 import java.net.InetSocketAddress;
@@ -20,6 +22,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.zip.GZIPInputStream;
 
 /**
  * An in-process S3 endpoint reached over real HTTP: the one storage double the suite uses.
@@ -42,6 +45,8 @@ public final class FakeS3 implements AutoCloseable {
     private final HttpServer server;
     private final ExecutorService executor;
     private final Map<String, byte[]> objects = new ConcurrentHashMap<>();
+    /** The response headers an object was stored with, replayed on read as a real store would. */
+    private final Map<String, Map<String, String>> objectHeaders = new ConcurrentHashMap<>();
     private final List<Request> requests = Collections.synchronizedList(new ArrayList<>());
     private final AtomicLong uploaded = new AtomicLong();
     private final AtomicLong downloaded = new AtomicLong();
@@ -144,15 +149,32 @@ public final class FakeS3 implements AutoCloseable {
         return content == null ? null : content.clone();
     }
 
-    /** The text stored under {@code path}, or null when the path holds no object. */
+    /** The text a client reads under {@code path}, inflated when the object is stored gzipped. */
     public String text(String path) {
         byte[] content = object(path);
-        return content == null ? null : new String(content, StandardCharsets.UTF_8);
+        if (content == null) {
+            return null;
+        }
+        if (!"gzip".equalsIgnoreCase(contentEncoding(path))) {
+            return new String(content, StandardCharsets.UTF_8);
+        }
+        try (InputStream in = new GZIPInputStream(new ByteArrayInputStream(content))) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new IllegalStateException("stored object " + path + " does not inflate", e);
+        }
     }
 
-    /** Seeds an object without a request, the way another writer would have left it. */
+    /** The content encoding {@code path} is stored with, or null when it is stored plain. */
+    public String contentEncoding(String path) {
+        Map<String, String> headers = objectHeaders.get(path);
+        return headers == null ? null : headers.get("content-encoding");
+    }
+
+    /** Seeds a plain object without a request, the way another writer would have left it. */
     public void put(String path, byte[] content) {
         objects.put(path, content.clone());
+        objectHeaders.remove(path);
     }
 
     /** Fails every PUT to {@code path} with a 500 until {@link #clearFailures()} is called. */
@@ -214,9 +236,11 @@ public final class FakeS3 implements AutoCloseable {
         }
         if ("PUT".equals(method)) {
             objects.put(path, body);
+            storeHeaders(path, headers);
             uploaded.addAndGet(body.length);
             sendStatus(exchange, 200);
         } else if ("HEAD".equals(method)) {
+            replayHeaders(exchange, path);
             sendStatus(exchange, objects.containsKey(path) ? 200 : 404);
         } else {
             byte[] content = objects.get(path);
@@ -224,11 +248,28 @@ public final class FakeS3 implements AutoCloseable {
                 sendError(exchange, 404, "NoSuchKey", "the bucket has no object " + path);
             } else {
                 downloaded.addAndGet(content.length);
+                replayHeaders(exchange, path);
                 exchange.sendResponseHeaders(200, content.length);
                 try (OutputStream out = exchange.getResponseBody()) {
                     out.write(content);
                 }
             }
+        }
+    }
+
+    private void storeHeaders(String path, Map<String, String> requestHeaders) {
+        String encoding = requestHeaders.get("content-encoding");
+        if (encoding == null) {
+            objectHeaders.remove(path);
+        } else {
+            objectHeaders.put(path, Map.of("content-encoding", encoding));
+        }
+    }
+
+    private void replayHeaders(HttpExchange exchange, String path) {
+        Map<String, String> headers = objectHeaders.get(path);
+        if (headers != null) {
+            headers.forEach((name, value) -> exchange.getResponseHeaders().set(name, value));
         }
     }
 

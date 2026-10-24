@@ -25,7 +25,7 @@ overlay/ 与 base/ 生命周期无关：官方更新只替换 base/，发布者�
 
 删除是**显式意图**，不是推断：publish 仍然不与上一次 release 的清单比较，某个路径不再发布只有两种可能——它已不在 base/ 里，或被 remove.txt 命中。
 
-`publish --dry-run` 与发布日志报告合并结果：扫描 base/ 与 overlay/ 各一行、remove 命中多少文件（来自多少条规则）、未命中的规则、merge 新增/覆盖多少文件，VERBOSE 级再逐文件打印 add/replace。release 清单不记录某个文件来自 base/ 还是 overlay/；存储布局、latest 指针、config.json、`update` 命令与订阅者工作区都不需要知道来源。
+发布日志报告合并结果：扫描 base/ 与 overlay/ 各一行、remove 命中多少文件（来自多少条规则）、未命中的规则、merge 新增/覆盖多少文件，VERBOSE 级再逐文件打印 add/replace。release 清单不记录某个文件来自 base/ 还是 overlay/；存储布局、latest 指针、config.json、`update` 命令与订阅者工作区都不需要知道来源。
 
 ### 合并规则
 
@@ -44,7 +44,7 @@ remove.txt 只作用于 base/：同路径以 overlay/ 为准，规则命中 over
 
 匹配语义由 src/test/java/io/github/deshark42/modpackupdater/model/RemoveRulesTest.java 锁定：锚定与逐段通配、`**` 跨目录（含零层）、目录规则剔除子树且不命中同名文件、`?` 与字符类、整体匹配，以及拒绝 `../escape.jar`、`mods/../../escape.jar` 与 `C:/escape.jar`。
 
-合并结果由 src/test/java/io/github/deshark42/modpackupdater/command/PublishTest.java 锁定：同路径 overlay/ 胜出、remove.txt 只作用于 base/、`--dry-run` 与真实发布报出同一行合并摘要、坏规则在接触存储之前就报错。src/test/java/io/github/deshark42/modpackupdater/command/InitTest.java 锁定 init 铺出的三个发布侧输入、模板里零条生效规则，以及重复执行只补缺失、不改写已有 remove.txt。
+合并结果由 src/test/java/io/github/deshark42/modpackupdater/command/PublishTest.java 锁定：同路径 overlay/ 胜出、remove.txt 只作用于 base/、坏规则在接触存储之前就报错。src/test/java/io/github/deshark42/modpackupdater/command/InitTest.java 锁定 init 铺出的三个发布侧输入、模板里零条生效规则，以及重复执行只补缺失、不改写已有 remove.txt。
 
 ## 曾考虑的替代方案
 
@@ -56,7 +56,7 @@ remove.txt 只作用于 base/：同路径以 overlay/ 为准，规则命中 over
 - 只有 base/ 的工作区行为不变：清单与改动前逐字节一致；overlay/ 与 remove.txt 缺失时不报错，也不多出日志行。
 - overlay/ 独有的路径进清单且 hash 取自 overlay/ 的文件；同路径同时在 base/ 与 overlay/ 时取 overlay/ 的 hash，其余文件仍取自 base/。
 - remove.txt 命中的 base/ 文件不进清单；`dir/` 剔除该目录下全部文件，`example-mod-*.jar` 剔除任意深度下同名的文件；未命中的规则出现在日志里，不改变退出码。
-- `publish --dry-run` 报出的 scan/remove/stale/merge 与最终清单一致：dry-run 在合并之后才返回，读到的是同一份结果。
+- scan/remove/stale/merge 四行日志与最终清单来自同一次合并：清单在合并完全结束之后才写出，不会出现日志与内容各说各话。
 - 清单不携带来源：订阅者无法区分一个路径来自官方包还是发布者自己，排查内容问题时少一条线索。
 - **remove.txt 直接驱动订阅者删除。** 清单里消失的路径在订阅者侧就是删除（旧文件移入 backup/，见[订阅者工作区与更新流程](2026-10-14-subscriber-workspace.md)）。写错或过期的规则会把玩家实例里的文件搬走，影响面是全体订阅者，发布侧不做二次确认。
 - **remove.txt 会腐化。** 未命中的规则只报告不报错，长期不清理会积累已无作用的条目。

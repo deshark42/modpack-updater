@@ -17,11 +17,13 @@ import io.github.deshark42.modpackupdater.json.Json;
 import io.github.deshark42.modpackupdater.log.Logging;
 import io.github.deshark42.modpackupdater.model.ChunkTable;
 import io.github.deshark42.modpackupdater.model.Chunking;
+import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.FileEntry;
 import io.github.deshark42.modpackupdater.model.Layout;
 import io.github.deshark42.modpackupdater.model.Manifest;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import io.github.deshark42.modpackupdater.model.Pointer;
+import io.github.deshark42.modpackupdater.s3.S3Store;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -128,6 +130,13 @@ class PublishTest {
         return Files.exists(file) ? Files.readString(file, StandardCharsets.UTF_8) : "";
     }
 
+    /** A store pointed at the fake, the way a subscriber would open the same bucket. */
+    private static S3Store store(FakeS3 s3) {
+        return new S3Store(new Config(s3.url(), TestWorkspace.REGION, TestWorkspace.BUCKET,
+                TestWorkspace.PREFIX, true, TestWorkspace.ACCESS_KEY, TestWorkspace.SECRET_KEY,
+                Config.DEFAULT_CONCURRENCY));
+    }
+
     private static List<Path> logs(Path workspace) throws IOException {
         try (var files = Files.list(Layout.logsDir(workspace))) {
             return files.toList();
@@ -187,6 +196,26 @@ class PublishTest {
             assertEquals(Chunking.DEFAULT, stored.chunking());
             assertEquals("2.9.0", Pointer.parse(s3.text(latestKey()), "latest").releaseId());
             assertTrue(captured.outText().contains("3 files"), captured.outText());
+        }
+    }
+
+    @Test
+    void gzipsTheReleaseManifestAndLeavesTheLatestPointerPlain(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
+
+            publish(workspace, TAG, "2.9.0");
+
+            byte[] stored = s3.object(releaseKey("2.9.0"));
+            assertEquals(0x1f, stored[0] & 0xff, "the release manifest is stored as a gzip member");
+            assertEquals(0x8b, stored[1] & 0xff);
+            assertEquals("gzip", s3.contentEncoding(releaseKey("2.9.0")));
+            assertNull(s3.contentEncoding(latestKey()), "the latest pointer stays plain");
+            Manifest read = Manifest.parse(new String(
+                    store(s3).getBytes(ObjectKeys.release(TAG, "2.9.0")), StandardCharsets.UTF_8), "release");
+            assertEquals(List.of("mods/a.jar"), List.copyOf(read.files().keySet()));
+            assertTrue(captured.outText().contains(" -> "), "the write line reports both sizes: " + captured.outText());
         }
     }
 

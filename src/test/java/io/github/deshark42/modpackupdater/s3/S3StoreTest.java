@@ -73,6 +73,33 @@ class S3StoreTest {
     }
 
     @Test
+    void gzipsAnObjectAndInflatesItOnRead() throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            S3Store store = new S3Store(config(s3));
+            byte[] content = TestFiles.bytes("manifest ".repeat(2000));
+            String relative = ObjectKeys.release("client", "1.0.0");
+
+            int stored = store.putGzip(relative, content);
+
+            String path = TestWorkspace.bucketPath(relative);
+            byte[] storedBytes = s3.object(path);
+            assertEquals(stored, storedBytes.length);
+            assertTrue(stored < content.length, "compression shrinks the manifest: " + stored);
+            assertEquals(0x1f, storedBytes[0] & 0xff, "a gzip member starts with its magic bytes");
+            assertEquals(0x8b, storedBytes[1] & 0xff);
+            FakeS3.Request sent = s3.requestsDetailed().get(0);
+            assertEquals("gzip", sent.headers().get("content-encoding"));
+            assertEquals(Sha256.ofBytes(storedBytes), sent.headers().get("x-amz-content-sha256"),
+                    "the signature covers the bytes that are sent");
+            assertTrue(sent.headers().get("authorization").contains("content-encoding"),
+                    sent.headers().get("authorization"));
+            assertEquals("gzip", s3.contentEncoding(path));
+
+            assertArrayEquals(content, store.getBytes(relative), "a reader inflates it from the header alone");
+        }
+    }
+
+    @Test
     void anonymousStoreSendsNoCredentials() throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             s3.allowAnonymous(true);

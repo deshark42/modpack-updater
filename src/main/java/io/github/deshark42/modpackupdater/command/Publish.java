@@ -210,7 +210,7 @@ public final class Publish {
         Manifest manifest = new Manifest(tag, releaseId, Instant.now().truncatedTo(ChronoUnit.SECONDS),
                 Manifest.SHA256, new TreeMap<>(entries));
         LOG.debug("commit");
-        LOG.debug("write {}: {}", releaseKey, write(store, releaseKey, manifest.toJson()));
+        LOG.debug("write {}: {}", releaseKey, writeGzip(store, releaseKey, manifest.toJson()));
         LOG.debug("write {}: {}", latestKey, write(store, latestKey, new Pointer(releaseId).toJson()));
         LOG.info("done: {} {} is now the latest", tag, releaseId);
         LOG.debug("contents: {}", contents);
@@ -262,6 +262,13 @@ public final class Publish {
         byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
         store.putBytes(key, bytes);
         return Sizes.human(bytes.length);
+    }
+
+    /** A release manifest is worth compressing; the latest pointer is a few dozen bytes. */
+    private static String writeGzip(S3Store store, String key, String json) {
+        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+        int stored = store.putGzip(key, bytes);
+        return Sizes.human(bytes.length) + " -> " + Sizes.human(stored);
     }
 
     /** Where one chunk's bytes can be read back from, and the path it belongs to in the release. */

@@ -4,7 +4,7 @@ Status: implemented
 
 ## 问题
 
-[发布者工作区](2026-10-13-publisher-workspace.md)与[订阅者工作区](2026-10-14-subscriber-workspace.md)都不检查本地文件，而是靠两份 release 清单相减来决定该动哪些路径；两边也都要读 latest.json 才知道有没有新版本。这几份要长期共存、可演进的 JSON 里到底写什么，[对象存储布局](2026-10-13-object-storage-layout.md)只定了位置，字段留白。config.json 由发布者与订阅者共用同一份字段定义，也在这里一次定下。
+[发布者工作区](2026-10-13-publisher-workspace.md)与[订阅者工作区](2026-10-14-subscriber-workspace.md)都靠两份 release 清单相减来决定该动哪些路径；更新在下载阶段会读目标路径上的既有文件，但只用于决定跳过哪些文件的下载与复用多少块，不参与路径集合的判断；两边也都要读 latest.json 才知道有没有新版本。这几份要长期共存、可演进的 JSON 里到底写什么，[对象存储布局](2026-10-13-object-storage-layout.md)只定了位置，字段留白。config.json 由发布者与订阅者共用同一份字段定义，也在这里一次定下。
 
 ## 决策
 
@@ -28,11 +28,12 @@ Status: implemented
 ```
 
 - 一次发布就是一份完整清单：files 覆盖该 tag 本次追踪的全部文件，路径相对工作区根，按路径排序。
-- files 的值是 {hash, size, index_id}：hash 是整文件 sha256；index_id 是块表（chunk table，桶里存于 index/ 下）的 id；哈希算法由 hash_algorithm 声明（当前只有 sha256）；size 让 --dry-run 能报出将下载的文件数与总量。分块与块表的来源见[按内容定义分块传输发布内容](2026-10-22-content-defined-chunked-transfer.md)。
+- files 的值是 {hash, size, index_id}：hash 是整文件 sha256；index_id 是块表（chunk table，桶里存于 index/ 下）的 id；哈希算法由 hash_algorithm 声明（当前只有 sha256）；size 是整文件大小：下载前先用它预筛目标路径上的既有文件，大小不符即判为内容不同，不必读文件；拼装完成后再与整文件哈希一起校验。分块与块表的来源见[按内容定义分块传输发布内容](2026-10-22-content-defined-chunked-transfer.md)。
 - 清单不记块与块表的路径：路径由 index_id 与块哈希推导，所以调整 blob/、index/ 内部布局不必重写任何清单。
 - 只记文件：空目录、权限位、符号链接都不进清单。
 - published_at 只作信息，不参与任何判断；tag 与 release_id 是冗余记录，只为清单被单独取出时仍能自证身份。
 - version 是格式版本：清单是 2，latest 与订阅者的 current.json 仍带各自的 version 1。
+- release 清单以 gzip 存放，对象上声明 Content-Encoding: gzip；latest.json 只有几十字节，保持明文。订阅者按响应头解压，没有该头的旧清单按明文读，所以发布端升级不影响已有发布。
 
 **latest** metadata/<tag>/latest.json
 
@@ -80,7 +81,7 @@ Status: implemented
 ## 后果
 
 - 内容不变的同一份发布内容（同一份 base/ 与 overlay/）用两个 release_id 各发布一次，两份清单除 release_id 与 published_at 外逐字节一致：序列化确定，不随目录遍历顺序漂移。
-- 订阅者只读 latest.json 就能判断本地是否落后；落后时用本地清单与目标清单相减，不读取任何块即可列出新增、删除、修改三类路径，--dry-run 也就能报出将下载的文件数与总字节数而不写盘。
+- 订阅者只读 latest.json 就能判断本地是否落后；落后时用本地清单与目标清单相减，不读取任何块即可列出新增、删除、修改三类路径。
 - 遇到不认识的 version、越界的 tag 或 release_id，两端都在动手之前报错退出。
 - 公开桶（config.json 里没有密钥）下订阅者能完成更新；私有桶下 config.json 里的密钥足以完成读写。
 - 清单整体进内存：十万级文件的整合包会明显吃内存与解析时间；届时换流式解析即可，格式不必变。

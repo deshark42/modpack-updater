@@ -4,6 +4,8 @@ import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.model.Config;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -20,9 +22,14 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 /** An S3 compatible object store, addressed with the credentials or the anonymity from the config. */
 public final class S3Store {
+
+    /** The one content encoding this tool writes: a metadata object too large to leave plain. */
+    static final String GZIP = "gzip";
 
     private static final DateTimeFormatter AMZ_DATE =
             DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC);
@@ -84,7 +91,21 @@ public final class S3Store {
         if (!isSuccess(response)) {
             throw failure("read", objectKey, response.statusCode(), new String(response.body(), StandardCharsets.UTF_8));
         }
-        return response.body();
+        byte[] body = response.body();
+        if (!isGzip(response)) {
+            return body;
+        }
+        try (InputStream in = new GZIPInputStream(new ByteArrayInputStream(body))) {
+            return in.readAllBytes();
+        } catch (IOException e) {
+            throw new UserError("cannot read " + config.bucket() + "/" + objectKey + ": " + e.getMessage(), e);
+        }
+    }
+
+    private static boolean isGzip(HttpResponse<?> response) {
+        return response.headers().firstValue("content-encoding")
+                .map(value -> value.trim().equalsIgnoreCase(GZIP))
+                .orElse(false);
     }
 
     /** Whether an object is there, asked with a HEAD request so no content moves. */
@@ -133,9 +154,28 @@ public final class S3Store {
     }
 
     public void putBytes(String relative, byte[] content) {
+        put(relative, content, Map.of());
+    }
+
+    /**
+     * Stores an object gzipped, telling readers so with the content encoding header, and answers the stored size.
+     */
+    public int putGzip(String relative, byte[] content) {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        try (GZIPOutputStream gzip = new GZIPOutputStream(buffer)) {
+            gzip.write(content);
+        } catch (IOException e) {
+            throw new UserError("cannot compress " + key(relative) + ": " + e.getMessage(), e);
+        }
+        byte[] compressed = buffer.toByteArray();
+        put(relative, compressed, Map.of("content-encoding", GZIP));
+        return compressed.length;
+    }
+
+    private void put(String relative, byte[] content, Map<String, String> extra) {
         String objectKey = key(relative);
         HttpRequest request = request("PUT", objectKey, Sha256.hex(digest(content)),
-                HttpRequest.BodyPublishers.ofByteArray(content));
+                HttpRequest.BodyPublishers.ofByteArray(content), extra);
         HttpResponse<String> response = send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (!isSuccess(response)) {
             throw failure("write", objectKey, response.statusCode(), response.body());
@@ -161,6 +201,11 @@ public final class S3Store {
     }
 
     private HttpRequest request(String method, String objectKey, String payloadHash, HttpRequest.BodyPublisher body) {
+        return request(method, objectKey, payloadHash, body, Map.of());
+    }
+
+    private HttpRequest request(String method, String objectKey, String payloadHash, HttpRequest.BodyPublisher body,
+            Map<String, String> extra) {
         URI uri = rawUri(objectKey);
         HttpRequest.Builder builder;
         try {
@@ -168,10 +213,13 @@ public final class S3Store {
         } catch (IllegalArgumentException e) {
             throw new UserError("cannot address " + objectKey + " on " + config.endpoint() + ": " + e.getMessage());
         }
+        for (Map.Entry<String, String> header : extra.entrySet()) {
+            builder.header(header.getKey(), header.getValue());
+        }
         if (config.anonymous()) {
             return builder.build();
         }
-        Map<String, String> headers = new TreeMap<>();
+        Map<String, String> headers = new TreeMap<>(extra);
         headers.put("host", authority(uri));
         headers.put("x-amz-content-sha256", payloadHash);
         headers.put("x-amz-date", AMZ_DATE.format(clock.instant()));
