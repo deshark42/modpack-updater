@@ -16,7 +16,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
-import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -27,6 +26,7 @@ class LoggingTest {
 
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-10-20T00:00:00Z"), ZoneOffset.UTC);
     private static final String TRANSCRIPT = "update-client";
+    private static final String LINE = "\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}";
 
     /** A logger of this test's own, so the messages asserted on are the ones this test wrote. */
     private static Logger logger() {
@@ -36,50 +36,45 @@ class LoggingTest {
     @Test
     void printsTheTimeTheLevelAndTheMessage(@TempDir Path workspace) {
         try (TestLogs logs = new TestLogs()) {
-            logs.begin(workspace, Logging.Mode.NORMAL);
+            logs.begin(workspace);
             logger().info("the run starts");
 
             assertTrue(logs.outText().lines().anyMatch(line ->
-                    line.matches("\\d{2}:\\d{2}:\\d{2}\\.\\d{3} INFO the run starts")), logs.outText());
+                    line.matches(LINE + "  INFO the run starts")), logs.outText());
         }
     }
 
     @Test
-    void eachModeShowsTheLevelsItIsMeantTo(@TempDir Path workspace) {
-        assertEquals(List.of("INFO"), levels(workspace, Logging.Mode.QUIET));
-        assertEquals(List.of("DEBUG", "INFO"), levels(workspace, Logging.Mode.NORMAL));
-        assertEquals(List.of("TRACE", "DEBUG", "INFO"), levels(workspace, Logging.Mode.VERBOSE));
-    }
-
-    /** Logs one line per level and returns the levels that reached the console, in order. */
-    private static List<String> levels(Path workspace, Logging.Mode mode) {
+    void theConsoleShowsInfoWhileTheTranscriptKeepsDebug(@TempDir Path workspace) throws IOException {
         try (TestLogs logs = new TestLogs()) {
-            logs.begin(workspace, mode);
+            logs.begin(workspace, TRANSCRIPT, CLOCK);
             Logger log = logger();
-            log.trace("a file the run moved");
-            log.debug("a fact the stage reports");
+            log.debug("a fact the run found");
             log.info("a milestone");
-            return logs.outText().lines()
-                    .map(line -> line.split(" ", 3)[1])
-                    .toList();
+
+            assertTrue(logs.outText().contains("INFO a milestone"), logs.outText());
+            assertFalse(logs.outText().contains("DEBUG"), logs.outText());
+            log.trace("a file the run moved");
+            log.debug("a second fact");
         }
+
+        String text = Files.readString(transcript(workspace), StandardCharsets.UTF_8);
+        assertTrue(text.contains("DEBUG a fact the run found"), text);
+        assertFalse(text.contains("TRACE"), "the transcript keeps DEBUG, not TRACE: " + text);
+        assertTrue(text.contains("INFO a milestone"), text);
     }
 
     @Test
     void warningsAndErrorsGoToTheErrorStream(@TempDir Path workspace) {
         try (TestLogs logs = new TestLogs()) {
-            logs.begin(workspace, Logging.Mode.VERBOSE);
+            logs.begin(workspace);
             Logger log = logger();
             log.info("a milestone");
-            log.debug("a fact the stage reports");
-            log.trace("a file the run moved");
             log.warn("a caution");
             log.error("a failure");
 
             assertTrue(logs.outText().contains("INFO a milestone"), logs.outText());
-            assertTrue(logs.outText().contains("DEBUG a fact the stage reports"), logs.outText());
-            assertTrue(logs.outText().contains("TRACE a file the run moved"), logs.outText());
-            assertTrue(logs.errText().contains("WARN a caution"), logs.errText());
+            assertTrue(logs.errText().contains(" WARN a caution"), logs.errText());
             assertTrue(logs.errText().contains("ERROR a failure"), logs.errText());
             assertFalse(logs.outText().contains("WARN "), logs.outText());
             assertFalse(logs.errText().contains("INFO "), logs.errText());
@@ -88,26 +83,23 @@ class LoggingTest {
 
     @Test
     void aNamedRunKeepsItsTranscriptInTheLogsDirectory(@TempDir Path workspace) throws IOException {
-        Path transcript =
-                Layout.logsDir(workspace).resolve(TRANSCRIPT + "-" + LocalDate.now(CLOCK) + ".log");
         try (TestLogs logs = new TestLogs()) {
-            logs.begin(workspace, TRANSCRIPT, Logging.Mode.QUIET, CLOCK);
+            logs.begin(workspace, TRANSCRIPT, CLOCK);
             logger().info("the first entry");
-            logger().trace("a file the run moved");
 
+            assertTrue(logs.outText().lines().findFirst().orElse("").matches(LINE
+                    + "  INFO logging this run to .*update-client-\\d{4}-\\d{2}-\\d{2}\\.log"),
+                    logs.outText());
             assertTrue(logs.outText().contains("INFO the first entry"), logs.outText());
-            assertFalse(logs.outText().contains("TRACE a file the run moved"),
-                    "the quiet console keeps the file lines out: " + logs.outText());
         }
 
+        Path transcript = transcript(workspace);
         assertTrue(Files.isRegularFile(transcript), transcript.toString());
         String text = Files.readString(transcript, StandardCharsets.UTF_8);
-        assertTrue(text.lines().anyMatch(line ->
-                line.matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3} INFO the first entry")), text);
-        assertTrue(text.contains("TRACE a file the run moved"), text);
+        assertTrue(text.lines().anyMatch(line -> line.matches(LINE + "  INFO the first entry")), text);
 
         try (TestLogs second = new TestLogs()) {
-            second.begin(workspace, TRANSCRIPT, Logging.Mode.QUIET, CLOCK);
+            second.begin(workspace, TRANSCRIPT, CLOCK);
             logger().info("the second entry");
         }
 
@@ -135,26 +127,29 @@ class LoggingTest {
         Files.setLastModifiedTime(other, FileTime.from(CLOCK.instant().minus(Duration.ofDays(15))));
 
         try (TestLogs logs = new TestLogs()) {
-            logs.begin(workspace, TRANSCRIPT, Logging.Mode.QUIET, CLOCK);
+            logs.begin(workspace, TRANSCRIPT, CLOCK);
             logger().info("a milestone");
         }
 
         assertFalse(Files.exists(old), "a transcript older than the retention window is removed");
         assertTrue(Files.exists(recent), "a transcript inside the window stays");
         assertTrue(Files.exists(other), "only transcripts are pruned");
-        assertTrue(Files.exists(logsDir.resolve(TRANSCRIPT + "-" + LocalDate.now(CLOCK) + ".log")),
-                "the run still keeps its own transcript");
+        assertTrue(Files.exists(transcript(workspace)), "the run still keeps its own transcript");
     }
 
     @Test
     void aRunWithoutATranscriptNameKeepsNoFile(@TempDir Path workspace) {
         try (TestLogs logs = new TestLogs()) {
-            logs.begin(workspace, Logging.Mode.NORMAL);
+            logs.begin(workspace);
             logger().info("a milestone");
 
             assertTrue(logs.outText().contains("INFO a milestone"), logs.outText());
         }
 
         assertFalse(Files.exists(Layout.logsDir(workspace)), "no transcript directory is created");
+    }
+
+    private static Path transcript(Path workspace) {
+        return Layout.logsDir(workspace).resolve(TRANSCRIPT + "-" + LocalDate.now(CLOCK) + ".log");
     }
 }

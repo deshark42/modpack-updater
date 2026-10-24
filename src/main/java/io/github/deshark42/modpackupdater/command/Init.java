@@ -7,8 +7,6 @@ import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,51 +44,37 @@ public final class Init {
     }
 
     public static void run(Path workspace, String tag) {
-        LOG.debug("init {}", workspace);
+        LOG.info("initializing a workspace in {}", workspace);
         Path config = Layout.configFile(workspace);
-        String shown = Text.relativeTo(workspace, config);
-        List<String> created = new ArrayList<>();
-        List<String> kept = new ArrayList<>();
-        if (Files.exists(config)) {
-            LOG.debug("kept {}", shown);
-            kept.add(shown);
-            Workspace.fillIn(workspace);
-        } else {
+        String shownConfig = Text.relativeTo(workspace, config);
+        boolean configCreated = !Files.exists(config);
+        if (configCreated) {
             AtomicFile.write(config, TEMPLATE);
-            LOG.debug("created {}", shown);
-            created.add(shown);
+            LOG.info("created {}", shownConfig);
+        } else {
+            LOG.info("kept {}", shownConfig);
+            Workspace.fillIn(workspace);
         }
         if (tag != null) {
-            directory(Layout.baseDir(workspace, tag), workspace, created, kept);
-            directory(Layout.overlayDir(workspace, tag), workspace, created, kept);
+            directory(Layout.baseDir(workspace, tag), workspace);
+            directory(Layout.overlayDir(workspace, tag), workspace);
             Path remove = Layout.removeFile(workspace, tag);
-            String ruleFile = Text.relativeTo(workspace, remove);
             if (Files.exists(remove)) {
-                LOG.debug("kept {}", ruleFile);
-                kept.add(ruleFile);
+                LOG.info("kept {}", Text.relativeTo(workspace, remove));
             } else {
                 AtomicFile.write(remove, REMOVE_TEMPLATE);
-                LOG.debug("created {}", ruleFile);
-                created.add(ruleFile);
+                LOG.info("created {}", Text.relativeTo(workspace, remove));
             }
         }
+        if (configCreated) {
+            LOG.info("fill in \"endpoint\" and \"bucket\" in {} before publishing", shownConfig);
+        }
         LOG.info("workspace is ready");
-        if (!created.isEmpty()) {
-            LOG.debug("created: {}", String.join(", ", created));
-        }
-        if (!kept.isEmpty()) {
-            LOG.debug("kept: {}", String.join(", ", kept));
-        }
-        if (created.contains(shown)) {
-            LOG.debug("next: fill in \"endpoint\" and \"bucket\" in {}", shown);
-        }
     }
 
-    private static void directory(Path directory, Path workspace, List<String> created, List<String> kept) {
-        String shown = Text.relativeTo(workspace, directory);
+    private static void directory(Path directory, Path workspace) {
         if (Files.isDirectory(directory)) {
-            LOG.debug("kept {}", shown);
-            kept.add(shown);
+            LOG.info("kept {}", Text.relativeTo(workspace, directory));
             return;
         }
         try {
@@ -98,7 +82,6 @@ public final class Init {
         } catch (IOException e) {
             throw new UserError("cannot create " + directory + ": " + e.getMessage(), e);
         }
-        LOG.debug("created {}", shown);
-        created.add(shown);
+        LOG.info("created {}", Text.relativeTo(workspace, directory));
     }
 }

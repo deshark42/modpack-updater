@@ -63,8 +63,7 @@ import org.slf4j.LoggerFactory;
  * changed file only fetches the chunks around the change. A copy that is missing or unreadable
  * simply contributes no chunks, and the file is fetched whole.
  *
- * <p>The run is reported in three stages: what the diff came to, what it does to the workspace,
- * and what is written to record the new state.
+ * <p>The console shows the milestones of the run; the transcript keeps the per-file detail as well.
  */
 public final class Update {
 
@@ -78,8 +77,7 @@ public final class Update {
         if (releaseId != null) {
             Names.requireReleaseId(releaseId);
         }
-        LOG.debug("update {}", tag);
-        LOG.debug("plan");
+        long startedAt = System.nanoTime();
         Config config = Workspace.load(workspace);
         ObjectReader store = config.readEndpoint() == null ? new S3Store(config) : new S3ReadStore(config);
 
@@ -92,7 +90,6 @@ public final class Update {
                     store.key(latestKey));
             targetId = latest.releaseId();
         }
-        String verb = releaseId == null ? "latest" : "release";
 
         String applied = null;
         Manifest local = null;
@@ -108,34 +105,30 @@ public final class Update {
         }
 
         if (targetId.equals(applied)) {
-            LOG.debug("{}: {} is already at {}", verb, tag, applied);
-            LOG.info("done: {} is already at {}", tag, applied);
-            LOG.debug("version: {}, unchanged", applied);
+            LOG.info("tag {} is already at release {}", tag, applied);
             return;
         }
+        LOG.info("updating tag {} to release {}", tag, targetId);
 
         String targetKey = ObjectKeys.release(tag, targetId);
         Manifest target = Manifest.parse(new String(store.getBytes(targetKey), StandardCharsets.UTF_8),
                 store.key(targetKey));
         Plan plan = Plan.between(local, target);
         if (applied == null) {
-            LOG.debug("{}: {} -> {}, first update of this tag", verb, tag, target.releaseId());
+            LOG.info("tag {} has no release applied yet, so {} is the first one", tag, target.releaseId());
         } else {
-            LOG.debug("{}: {} {} -> {}", verb, tag, applied, target.releaseId());
+            LOG.info("tag {} moves from release {} to {}", tag, applied, target.releaseId());
         }
-        LOG.debug("files: {}", plan.describe());
+        LOG.info("{} to apply: {}", Text.count(plan.size(), "file"), plan.describe());
         for (String path : plan.added()) {
-            LOG.trace("add {}", path);
+            LOG.debug("added {}", path);
         }
         for (String path : plan.replaced()) {
-            LOG.trace("replace {}", path);
+            LOG.debug("replaced {}", path);
         }
         for (String path : plan.deleted()) {
-            LOG.trace("delete {}", path);
+            LOG.debug("deleted {}", path);
         }
-        String version = applied == null
-                ? "first update -> " + target.releaseId()
-                : applied + " -> " + target.releaseId();
 
         // files moved out of the way are named after the release they came from; a first update has
         // no such release, so it gets a directory no release id can name
@@ -143,12 +136,11 @@ public final class Update {
                 ? Layout.initialBackupDir(workspace, tag)
                 : Layout.backupDir(workspace, tag, applied);
         List<String> downloads = plan.downloads();
-        if (!downloads.isEmpty() || !plan.deleted().isEmpty()) {
-            LOG.debug("apply");
-        }
 
         int moved = 0;
+        int fetchedFiles = 0;
         long downloadedBytes = 0;
+        long downloadNanos = 0;
         int reused = 0;
         int reusedFiles = 0;
         Path blobDir = Layout.blobTempDir(workspace);
@@ -169,8 +161,9 @@ public final class Update {
                     toFetch.add(path);
                 }
             }
+            fetchedFiles = toFetch.size();
             if (!skipped.isEmpty()) {
-                LOG.debug("skip {}: already at the target content", Text.count(skipped.size(), "file"));
+                LOG.info("skipped {}: already at the target content", Text.count(skipped.size(), "file"));
             }
 
             Map<String, Path> assembled = Map.of();
@@ -179,8 +172,8 @@ public final class Update {
                 for (String path : toFetch) {
                     neededBytes += target.files().get(path).size();
                 }
-                LOG.debug("fetch {}: {}", Text.count(toFetch.size(), "file"),
-                        Sizes.human(neededBytes) + " to download");
+                LOG.debug("fetching {} ({})", Text.count(toFetch.size(), "file"),
+                        Sizes.human(neededBytes));
                 deleteTree(blobDir);
                 deleteTree(fileDir);
                 try {
@@ -201,12 +194,14 @@ public final class Update {
                     reused = needed.size() - missing.size();
                     reusedFiles = reuse.files();
                     if (reused > 0) {
-                        LOG.debug("reuse {}: {} reused from {}", Text.count(reusedFiles, "file"),
-                                Text.count(reused, "chunk"), "local copies");
+                        LOG.debug("reused {} from {} already on disk", Text.count(reused, "chunk"),
+                                Text.count(reusedFiles, "file"));
                     }
                     if (!missing.isEmpty()) {
                         Files.createDirectories(blobDir);
-                        downloadedBytes = download(store, missing, blobDir, config.concurrency());
+                        Download download = download(store, missing, blobDir, config.concurrency());
+                        downloadedBytes = download.bytes();
+                        downloadNanos = download.nanos();
                     }
                     assembled = assembleAll(toFetch, target, tables, existing, blobDir, fileDir,
                             config.concurrency());
@@ -242,35 +237,37 @@ public final class Update {
                 }
             }
             if (moved > 0) {
-                LOG.debug("backup {}: moved to {}", Text.count(moved, "file"), Text.relativeTo(workspace, backup));
+                LOG.info("moved {} aside to {}", Text.count(moved, "file"),
+                        Text.relativeTo(workspace, backup));
             }
         } finally {
             deleteTree(blobDir);
             deleteTree(fileDir);
         }
 
-        LOG.debug("commit");
         Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
         target.write(releaseFile);
         new Pointer(target.releaseId()).write(currentFile);
-        LOG.debug("write {}", Text.relativeTo(workspace, releaseFile));
-        LOG.debug("write {}", Text.relativeTo(workspace, currentFile));
-        LOG.info("done: {} is now at {}", tag, target.releaseId());
-        LOG.debug("version: {}", version);
-        LOG.debug("changed: {}", changed(plan, downloadedBytes, "downloaded"));
-        LOG.debug("reuse: {}", Text.count(reused, "chunk"));
-        if (moved > 0) {
-            LOG.debug("backup: {} in {}", Text.count(moved, "file"), Text.relativeTo(workspace, backup));
-        }
-        LOG.debug("release: {}", Text.relativeTo(workspace, releaseFile));
-        LOG.debug("state: {}", Text.relativeTo(workspace, currentFile) + " now points at "
-                + target.releaseId());
+        LOG.info("wrote {}", Text.relativeTo(workspace, releaseFile));
+        LOG.info("wrote {}", Text.relativeTo(workspace, currentFile));
+        LOG.info(transferSummary(fetchedFiles, downloadedBytes, downloadNanos, reused));
+        LOG.info("updated tag {} to release {} in {}", tag, target.releaseId(),
+                Text.elapsed(System.nanoTime() - startedAt));
     }
 
-    /** The closing line's account of what the run changed and how much of it moved over the wire. */
-    private static String changed(Plan plan, long bytes, String how) {
-        return Text.count(plan.size(), "file") + " (" + plan.describe() + ")"
-                + (bytes > 0 ? ", " + Sizes.human(bytes) + " " + how : "");
+    /** The line before the closing one: how much data this run moved, and how much it reused. */
+    private static String transferSummary(int files, long bytes, long nanos, int reused) {
+        StringBuilder text = new StringBuilder();
+        if (bytes == 0) {
+            text.append("downloaded nothing");
+        } else {
+            text.append("downloaded ").append(Text.count(files, "file")).append(", ")
+                    .append(Sizes.human(bytes)).append(" in ").append(Text.duration(nanos));
+        }
+        if (reused > 0) {
+            text.append("; reused ").append(Text.count(reused, "chunk")).append(" from local copies");
+        }
+        return text.toString();
     }
 
     /** Whether the target path already holds exactly the content the manifest records. */
@@ -329,6 +326,10 @@ public final class Update {
 
     /** The chunks the workspace's own files still hold, and how many of those files were read. */
     private record Reuse(Map<String, Local> chunks, int files) {
+    }
+
+    /** What the wire part of the run cost: the bytes fetched and how long fetching them took. */
+    private record Download(long bytes, long nanos) {
     }
 
     /**
@@ -407,7 +408,7 @@ public final class Update {
     }
 
     /** Fetches the missing chunks into the run's blob directory, one file per chunk. */
-    private static long download(ObjectReader store, List<String> missing, Path tempDir, int concurrency) {
+    private static Download download(ObjectReader store, List<String> missing, Path tempDir, int concurrency) {
         int total = missing.size();
         AtomicInteger done = new AtomicInteger();
         AtomicLong bytes = new AtomicLong();
@@ -424,9 +425,9 @@ public final class Update {
             Logging.progress("download", done.incrementAndGet(), total, bytes.addAndGet(length), "chunk");
         });
         long nanos = System.nanoTime() - startedAt;
-        LOG.debug("download {}: {} in {} ({})", Text.count(done.get(), "chunk"),
+        LOG.debug("downloaded {} ({}) in {} ({})", Text.count(done.get(), "chunk"),
                 Sizes.human(bytes.get()), Text.duration(nanos), Sizes.rate(bytes.get(), nanos));
-        return bytes.get();
+        return new Download(bytes.get(), nanos);
     }
 
     /** Writes every fetched file into the run's file directory, each one on its own. */

@@ -4,7 +4,6 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Path;
-import org.tinylog.Level;
 
 /** What the run being logged is writing to; the writers read this on every entry. */
 final class Run {
@@ -13,27 +12,16 @@ final class Run {
     record Transcript(Path file, BufferedWriter writer) {
     }
 
-    private final Path workspace;
-    private final Logging.Mode mode;
     private final PrintStream out;
     private final PrintStream err;
     private final Progress progress;
-    private final String transcriptName;
     private Transcript transcript;
 
-    Run(Path workspace, Logging.Mode mode, PrintStream out, PrintStream err, Progress progress,
-            String transcriptName, Transcript transcript) {
-        this.workspace = workspace;
-        this.mode = mode;
+    Run(PrintStream out, PrintStream err, Progress progress, Transcript transcript) {
         this.out = out;
         this.err = err;
         this.progress = progress;
-        this.transcriptName = transcriptName;
         this.transcript = transcript;
-    }
-
-    Path workspace() {
-        return workspace;
     }
 
     PrintStream out() {
@@ -48,21 +36,8 @@ final class Run {
         return progress;
     }
 
-    String transcriptName() {
-        return transcriptName;
-    }
-
     Path transcript() {
         return transcript == null ? null : transcript.file();
-    }
-
-    /** Whether the console was asked to show an entry at this level. */
-    boolean consoleShows(Level level) {
-        return switch (mode) {
-            case QUIET -> level.ordinal() >= Level.INFO.ordinal();
-            case NORMAL -> level.ordinal() >= Level.DEBUG.ordinal();
-            case VERBOSE -> true;
-        };
     }
 
     /** Appends one line to the transcript; a transcript that cannot be written is dropped. */

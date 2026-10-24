@@ -7,7 +7,6 @@ import io.github.deshark42.modpackupdater.FakeS3;
 import io.github.deshark42.modpackupdater.TestFiles;
 import io.github.deshark42.modpackupdater.TestLogs;
 import io.github.deshark42.modpackupdater.TestWorkspace;
-import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.Layout;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import io.github.deshark42.modpackupdater.model.Pointer;
@@ -75,6 +74,12 @@ class CliTest {
     }
 
     @Test
+    void quietAndVerboseAreNoLongerOptions(@TempDir Path cwd) {
+        assertUsage(cwd, "unknown option: --quiet", "update", "--tag", TAG, "--quiet");
+        assertUsage(cwd, "unknown option: --verbose", "update", "--tag", TAG, "--verbose");
+    }
+
+    @Test
     void unknownCommandIsAUsageError(@TempDir Path cwd) {
         assertUsage(cwd, "unknown command: sync", "sync", "--tag", TAG);
     }
@@ -120,7 +125,7 @@ class CliTest {
                     logs.errText());
 
             assertEquals("A", Files.readString(player.resolve("mods/a.jar")));
-            assertTrue(logs.outText().contains("is now at 2.9.0"), logs.outText());
+            assertTrue(logs.outText().contains("to release 2.9.0"), logs.outText());
         }
     }
 
@@ -141,7 +146,7 @@ class CliTest {
 
             assertEquals("A", Files.readString(player.resolve("mods/a.jar")),
                     "the named release, not the latest one, was applied");
-            assertTrue(logs.outText().contains("is now at 2.9.0"), logs.outText());
+            assertTrue(logs.outText().contains("to release 2.9.0"), logs.outText());
         }
     }
 
@@ -174,7 +179,8 @@ class CliTest {
             assertEquals(Cli.FAILURE, run(publisher, "publish", "--tag", TAG, "--id", "2.9.1"),
                     logs.errText());
 
-            assertTrue(logs.errText().startsWith("error: "), logs.errText());
+            assertTrue(logs.errText().contains(
+                    "ERROR publishing release 2.9.1 of tag client failed: "), logs.errText());
             assertTrue(logs.errText().contains("HTTP 500"), logs.errText());
             assertEquals(before, s3.text(latest), "the pointer the failed run did not reach is unchanged");
             assertEquals("2.9.0", Pointer.parse(before, "latest").releaseId());
@@ -185,38 +191,7 @@ class CliTest {
     void updateOutsideAWorkspaceIsAFailureNotAUsageError(@TempDir Path cwd) {
         assertEquals(Cli.FAILURE, run(cwd, "update", "--tag", TAG));
 
-        assertTrue(logs.errText().startsWith("error: "), logs.errText());
+        assertTrue(logs.errText().contains("ERROR updating tag client failed: "), logs.errText());
         assertTrue(logs.errText().contains("config"), logs.errText());
-    }
-
-    @Test
-    void quietPrintsOnlyTheClosingLine(@TempDir Path cwd) throws IOException {
-        try (FakeS3 s3 = new FakeS3()) {
-            TestWorkspace.configure(cwd, s3);
-            TestFiles.write(Layout.baseDir(cwd, TAG), "mods/a.jar", TestFiles.bytes("A"));
-
-            assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--quiet"));
-
-            assertEquals(1, logs.outText().lines().count(), logs.outText());
-            assertTrue(logs.outText().contains("is now the latest"), logs.outText());
-        }
-    }
-
-    @Test
-    void verboseNamesEachScannedPath(@TempDir Path cwd) throws IOException {
-        try (FakeS3 s3 = new FakeS3()) {
-            TestWorkspace.configure(cwd, s3);
-            TestFiles.write(Layout.baseDir(cwd, TAG), "mods/a.jar", TestFiles.bytes("A"));
-
-            assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0", "--verbose"));
-
-            String base = Text.relativeTo(cwd, Layout.baseDir(cwd, TAG));
-            assertTrue(logs.outText().lines().anyMatch(line -> line.contains("scan " + base)), logs.outText());
-        }
-    }
-
-    @Test
-    void verboseAndQuietCannotBeCombined(@TempDir Path cwd) {
-        assertUsage(cwd, "cannot be combined", "update", "--tag", TAG, "--verbose", "--quiet");
     }
 }

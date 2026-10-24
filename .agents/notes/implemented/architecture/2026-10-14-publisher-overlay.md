@@ -25,7 +25,7 @@ overlay/ 与 base/ 生命周期无关：官方更新只替换 base/，发布者�
 
 删除是**显式意图**，不是推断：publish 仍然不与上一次 release 的清单比较，某个路径不再发布只有两种可能——它已不在 base/ 里，或被 remove.txt 命中。
 
-发布日志报告合并结果：扫描 base/ 与 overlay/ 各一行、remove 命中多少文件（来自多少条规则）、未命中的规则、merge 新增/覆盖多少文件，VERBOSE 级再逐文件打印 add/replace。release 清单不记录某个文件来自 base/ 还是 overlay/；存储布局、latest 指针、config.json、`update` 命令与订阅者工作区都不需要知道来源。
+发布日志报告合并结果：扫描 base/ 与 overlay/ 各一行 INFO、remove 命中多少文件（来自多少条规则）一行 INFO、未命中的规则一行 WARN、overlay 有新增或覆盖时 merge 一行 INFO；逐文件的 add/replace 是 DEBUG，只进日志文件、不在终端显示。release 清单不记录某个文件来自 base/ 还是 overlay/；存储布局、latest 指针、config.json、`update` 命令与订阅者工作区都不需要知道来源。
 
 ### 合并规则
 
@@ -61,4 +61,4 @@ remove.txt 只作用于 base/：同路径以 overlay/ 为准，规则命中 over
 - **remove.txt 直接驱动订阅者删除。** 清单里消失的路径在订阅者侧就是删除（旧文件移入 backup/，见[订阅者工作区与更新流程](2026-10-14-subscriber-workspace.md)）。写错或过期的规则会把玩家实例里的文件搬走，影响面是全体订阅者，发布侧不做二次确认。
 - **remove.txt 会腐化。** 未命中的规则只报告不报错，长期不清理会积累已无作用的条目。
 - 两份输入都要发布者自己维护：工具不校验 overlay/ 里的文件是否真的该覆盖 base/，也不校验 remove.txt 的规则是否仍然表达意图。
-- publish 的 NORMAL 级输出多了 scan/remove/stale/merge 行（VERBOSE 级还有逐文件 add/replace）：日志更完整；要更安静只能整体切到 `--quiet`（只剩收尾行），没有只压掉这几行的开关。
+- publish 的终端输出多了 scan/remove/stale/merge 各一行（INFO 或 WARN），逐文件 add/replace 只在日志文件里（DEBUG）：日志更完整；没有只压掉这几行的开关，终端固定显示 INFO 及以上。

@@ -19,18 +19,18 @@ public final class TestLogs implements AutoCloseable {
     private final PrintStream errStream = new PrintStream(err, true, StandardCharsets.UTF_8);
 
     /** Starts the run a command logs to; no transcript is kept. */
-    public void begin(Path workspace, Logging.Mode mode) {
-        Logging.begin(workspace, null, mode, outStream, errStream);
+    public void begin(Path workspace) {
+        Logging.begin(workspace, null, outStream, errStream);
     }
 
     /** Starts the run a command logs to, keeping a transcript in the workspace's log directory. */
-    public void begin(Path workspace, String transcriptName, Logging.Mode mode) {
-        Logging.begin(workspace, transcriptName, mode, outStream, errStream);
+    public void begin(Path workspace, String transcriptName) {
+        Logging.begin(workspace, transcriptName, outStream, errStream);
     }
 
     /** Starts a run whose transcript is dated by {@code clock}, so a test can control the date. */
-    public void begin(Path workspace, String transcriptName, Logging.Mode mode, Clock clock) {
-        Logging.begin(workspace, transcriptName, mode, outStream, errStream, clock);
+    public void begin(Path workspace, String transcriptName, Clock clock) {
+        Logging.begin(workspace, transcriptName, outStream, errStream, clock);
     }
 
     /** The stream a command is given for its output. */

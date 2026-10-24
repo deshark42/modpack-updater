@@ -14,7 +14,6 @@ import io.github.deshark42.modpackupdater.TestWorkspace;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.json.Json;
-import io.github.deshark42.modpackupdater.log.Logging;
 import io.github.deshark42.modpackupdater.model.ChunkTable;
 import io.github.deshark42.modpackupdater.model.Chunking;
 import io.github.deshark42.modpackupdater.model.Config;
@@ -53,12 +52,8 @@ class PublishTest {
     }
 
     private void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays) {
-        publish(workspace, tag, releaseId, cacheMaxAgeDays, Logging.Mode.VERBOSE);
-    }
-
-    private void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays, Logging.Mode mode) {
         resetLog();
-        captured.begin(workspace, "publish-" + tag, mode);
+        captured.begin(workspace, "publish-" + tag);
         try {
             Publish.run(workspace, tag, releaseId, cacheMaxAgeDays);
         } finally {
@@ -68,20 +63,8 @@ class PublishTest {
 
     /** The message body of a console line: what follows the timestamp and the level. */
     private static String body(String line) {
-        int first = line.indexOf(' ');
-        int second = first < 0 ? -1 : line.indexOf(' ', first + 1);
-        return second < 0 ? line : line.substring(second + 1);
-    }
-
-
-    /** Where the stage heading of this name appears, or -1. */
-    private static int stageOf(List<String> lines, String stage) {
-        for (int i = 0; i < lines.size(); i++) {
-            if (body(lines.get(i)).equals(stage)) {
-                return i;
-            }
-        }
-        return -1;
+        String[] parts = line.trim().split("\\s+", 4);
+        return parts.length < 4 ? "" : parts[3];
     }
 
     /** The chunk table a one-chunk file produces, as the publisher will record it. */
@@ -332,8 +315,8 @@ class PublishTest {
             publish(workspace, "client-extra", "1.0");
 
             List<String> second = s3.requests().subList(before, s3.requests().size());
-            assertTrue(captured.outText().contains("plan 0 chunks to upload, 1 chunk already there"),
-                    captured.outText());
+            assertTrue(captured.outText().contains(
+                    "planned the upload: 0 chunks to upload, 1 chunk already in the bucket"), captured.outText());
             assertFalse(second.stream().anyMatch(request -> request.startsWith("PUT " + blobsPrefix())),
                     second.toString());
             assertFalse(second.stream().anyMatch(request -> request.startsWith("PUT " + indexesPrefix())),
@@ -359,9 +342,9 @@ class PublishTest {
             assertTrue(logs.get(0).getFileName().toString().contains("publish-client"),
                     logs.get(0).toString());
             String text = Files.readString(logs.get(0), StandardCharsets.UTF_8);
-            assertTrue(text.contains("publish client 2.9.0"), text);
-            assertTrue(text.contains("upload mods/a.jar"), text);
-            assertTrue(text.contains("done: client 2.9.0 is now the latest"), text);
+            assertTrue(text.contains("publishing release 2.9.0 of tag client"), text);
+            assertTrue(text.contains("uploading mods/a.jar"), text);
+            assertTrue(text.contains("published release 2.9.0 of tag client as the latest in "), text);
         }
     }
 
@@ -378,9 +361,10 @@ class PublishTest {
             publish(workspace, TAG, "2.9.1");
 
             String text = captured.outText();
-            assertTrue(text.contains("plan 1 chunk to upload, 2 chunks already there"), text);
-            assertTrue(text.contains("upload 1 chunk"), text);
-            assertTrue(text.contains("skip 2 chunks: already in the bucket"), text);
+            assertTrue(text.contains(
+                    "planned the upload: 1 chunk to upload, 2 chunks already in the bucket"), text);
+            assertTrue(text.contains("uploaded 1 file, "), text);
+            assertTrue(text.contains("2 chunks already in the bucket"), text);
         }
     }
 
@@ -401,9 +385,9 @@ class PublishTest {
             assertEquals(chunkOf("overlay"), manifest.files().get("mods/a.jar").hash(),
                     "overlay wins the same path");
             assertEquals("overlay", s3.text(chunkKey(chunkOf("overlay"))));
-            String text = captured.outText();
-            assertTrue(text.contains("replace mods/a.jar"), text);
-            assertTrue(text.contains("add config/mine.json"), text);
+            String text = Files.readString(logs(workspace).get(0), StandardCharsets.UTF_8);
+            assertTrue(text.contains("replaced mods/a.jar ("), text);
+            assertTrue(text.contains("added config/mine.json ("), text);
         }
     }
 
@@ -421,11 +405,13 @@ class PublishTest {
 
             Manifest manifest = Manifest.parse(s3.text(releaseKey("2.9.0")), "release");
             assertEquals(List.of("mods/a.jar"), List.copyOf(manifest.files().keySet()));
-            String text = captured.outText();
-            assertTrue(text.contains("remove 3 files from 3 rules"), text);
-            assertTrue(text.contains("stale 1 rule: ghost.jar"), text);
-            assertTrue(text.contains("ghost.jar"), text);
-            assertTrue(text.contains("merge 0 files added, 0 files replaced"), text);
+            assertTrue(captured.outText().contains(
+                    "removed 3 files from client/base by the 3 rules in client/remove.txt"),
+                    captured.outText());
+            assertTrue(captured.errText().contains("matched nothing: ghost.jar"), captured.errText());
+            String transcript = Files.readString(logs(workspace).get(0), StandardCharsets.UTF_8);
+            assertTrue(transcript.contains("dropped config/secret.cfg ("), transcript);
+            assertTrue(transcript.contains("dropped config/deep/other.cfg ("), transcript);
         }
     }
 
@@ -463,7 +449,7 @@ class PublishTest {
     }
 
     @Test
-    void namesEachStageAndEndsWithASummary(@TempDir Path workspace) throws IOException {
+    void reportsTheRunFromStartToFinish(@TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
@@ -471,25 +457,21 @@ class PublishTest {
 
             List<String> lines = captured.outText().lines().toList();
             List<String> bodies = lines.stream().map(PublishTest::body).toList();
-            int inputs = stageOf(lines, "inputs");
-            int transfer = stageOf(lines, "transfer");
-            int commit = stageOf(lines, "commit");
-            int done = -1;
-            for (int i = 0; i < bodies.size(); i++) {
-                if (bodies.get(i).startsWith("done: ")) {
-                    done = i;
-                }
+            assertTrue(bodies.get(0).startsWith("logging this run to "), lines.toString());
+            assertTrue(bodies.contains("publishing release 2.9.0 of tag client"), lines.toString());
+            assertTrue(bodies.stream().anyMatch(body -> body.startsWith("scanned client/base: 1 file")),
+                    lines.toString());
+            assertTrue(bodies.stream().anyMatch(body -> body.equals("split 1 file into 1 chunk")),
+                    lines.toString());
+            assertTrue(bodies.stream().anyMatch(body -> body.startsWith("planned the upload: 1 chunk")),
+                    lines.toString());
+            assertTrue(bodies.stream().anyMatch(body -> body.startsWith("wrote ")), lines.toString());
+            assertTrue(bodies.get(bodies.size() - 2).startsWith("uploaded 1 file, "), lines.toString());
+            assertTrue(bodies.get(bodies.size() - 1)
+                    .startsWith("published release 2.9.0 of tag client as the latest in "), lines.toString());
+            for (String heading : List.of("inputs", "transfer", "commit")) {
+                assertFalse(bodies.contains(heading), "no bare stage heading: " + lines);
             }
-            assertTrue(inputs > 0 && transfer > inputs && commit > transfer && done > commit, lines.toString());
-            assertEquals("done: client 2.9.0 is now the latest", bodies.get(done), lines.toString());
-            for (String stage : List.of("scan ", "merge ", "chunk ", "plan ", "upload ", "write ")) {
-                assertTrue(bodies.stream().anyMatch(body -> body.startsWith(stage)),
-                        "the " + stage.strip() + " stage reports: " + lines);
-            }
-            assertTrue(bodies.stream().anyMatch(body -> body.startsWith("chunk 1 file: 1 chunk")), lines.toString());
-            assertTrue(bodies.stream().anyMatch(body -> body.startsWith("plan 1 chunk to upload")), lines.toString());
-            assertTrue(bodies.get(done + 1).startsWith("contents: "), lines.toString());
-            assertTrue(bodies.get(bodies.size() - 1).startsWith("transcript: "), lines.toString());
         }
     }
 
@@ -529,7 +511,8 @@ class PublishTest {
             assertTrue(cache(workspace).contains(chunk), cache(workspace));
             assertFalse(s3.requests().stream().anyMatch(request -> request.startsWith("PUT " + chunkKey(chunk))),
                     s3.requests().toString());
-            assertTrue(captured.outText().contains("skip 1 chunk: already in the bucket"), captured.outText());
+            assertTrue(captured.outText().contains("uploaded nothing: 1 chunk already in the bucket"),
+                    captured.outText());
         }
     }
 

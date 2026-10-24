@@ -15,7 +15,6 @@ import io.github.deshark42.modpackupdater.TestWorkspace;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.Chunker;
 import io.github.deshark42.modpackupdater.fs.Sha256;
-import io.github.deshark42.modpackupdater.log.Logging;
 import io.github.deshark42.modpackupdater.model.ChunkTable;
 import io.github.deshark42.modpackupdater.model.Chunking;
 import io.github.deshark42.modpackupdater.model.Layout;
@@ -51,7 +50,7 @@ class UpdateTest {
     /** Runs an update the way the CLI does: console capture, and a transcript. */
     private void update(Path workspace, String tag, String releaseId) {
         resetLog();
-        captured.begin(workspace, "update-" + tag, Logging.Mode.VERBOSE);
+        captured.begin(workspace, "update-" + tag);
         try {
             Update.run(workspace, tag, releaseId);
         } finally {
@@ -59,27 +58,17 @@ class UpdateTest {
         }
     }
 
-    /** The message body of a console line: what follows the timestamp and the level. */
+    /** The message body of a log line: what follows the timestamp and the level. */
     private static String body(String line) {
-        int first = line.indexOf(' ');
-        int second = first < 0 ? -1 : line.indexOf(' ', first + 1);
-        return second < 0 ? line : line.substring(second + 1);
+        String[] parts = line.trim().split("\\s+", 4);
+        return parts.length < 4 ? "" : parts[3];
     }
 
-    /** Whether this is the trace line that reports one added, replaced or deleted path. */
+    /** Whether this is the transcript line that reports one added, replaced or deleted path. */
     private static boolean isItemLine(String line) {
         String message = body(line);
-        return message.startsWith("add ") || message.startsWith("replace ") || message.startsWith("delete ");
-    }
-
-    /** Where a stage heading of this name appears, or -1. */
-    private static int stageOf(List<String> bodies, String stage) {
-        for (int i = 0; i < bodies.size(); i++) {
-            if (bodies.get(i).equals(stage)) {
-                return i;
-            }
-        }
-        return -1;
+        return message.startsWith("added ") || message.startsWith("replaced ")
+                || message.startsWith("deleted ");
     }
 
     /** Replaces the tag's base tree with the given files, then publishes it, the way a publisher works. */
@@ -181,20 +170,14 @@ class UpdateTest {
         return bytes;
     }
 
-    /** The number the closing summary reports on its "reuse" line. */
-    private static int reportedReuse(String output) {
-        List<String> lines = output.lines().toList();
-        for (int i = lines.size() - 1; i >= 0; i--) {
-            String message = body(lines.get(i));
-            if (message.startsWith("reuse: ")) {
-                return Integer.parseInt(message.substring("reuse: ".length()).split("\\s+")[0]);
-            }
+    /** The number of chunks the transcript says were reused; a run that reused none prints no line. */
+    private static int reportedReuse(Path workspace) throws IOException {
+        var matcher = java.util.regex.Pattern.compile("reused (\\d+) chunks?").matcher(transcript(workspace));
+        int reused = 0;
+        while (matcher.find()) {
+            reused = Integer.parseInt(matcher.group(1));
         }
-        throw new AssertionError("no reuse summary in:\n" + output);
-    }
-
-    private static boolean hasStep(String output, String verb) {
-        return output.lines().anyMatch(line -> body(line).startsWith(verb + " "));
+        return reused;
     }
 
     private static long getCount(FakeS3 s3, String key) {
@@ -215,6 +198,15 @@ class UpdateTest {
         try (var files = Files.list(Layout.logsDir(workspace))) {
             return files.toList();
         }
+    }
+
+    /** Everything the run wrote to its transcript, which keeps the per-file and per-chunk detail. */
+    private static String transcript(Path workspace) throws IOException {
+        StringBuilder text = new StringBuilder();
+        for (Path file : logs(workspace)) {
+            text.append(Files.readString(file, StandardCharsets.UTF_8));
+        }
+        return text.toString();
     }
 
     /** The chunk table the publisher recorded for one file, next to the cuts of its content. */
@@ -255,10 +247,11 @@ class UpdateTest {
             assertTrue(Files.isRegularFile(Layout.releaseFile(player, TAG, "2.9.0")));
 
             List<String> lines = captured.outText().lines().toList();
-            assertEquals(5, lines.stream().filter(UpdateTest::isItemLine).count(),
-                    "one item trace line per file, none per chunk: " + lines);
-            assertTrue(hasStep(captured.outText(), "download"), lines.toString());
-            assertEquals(0, reportedReuse(captured.outText()), "a first update has no local copy to reuse");
+            String transcript = transcript(player);
+            assertEquals(5, transcript.lines().filter(UpdateTest::isItemLine).count(),
+                    "one file line per file, none per chunk: " + transcript);
+            assertTrue(transcript.contains("downloaded "), transcript);
+            assertEquals(0, reportedReuse(player), "a first update has no local copy to reuse");
 
             ChunkTableSplit split = split(publisher, TAG, "mods/a.jar");
             assertTrue(split.table().chunks().size() > 1, "the sample is split into several chunks");
@@ -274,8 +267,8 @@ class UpdateTest {
 
             resetLog();
             update(player, TAG, null);
-            assertTrue(captured.outText().contains("already at 2.9.0"), captured.outText());
-            assertTrue(captured.outText().contains("version: 2.9.0, unchanged"), captured.outText());
+            assertTrue(captured.outText().contains("tag client is already at release 2.9.0"),
+                    captured.outText());
         }
     }
 
@@ -308,9 +301,9 @@ class UpdateTest {
                     "a file already at the target content is not downloaded: " + s3.requests());
             assertEquals(metadataBytes(s3, TAG, "2.9.0", List.of("banned-ips.json")) + 2,
                     s3.downloadedBytes(), "only the missing file and the metadata came over the wire");
-            assertTrue(captured.outText().contains("skip 2 files: already at the target content"),
+            assertTrue(captured.outText().contains("skipped 2 files: already at the target content"),
                     captured.outText());
-            assertEquals(0, reportedReuse(captured.outText()));
+            assertEquals(0, reportedReuse(player));
             assertFalse(Files.exists(Layout.initialBackupDir(player, TAG)),
                     "nothing was in the way, so no first-update backup was made");
         }
@@ -356,7 +349,7 @@ class UpdateTest {
             List<String> missing = newHashes(targetCuts, hashes(cuts(root, existing)));
             int expectedReuse = targetCuts.size() - missing.size();
             assertTrue(expectedReuse > 0, "most chunks of the existing file are the target content");
-            assertEquals(expectedReuse, reportedReuse(captured.outText()));
+            assertEquals(expectedReuse, reportedReuse(player));
             assertEquals(bytesOf(targetCuts, missing)
                     + metadataBytes(s3, TAG, "2.9.0", List.of("mods/a.jar")), s3.downloadedBytes(),
                     "only the chunks the existing file does not have came over the wire");
@@ -416,7 +409,7 @@ class UpdateTest {
                     "a file already at the target content is not rewritten");
             assertEquals(already + metadataBytes(s3, TAG, "2.9.1", List.of()), s3.downloadedBytes(),
                     "no chunk or chunk table is fetched when every target file matches");
-            assertTrue(captured.outText().contains("skip 2 files"), captured.outText());
+            assertTrue(captured.outText().contains("skipped 2 files"), captured.outText());
             assertFalse(Files.exists(Layout.backupDir(player, TAG, "2.9.0")),
                     "nothing is moved aside when nothing is rewritten");
         }
@@ -447,8 +440,8 @@ class UpdateTest {
             List<String> missing = newHashes(newCuts, hashes(oldCuts));
             int expectedReuse = newCuts.size() - missing.size();
             assertTrue(expectedReuse > 0, "most chunks of the file are unchanged");
-            assertEquals(expectedReuse, reportedReuse(captured.outText()));
-            assertTrue(captured.outText().contains(" reused from "), captured.outText());
+            assertEquals(expectedReuse, reportedReuse(player));
+            assertTrue(captured.outText().contains("reused "), captured.outText());
             assertEquals(bytesOf(newCuts, missing)
                     + metadataBytes(s3, TAG, "2.9.1", List.of("mods/a.jar")), delta,
                     "only the changed chunks and the metadata came over the wire");
@@ -493,7 +486,7 @@ class UpdateTest {
                     missing.add(hash);
                 }
             }
-            assertEquals(needed.size() - missing.size(), reportedReuse(captured.outText()));
+            assertEquals(needed.size() - missing.size(), reportedReuse(player));
             assertEquals(bytesOf(changedCuts, missing)
                     + metadataBytes(s3, TAG, "2.9.1", List.of("mods/a.jar", "mods/b.jar")), delta,
                     "the new b.jar has no chunk of its own to fetch: a.jar's backup copy has them");
@@ -528,8 +521,8 @@ class UpdateTest {
             List<String> missing = newHashes(newCuts, hashes(oldCuts));
             int expectedReuse = newCuts.size() - missing.size();
             assertTrue(expectedReuse > 0, "the renamed file kept most of its chunks");
-            assertEquals(expectedReuse, reportedReuse(captured.outText()),
-                    "the deleted copy's chunks are reused: " + captured.outText());
+            assertEquals(expectedReuse, reportedReuse(player),
+                    "the deleted copy's chunks are reused: " + transcript(player));
             assertEquals(bytesOf(newCuts, missing)
                     + metadataBytes(s3, TAG, "2.9.1", List.of("mods/a-1.1.jar")), delta,
                     "only the changed chunks and the metadata came over the wire");
@@ -570,9 +563,10 @@ class UpdateTest {
             assertEquals("A", Files.readString(backup.resolve("mods/a.jar")));
             assertEquals("B", Files.readString(backup.resolve("mods/b.jar")));
             assertEquals("2.9.1", applied(player, TAG));
-            assertTrue(captured.outText().contains("add mods/c.jar"), captured.outText());
-            assertTrue(captured.outText().contains("replace mods/a.jar"), captured.outText());
-            assertTrue(captured.outText().contains("delete mods/b.jar"), captured.outText());
+            String transcript = transcript(player);
+            assertTrue(transcript.contains("added mods/c.jar"), transcript);
+            assertTrue(transcript.contains("replaced mods/a.jar"), transcript);
+            assertTrue(transcript.contains("deleted mods/b.jar"), transcript);
         }
     }
 
@@ -624,8 +618,8 @@ class UpdateTest {
             long delta = s3.downloadedBytes() - already;
 
             assertArrayEquals(after, Files.readAllBytes(player.resolve("mods/a.jar")));
-            assertEquals(0, reportedReuse(captured.outText()));
-            assertTrue(captured.outText().contains("reuse: 0 chunks"), captured.outText());
+            assertEquals(0, reportedReuse(player));
+            assertFalse(transcript(player).contains("reused "), "nothing was reused");
             assertEquals(after.length + metadataBytes(s3, TAG, "2.9.1", List.of("mods/a.jar")), delta,
                     "with no local copy every chunk is fetched again");
             assertEquals("2.9.1", applied(player, TAG));
@@ -657,7 +651,7 @@ class UpdateTest {
             long delta = s3.downloadedBytes() - already;
 
             assertArrayEquals(after, Files.readAllBytes(player.resolve("mods/a.jar")));
-            assertEquals(0, reportedReuse(captured.outText()),
+            assertEquals(0, reportedReuse(player),
                     "a local copy that cannot be read is as good as no copy");
             assertEquals(after.length + metadataBytes(s3, TAG, "2.9.1", List.of("mods/a.jar")), delta,
                     "the unreadable copy forced a full download, not a failure");
@@ -870,9 +864,12 @@ class UpdateTest {
 
             assertEquals("2.9.0", applied(player, TAG));
             assertArrayEquals(before, Files.readAllBytes(player.resolve("mods/a.jar")));
-            assertEquals(hashes(cuts(root, before)).size(), reportedReuse(captured.outText()),
-                    "every target chunk came from the copy kept under backup/2.9.0: " + captured.outText());
-            assertFalse(hasStep(captured.outText(), "download"), captured.outText());
+            assertEquals(hashes(cuts(root, before)).size(), reportedReuse(player),
+                    "every target chunk came from the copy kept under backup/2.9.0: "
+                            + transcript(player));
+            List<String> bodies = captured.outText().lines().map(UpdateTest::body).toList();
+            assertTrue(bodies.get(bodies.size() - 2).startsWith("downloaded nothing"),
+                    "nothing came over the wire: " + captured.outText());
             String table = manifest(s3, TAG, "2.9.0").files().get("mods/a.jar").indexId();
             assertEquals(s3.object(indexKey(table)).length + s3.object(releaseKey(TAG, "2.9.0")).length, delta,
                     "only the chunk table and the manifest came over the wire: " + s3.requests());
@@ -915,7 +912,7 @@ class UpdateTest {
 
             resetLog();
             update(player, TAG, "2.9.0");
-            assertTrue(captured.outText().contains("is already at 2.9.0"), captured.outText());
+            assertTrue(captured.outText().contains("is already at release 2.9.0"), captured.outText());
         }
     }
 
@@ -955,12 +952,10 @@ class UpdateTest {
             assertTrue(logs.get(0).getFileName().toString().contains("update-client"),
                     logs.get(0).toString());
             String text = Files.readString(logs.get(0), StandardCharsets.UTF_8);
-            assertTrue(text.contains("update client"), text);
-            assertTrue(text.contains("latest: client -> 2.9.0"), text);
-            assertTrue(text.contains("add mods/a.jar"), text);
-            assertTrue(text.contains("download 1 chunk"), text);
-            assertTrue(text.contains("reuse: 0 chunks"), text);
-            assertTrue(text.contains("done: client is now at 2.9.0"), text);
+            assertTrue(text.contains("updating tag client to release 2.9.0"), text);
+            assertTrue(text.contains("added mods/a.jar"), text);
+            assertTrue(text.contains("downloaded 1 chunk"), text);
+            assertTrue(text.contains("updated tag client to release 2.9.0 in "), text);
 
             resetLog();
             update(player, TAG, null);
@@ -969,7 +964,7 @@ class UpdateTest {
     }
 
     @Test
-    void namesEachStageAndEndsWithASummary(@TempDir Path root) throws IOException {
+    void reportsTheRunFromStartToFinish(@TempDir Path root) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             Path publisher = root.resolve("publisher");
             TestWorkspace.configure(publisher, s3);
@@ -984,20 +979,18 @@ class UpdateTest {
 
             List<String> lines = captured.outText().lines().toList();
             List<String> bodies = lines.stream().map(UpdateTest::body).toList();
-            int plan = stageOf(bodies, "plan");
-            int apply = stageOf(bodies, "apply");
-            int commit = stageOf(bodies, "commit");
-            assertTrue(plan > 0 && apply > plan && commit > apply, lines.toString());
-            assertTrue(bodies.contains("version: first update -> 2.9.0"), lines.toString());
-            assertTrue(bodies.stream().anyMatch(message -> message.startsWith("reuse: ")), lines.toString());
-            assertTrue(bodies.get(bodies.size() - 1).startsWith("transcript: "), lines.toString());
-            int download = -1;
-            for (int i = 0; i < bodies.size(); i++) {
-                if (bodies.get(i).startsWith("download ")) {
-                    download = i;
-                }
+            assertTrue(bodies.get(0).startsWith("logging this run to "), lines.toString());
+            int start = bodies.indexOf("updating tag client to release 2.9.0");
+            assertTrue(start > 0, lines.toString());
+            assertTrue(bodies.subList(start, bodies.size()).stream()
+                    .anyMatch(message -> message.startsWith("2 files to apply: ")), lines.toString());
+            assertTrue(bodies.stream().anyMatch(message -> message.startsWith("wrote ")), lines.toString());
+            assertTrue(bodies.get(bodies.size() - 2).startsWith("downloaded 2 files, "), lines.toString());
+            assertTrue(bodies.get(bodies.size() - 1)
+                    .startsWith("updated tag client to release 2.9.0 in "), lines.toString());
+            for (String heading : List.of("plan", "apply", "commit")) {
+                assertFalse(bodies.contains(heading), "no bare stage heading: " + lines);
             }
-            assertTrue(download > apply && download < commit, "the transfer is reported in apply: " + lines);
         }
     }
 }

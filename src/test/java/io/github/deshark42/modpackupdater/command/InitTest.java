@@ -11,7 +11,6 @@ import io.github.deshark42.modpackupdater.TestLogs;
 import io.github.deshark42.modpackupdater.TestWorkspace;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.json.Json;
-import io.github.deshark42.modpackupdater.log.Logging;
 import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.Layout;
@@ -28,10 +27,10 @@ class InitTest {
 
     private static final String TAG = "client";
 
-    /** Starts a VERBOSE run, runs init in it, and returns what it printed. */
+    /** Starts a run, runs init in it, and returns what it printed. */
     private static TestLogs init(Path workspace, String tag) {
         TestLogs logs = new TestLogs();
-        logs.begin(workspace, Logging.Mode.VERBOSE);
+        logs.begin(workspace);
         try {
             Init.run(workspace, tag);
         } finally {
@@ -125,8 +124,8 @@ class InitTest {
         assertEquals(Config.DEFAULT_CONCURRENCY, kept.concurrency());
         assertEquals(TestWorkspace.REGION, kept.region());
         assertTrue(kept.pathStyle());
-        assertTrue(said(logs, "config", workspace, Layout.configFile(workspace)), logs.outText());
-        assertTrue(logs.outText().contains("filled in the defaults"), logs.outText());
+        assertTrue(said(logs, "filled in the defaults missing from", workspace, Layout.configFile(workspace)),
+                logs.outText());
     }
 
     @Test
@@ -142,7 +141,7 @@ class InitTest {
     @Test
     void rejectsATagThatWouldEscapeTheWorkspace(@TempDir Path workspace) {
         TestLogs logs = new TestLogs();
-        logs.begin(workspace, Logging.Mode.VERBOSE);
+        logs.begin(workspace);
         try {
             UserError error = assertThrows(UserError.class, () -> Init.run(workspace, "../client"));
 

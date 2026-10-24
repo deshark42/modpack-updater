@@ -1,11 +1,11 @@
 package io.github.deshark42.modpackupdater.log;
 
 import java.io.PrintStream;
-import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
 import java.util.EnumSet;
+import java.util.Locale;
 import java.util.Map;
 import org.tinylog.Level;
 import org.tinylog.core.LogEntry;
@@ -13,12 +13,14 @@ import org.tinylog.core.LogEntryValue;
 import org.tinylog.writers.Writer;
 
 /**
- * Writes one log line to the console: the time, the level, and the message. Warnings and errors go
- * to the error stream, everything else to the output stream.
+ * Writes one log line to the console as the time, the level and the message. Warnings and errors go
+ * to the error stream, everything else to the output stream. Only INFO and above reach the console;
+ * the transcript keeps the DEBUG lines that explain them.
  */
 public final class ConsoleWriter implements Writer {
 
-    private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
+    private static final DateTimeFormatter STAMP =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
 
     public ConsoleWriter(Map<String, String> properties) {
         // configured by Logging; a run's streams live in Run, because they change between runs
@@ -33,14 +35,14 @@ public final class ConsoleWriter implements Writer {
     @Override
     public void write(LogEntry entry) {
         Run run = Logging.current();
-        if (run == null || !run.consoleShows(entry.getLevel())) {
+        if (run == null || entry.getLevel().ordinal() < Level.INFO.ordinal()) {
             return;
         }
         run.progress().clear();
         PrintStream sink = entry.getLevel().ordinal() >= Level.WARN.ordinal() ? run.err() : run.out();
         String message = entry.getMessage() == null ? "" : entry.getMessage();
         sink.println(STAMP.format(entry.getTimestamp().toInstant().atZone(ZoneId.systemDefault()))
-                + " " + entry.getLevel() + " " + message);
+                + " " + String.format(Locale.ROOT, "%5s", entry.getLevel()) + " " + message);
         Throwable error = entry.getException();
         if (error != null) {
             error.printStackTrace(sink);

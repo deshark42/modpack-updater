@@ -27,4 +27,13 @@ public final class Text {
     public static String duration(long nanos) {
         return String.format(Locale.ROOT, "%.1fs", nanos / 1e9);
     }
+
+    /** "1m45s", "12.4s": how long the whole run took. */
+    public static String elapsed(long nanos) {
+        long seconds = Math.round(nanos / 1e9);
+        if (seconds < 60) {
+            return String.format(Locale.ROOT, "%.1fs", nanos / 1e9);
+        }
+        return String.format(Locale.ROOT, "%dm%02ds", seconds / 60, seconds % 60);
+    }
 }

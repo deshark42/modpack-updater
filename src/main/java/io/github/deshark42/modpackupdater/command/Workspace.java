@@ -25,7 +25,7 @@ final class Workspace {
     /** Fills in the defaults without parsing the whole config, for callers that only lay it out. */
     static void fillIn(Path workspace) {
         if (Config.fillMissing(workspace)) {
-            LOG.debug("config {}: filled in the defaults it was missing",
+            LOG.info("filled in the defaults missing from {}",
                     Text.relativeTo(workspace, Layout.configFile(workspace)));
         }
     }

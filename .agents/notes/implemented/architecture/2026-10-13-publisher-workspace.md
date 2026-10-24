@@ -29,7 +29,7 @@ Status: implemented
 - tag 的发布内容由 `<tag>/base/`、`<tag>/overlay/` 与 `<tag>/remove.txt` 三者合成：base/ 承载官方包解出的树（保留目录结构），overlay/ 承载发布者自己的新增与覆盖，remove.txt 从 base/ 中剔除路径。合并规则与 remove.txt 语法见[发布者 overlay 目录与 base 删除清单](2026-10-14-publisher-overlay.md)；base/ 的更新由发布者手工负责，工具不参与。
 - tag 与 release_id 都由命令行指定，工作区不记录它们：publish --tag <tag> --id <release_id>，例如 --id 2.9.0-RC1。
 - publish --tag <tag> --id <release_id> 发布。
-- 每次真正发布都在 .modpack-updater/logs/ 下留一份运行日志，名字带时间、命令与 tag（例如 2026-10-14T05-55-23Z-publish-client.log）。日志记的是逐文件的过程，比终端默认显示的多，但只在终端上原地重画的上传进度条不进日志；只有发布成功时才写，被拒绝的发布不留文件。
+- 每次 publish 在 .modpack-updater/logs/ 下留一份运行日志：按天一个文件，名字带命令、tag 与日期（例如 publish-client-2026-10-14.log），同一天的多次运行追加进同一份。终端只显示 INFO 及以上的里程碑，日志文件还记下 DEBUG 级的逐文件过程，比终端显示的多，但只在终端上原地重画的上传进度条不进日志；日志在开始工作之前就打开，失败的发布也留文件。
 - 发布不做与上一次 release 的比较：本次合成出的有效清单就是发布的全部内容，因此"路径消失"不会在发布侧被推断出来，只会在订阅者拿自己的清单与本次清单对比时显形；订阅者如何处理消失的路径见[订阅者工作区与更新流程](2026-10-14-subscriber-workspace.md)。
 - 同一个 --id 已经存在时 publish 直接报错退出：releases/ 只增不改，修正内容必须换一个 release_id。
 - publish --cache-max-age-days <天数> 只调整 known-blobs.jsonl 的有效期（默认 30 天，至少 1 天），不影响发布内容或桶中的对象。
@@ -44,4 +44,4 @@ Status: implemented
 - 发布不写临时文件：整份清单在接触存储之前就已算完，失败时桶与工作区都不留半成品。
 - 工作区不记录已经发布过哪些 id：命名只能由发布者自己维护，写错 id 就会多出一个 release。
 - 发布侧不比较上一次 release，发布者不会得到"某个路径消失了"的提示；这类变化只在订阅者侧显形，一旦订阅者按删除处理，误删很难回收。
-- .modpack-updater/logs/ 只增不减：发布越频繁，工作区里留下的日志越多，目前没有清理策略。
+- .modpack-updater/logs/ 按天累积、只保留 14 天：同一天的运行追加进同一份文件，每次开始写日志前按修改时间清掉更早的文件，日志不会无限增长。

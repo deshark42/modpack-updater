@@ -53,7 +53,7 @@ java -jar build/libs/modpack-updater-<version>.jar publish --tag <tag> --id <rel
 java -jar build/libs/modpack-updater-<version>.jar update --tag <tag> [--id <release-id>]
 ```
 
-All commands take `--workspace` and `--verbose`/`--quiet`; `--cache-max-age-days` belongs to `publish`.
+All commands take `--workspace`; `--cache-max-age-days` belongs to `publish`.
 
 ## Run relevant checks locally
 

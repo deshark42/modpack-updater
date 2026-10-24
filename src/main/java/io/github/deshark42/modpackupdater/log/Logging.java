@@ -16,26 +16,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Sets up the logging framework once per process and marks out the run being logged: the console
- * stream, how much of the log to show, and the transcript the run leaves behind.
+ * Starts and ends the run being logged: the console streams, the transcript the run leaves behind,
+ * and the bar a terminal gets.
  *
  * <p><strong>One run at a time.</strong> The writers themselves are configured in
  * {@code tinylog.properties}, because tinylog applies and freezes its configuration as soon as the
- * first logger is created, which can happen before this class runs. A run's streams, verbosity and
- * transcript therefore live in {@link Run}, which the writers read on every entry. That is what lets
- * a test drive several runs in one JVM.
+ * first logger is created, which can happen before this class runs. A run's streams and transcript
+ * therefore live in {@link Run}, which the writers read on every entry. That is what lets a test
+ * drive several runs in one JVM.
+ *
+ * <p>The console shows INFO and above. The transcript keeps DEBUG as well, so a normal run prints
+ * the milestones while the file kept beside it explains them in detail.
  */
 public final class Logging {
-
-    /** How much of the log to print. */
-    public enum Mode {
-        /** Milestones only: what is about to happen, and how it went. */
-        QUIET,
-        /** Also the facts each stage reports. */
-        NORMAL,
-        /** Also one line per file the run touches. */
-        VERBOSE
-    }
 
     /** Transcripts older than this are removed at the start of the next run. */
     private static final int KEEP_DAYS = 14;
@@ -52,30 +45,29 @@ public final class Logging {
      *
      * @param transcriptName the name a transcript should get, or null for a run that writes none
      */
-    public static void begin(Path workspace, String transcriptName, Mode mode, PrintStream out,
-            PrintStream err) {
-        begin(workspace, transcriptName, mode, out, err, Clock.systemDefaultZone());
+    public static void begin(Path workspace, String transcriptName, PrintStream out, PrintStream err) {
+        begin(workspace, transcriptName, out, err, Clock.systemDefaultZone());
     }
 
     /** Starts the run being logged; {@code clock} dates the transcript and ages out old ones. */
-    public static void begin(Path workspace, String transcriptName, Mode mode, PrintStream out,
-            PrintStream err, Clock clock) {
-        Run next = new Run(workspace, mode, out, err, new Progress(err, bar(err)), transcriptName,
+    public static void begin(Path workspace, String transcriptName, PrintStream out, PrintStream err,
+            Clock clock) {
+        Run next = new Run(out, err, new Progress(err, bar(err)),
                 transcriptName == null ? null : open(workspace, transcriptName, clock));
         run = next;
+        if (next.transcript() != null) {
+            LOG.info("logging this run to {}", Text.relativeTo(workspace, next.transcript()));
+        } else if (transcriptName != null) {
+            LOG.warn("could not keep a log file for this run under {}",
+                    Text.relativeTo(workspace, Layout.logsDir(workspace)));
+        }
     }
 
-    /** Flushes the transcript, says where it went, and ends the run. Safe to call twice. */
+    /** Ends the run: erases any bar on screen and closes the transcript. Safe to call twice. */
     public static void finish() {
         Run finished = run;
         if (finished == null) {
             return;
-        }
-        if (finished.transcript() != null) {
-            LOG.debug("transcript: {}", Text.relativeTo(finished.workspace(), finished.transcript()));
-        } else if (finished.transcriptName() != null) {
-            LOG.warn("could not keep the transcript under {}",
-                    Text.relativeTo(finished.workspace(), Layout.logsDir(finished.workspace())));
         }
         run = null;
         finished.progress().clear();

@@ -26,9 +26,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -45,8 +43,7 @@ import org.slf4j.LoggerFactory;
  * chunk tables the bucket does not have yet, then write the release manifest and finally the latest
  * pointer.
  *
- * <p>The run is reported in three stages: what goes into the release, what moves to the bucket,
- * and what is written to record it.
+ * <p>The console shows the milestones of the run; the transcript keeps the per-file detail as well.
  */
 public final class Publish {
 
@@ -68,27 +65,34 @@ public final class Publish {
         if (cacheMaxAgeDays < 1) {
             throw new UserError("cache max age must be at least 1 day: " + cacheMaxAgeDays);
         }
-        LOG.debug("publish {} {}", tag, releaseId);
-        LOG.debug("inputs");
+        long startedAt = System.nanoTime();
+        LOG.info("publishing release {} of tag {}", releaseId, tag);
         Path base = Layout.baseDir(workspace, tag);
         Path overlay = Layout.overlayDir(workspace, tag);
+        String baseName = Text.relativeTo(workspace, base);
         Map<String, Long> baseFiles = Tree.list(base);
-        LOG.debug("scan {}: {}, {}", Text.relativeTo(workspace, base),
-                Text.count(baseFiles.size(), "file"), Sizes.human(total(baseFiles)));
+        LOG.info("scanned {}: {}, {}", baseName, Text.count(baseFiles.size(), "file"),
+                Sizes.human(total(baseFiles)));
         boolean hasOverlay = Files.isDirectory(overlay);
         Map<String, Long> overlayFiles = hasOverlay ? Tree.list(overlay) : Map.of();
         if (hasOverlay) {
-            LOG.debug("scan {}: {}, {}", Text.relativeTo(workspace, overlay),
+            LOG.info("scanned {}: {}, {}", Text.relativeTo(workspace, overlay),
                     Text.count(overlayFiles.size(), "file"), Sizes.human(total(overlayFiles)));
         }
+        String removeName = Text.relativeTo(workspace, Layout.removeFile(workspace, tag));
         RemoveRules rules = RemoveRules.read(Layout.removeFile(workspace, tag));
         RemoveRules.Outcome outcome = rules.apply(baseFiles.keySet());
+        for (String removed : outcome.removed()) {
+            LOG.debug("dropped {} ({}) from {} by the rules in {}", removed,
+                    Sizes.human(baseFiles.get(removed)), baseName, removeName);
+        }
         if (rules.size() > 0) {
-            LOG.debug("remove {} from {}", Text.count(outcome.removed().size(), "file"),
-                    Text.count(rules.size(), "rule"));
+            LOG.info("removed {} from {} by the {} in {}", Text.count(outcome.removed().size(), "file"),
+                    baseName, Text.count(rules.size(), "rule"), removeName);
         }
         if (!outcome.unmatched().isEmpty()) {
-            LOG.debug("stale {}: {}", Text.count(outcome.unmatched().size(), "rule"),
+            LOG.warn("{} in {} matched nothing: {}",
+                    Text.count(outcome.unmatched().size(), "rule"), removeName,
                     String.join(", ", outcome.unmatched()));
         }
         Map<String, Long> files = new TreeMap<>(baseFiles);
@@ -99,21 +103,23 @@ public final class Publish {
         for (Map.Entry<String, Long> entry : overlayFiles.entrySet()) {
             if (files.put(entry.getKey(), entry.getValue()) == null) {
                 added++;
-                LOG.trace("add {}", entry.getKey());
+                LOG.debug("added {} ({}) from {}", entry.getKey(),
+                        Sizes.human(entry.getValue()), Text.relativeTo(workspace, overlay));
             } else {
                 replaced++;
-                LOG.trace("replace {}", entry.getKey());
+                LOG.debug("replaced {} ({}) with the copy from {}", entry.getKey(),
+                        Sizes.human(entry.getValue()), Text.relativeTo(workspace, overlay));
             }
             overlaid.add(entry.getKey());
         }
-        LOG.debug("merge {} added, {} replaced: {}, {}", Text.count(added, "file"),
-                Text.count(replaced, "file"), Text.count(files.size(), "file"),
-                Sizes.human(total(files)));
+        if (hasOverlay && added + replaced > 0) {
+            LOG.info("merged {} into {}: {} added, {} replaced",
+                    Text.relativeTo(workspace, overlay), baseName, Text.count(added, "file"),
+                    Text.count(replaced, "file"));
+        }
         String releaseKey = ObjectKeys.release(tag, releaseId);
         String latestKey = ObjectKeys.latest(tag);
-        String contents = contents(added, replaced, rules, outcome, files);
 
-        LOG.debug("transfer");
         Config config = Workspace.load(workspace);
         S3Store store = new S3Store(config);
         if (store.exists(releaseKey)) {
@@ -134,7 +140,7 @@ public final class Publish {
             entries.put(path, new FileEntry(split.hash(), split.table().size(), split.table().indexId()));
             tables.putIfAbsent(split.table().indexId(), split.table().bytes());
         });
-        LOG.debug("chunk {}: {}", Text.count(entries.size(), "file"),
+        LOG.info("split {} into {}", Text.count(entries.size(), "file"),
                 Text.count(placements.size(), "chunk"));
 
         // Ask which chunks and chunk tables are missing before uploading, so progress can count
@@ -158,15 +164,17 @@ public final class Publish {
         for (Placement placement : pendingChunks.values()) {
             pendingBytes += placement.cut().length();
         }
-        LOG.debug("plan {} to upload, {} already there{}", Text.count(toUpload, "chunk"),
-                Text.count(skipped, "chunk"),
-                toUpload > 0 ? ", " + Sizes.human(pendingBytes) + " to upload" : "");
+        if (toUpload > 0) {
+            LOG.debug("the chunks to upload add up to {}", Sizes.human(pendingBytes));
+        }
+        LOG.info("planned the upload: {} to upload, {} already in the bucket",
+                Text.count(toUpload, "chunk"), Text.count(skipped, "chunk"));
         Set<String> uploading = new TreeSet<>();
         for (Placement placement : pendingChunks.values()) {
             uploading.add(placement.path());
         }
         for (String path : uploading) {
-            LOG.trace("upload {}", path);
+            LOG.debug("uploading {}", path);
         }
         AtomicInteger uploaded = new AtomicInteger();
         AtomicLong uploadedBytes = new AtomicLong();
@@ -184,12 +192,9 @@ public final class Publish {
         });
         long uploadNanos = System.nanoTime() - uploadStartedAt;
         if (toUpload > 0) {
-            LOG.debug("upload {}: {} in {} ({})", Text.count(uploaded.get(), "chunk"),
+            LOG.debug("uploaded {} ({}) in {} ({})", Text.count(uploaded.get(), "chunk"),
                     Sizes.human(uploadedBytes.get()), Text.duration(uploadNanos),
                     Sizes.rate(uploadedBytes.get(), uploadNanos));
-        }
-        if (skipped > 0) {
-            LOG.debug("skip {}: already in the bucket", Text.count(skipped, "chunk"));
         }
         if (!pendingTables.isEmpty()) {
             long tableBytes = 0;
@@ -202,52 +207,30 @@ public final class Publish {
                 cache.remember(table.getKey());
             });
             long tableNanos = System.nanoTime() - tableStartedAt;
-            LOG.debug("write {}: {} in {} ({})", Text.count(pendingTables.size(), "chunk table"),
+            LOG.debug("uploaded {} ({}) in {} ({})", Text.count(pendingTables.size(), "chunk table"),
                     Sizes.human(tableBytes), Text.duration(tableNanos),
                     Sizes.rate(tableBytes, tableNanos));
         }
 
         Manifest manifest = new Manifest(tag, releaseId, Instant.now().truncatedTo(ChronoUnit.SECONDS),
                 Manifest.SHA256, new TreeMap<>(entries));
-        LOG.debug("commit");
-        LOG.debug("write {}: {}", releaseKey, writeGzip(store, releaseKey, manifest.toJson()));
-        LOG.debug("write {}: {}", latestKey, write(store, latestKey, new Pointer(releaseId).toJson()));
-        LOG.info("done: {} {} is now the latest", tag, releaseId);
-        LOG.debug("contents: {}", contents);
-        LOG.debug("uploaded: {}",
-                uploaded(toUpload, uploaded.get(), skipped, uploadedBytes.get(), uploadNanos));
-        LOG.debug("release: {}", releaseKey);
-        LOG.debug("latest: {} now points at {}", latestKey, releaseId);
+        LOG.info("wrote {}: {}", releaseKey, writeGzip(store, releaseKey, manifest.toJson()));
+        LOG.info("wrote {}: {}", latestKey, write(store, latestKey, new Pointer(releaseId).toJson()));
+        LOG.info(uploadedSummary(uploading.size(), skipped, uploadedBytes.get(), uploadNanos, toUpload));
+        LOG.info("published release {} of tag {} as the latest in {}", releaseId, tag,
+                Text.elapsed(System.nanoTime() - startedAt));
     }
 
-    /** What ended up in the release, and how the base tree and the overlay were narrowed to it. */
-    private static String contents(int added, int replaced, RemoveRules rules, RemoveRules.Outcome outcome,
-            Map<String, Long> files) {
-        StringBuilder text = new StringBuilder(
-                Text.count(files.size(), "file") + ", " + Sizes.human(total(files)));
-        List<String> parts = new ArrayList<>();
-        if (added + replaced > 0) {
-            parts.add(Text.count(added, "file") + " added, " + Text.count(replaced, "file") + " replaced");
-        }
-        if (rules.size() > 0) {
-            parts.add(Text.count(outcome.removed().size(), "file") + " removed by " + Text.count(rules.size(), "rule"));
-        }
-        if (!outcome.unmatched().isEmpty()) {
-            parts.add(Text.count(outcome.unmatched().size(), "rule") + " matched nothing");
-        }
-        if (!parts.isEmpty()) {
-            text.append(" (").append(String.join("; ", parts)).append(")");
-        }
-        return text.toString();
-    }
-
-    private static String uploaded(int toUpload, int uploaded, int skipped, long bytes, long nanos) {
+    /** The line before the closing one: how much data this run moved, and how much it did not need. */
+    private static String uploadedSummary(int files, int skipped, long bytes, long nanos, int toUpload) {
         if (toUpload == 0) {
-            return skipped == 0 ? "nothing to upload" : "nothing to upload; " + Text.count(skipped, "chunk") + " already stored";
+            return skipped == 0
+                    ? "uploaded nothing"
+                    : "uploaded nothing: " + Text.count(skipped, "chunk") + " already in the bucket";
         }
-        return Text.count(uploaded, "chunk") + ", " + Sizes.human(bytes) + " in " + Text.duration(nanos)
-                + " (" + Sizes.rate(bytes, nanos) + ")"
-                + (skipped > 0 ? "; " + Text.count(skipped, "chunk") + " already stored" : "");
+        return "uploaded " + Text.count(files, "file") + ", " + Sizes.human(bytes) + " in "
+                + Text.duration(nanos)
+                + (skipped > 0 ? "; " + Text.count(skipped, "chunk") + " already in the bucket" : "");
     }
 
     private static long total(Map<String, Long> files) {

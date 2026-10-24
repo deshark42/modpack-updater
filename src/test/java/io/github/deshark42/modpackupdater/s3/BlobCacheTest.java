@@ -8,7 +8,6 @@ import io.github.deshark42.modpackupdater.TestFiles;
 import io.github.deshark42.modpackupdater.TestLogs;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.json.Json;
-import io.github.deshark42.modpackupdater.log.Logging;
 import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.Layout;
@@ -45,7 +44,7 @@ class BlobCacheTest {
 
     @BeforeEach
     void beginLogging(@TempDir Path workspace) {
-        logs.begin(workspace, Logging.Mode.NORMAL);
+        logs.begin(workspace);
     }
 
     @AfterEach
