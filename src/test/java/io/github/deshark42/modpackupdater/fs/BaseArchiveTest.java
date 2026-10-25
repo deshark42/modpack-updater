@@ -37,6 +37,9 @@ import org.apache.commons.compress.archivers.zip.UnixStat;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -231,6 +234,65 @@ class BaseArchiveTest {
             @TempDir Path workspace) throws IOException {
         Path archive = archive(workspace, format, file("good", "already extracted"), file(name, "bad"));
         rejectsAndCleans(workspace, archive, "unsafe entry path");
+    }
+
+    private static Stream<Arguments> windowsNames() {
+        return Stream.of("zip", "7z").flatMap(format -> Stream.of("NUL", "nul.txt", ".minecraft/NUL.txt",
+                "NUL .txt", "nested/AUX.cfg", "CON", "PRN.txt", "COM1", "lPt9.log", "COM\u00b9.txt",
+                "LPT\u00b2", "COM\u00b3", "CONIN$", "CONOUT$.log", "name.", "name ",
+                "folder./child.txt", "folder /child.txt")
+                .map(name -> Arguments.of(format, name)));
+    }
+
+    @ParameterizedTest(name = "Windows {0}: {1}")
+    @MethodSource("windowsNames")
+    @EnabledOnOs(OS.WINDOWS)
+    void rejectsWindowsDevicesAndNormalizedNamesBeforeTheyCanDisappear(String format, String name,
+            @TempDir Path workspace) throws IOException {
+        Path archive = archive(workspace, format, file("good", "already extracted"), file(name, "must not disappear"));
+
+        rejectsAndCleans(workspace, archive, "unsafe entry path");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"zip", "7z"})
+    void preservesOrdinaryNamesThatResembleWindowsDevicesOrShortNames(String format, @TempDir Path workspace)
+            throws IOException {
+        Path archive = archive(workspace, format, file("COM0.txt", "zero"), file("COM10.txt", "ten"),
+                file("NUL-data.txt", "ordinary"), file("nested~1/keep.txt", "tilde"));
+
+        try (BaseArchive base = BaseArchive.open(workspace, archive)) {
+            assertEquals(Map.of("COM0.txt", 4L, "COM10.txt", 3L, "NUL-data.txt", 8L,
+                    "nested~1/keep.txt", 5L), Tree.list(base.root()));
+            assertEquals("tilde", Files.readString(base.root().resolve("nested~1/keep.txt")));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"zip", "7z"})
+    @DisabledOnOs(OS.WINDOWS)
+    void preservesNamesThatOnlyHaveSpecialMeaningOnWindows(String format, @TempDir Path workspace)
+            throws IOException {
+        Path archive = archive(workspace, format, file("NUL.txt", "ordinary"), file("folder./keep.txt", "dot"));
+
+        try (BaseArchive base = BaseArchive.open(workspace, archive)) {
+            assertEquals(Map.of("NUL.txt", 8L, "folder./keep.txt", 3L), Tree.list(base.root()));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"zip", "7z"})
+    @EnabledOnOs(OS.WINDOWS)
+    void rejectsShortDirectoryAliasesIntoEarlierArchiveEntries(String format, @TempDir Path workspace)
+            throws IOException {
+        Path longName = Files.createDirectory(workspace.resolve("LongDirectoryName"));
+        Path shortName = workspace.resolve("LONGDI~1");
+        assumeTrue(Files.isDirectory(shortName) && Files.isSameFile(longName, shortName),
+                "8.3 short names must be enabled on this volume");
+        Path archive = archive(workspace, format, file("LongDirectoryName/first.txt", "first"),
+                file("LONGDI~1/second.txt", "must not merge"));
+
+        rejectsAndCleans(workspace, archive, "filesystem link or alias");
     }
 
     private static Stream<Arguments> collisions() {

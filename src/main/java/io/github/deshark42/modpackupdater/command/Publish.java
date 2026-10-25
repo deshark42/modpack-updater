@@ -82,12 +82,12 @@ public final class Publish {
                 .collect(Collectors.joining(" + "));
         Map<String, Long> baseFiles = source.files();
         LOG.info("scanned {}: {}, {}", baseName, Text.count(baseFiles.size(), "file"),
-                Sizes.human(total(baseFiles)));
+                Sizes.human(Sizes.total(baseFiles.values())));
         boolean hasOverlay = Files.isDirectory(overlay);
         Map<String, Long> overlayFiles = hasOverlay ? Tree.list(overlay) : Map.of();
         if (hasOverlay) {
             LOG.info("scanned {}: {}, {}", Text.relativeTo(workspace, overlay),
-                    Text.count(overlayFiles.size(), "file"), Sizes.human(total(overlayFiles)));
+                    Text.count(overlayFiles.size(), "file"), Sizes.human(Sizes.total(overlayFiles.values())));
         }
         String removeName = Text.relativeTo(workspace, Layout.removeFile(workspace, tag));
         RemoveRules rules = RemoveRules.read(Layout.removeFile(workspace, tag));
@@ -255,14 +255,6 @@ public final class Publish {
         return "uploaded " + Text.count(files, "file") + ", " + Sizes.human(bytes) + " in "
                 + Text.duration(nanos)
                 + (skipped > 0 ? "; " + Text.count(skipped, "chunk") + " already in the bucket" : "");
-    }
-
-    private static long total(Map<String, Long> files) {
-        long bytes = 0;
-        for (long size : files.values()) {
-            bytes += size;
-        }
-        return bytes;
     }
 
     private static String write(S3Store store, String key, String json) {

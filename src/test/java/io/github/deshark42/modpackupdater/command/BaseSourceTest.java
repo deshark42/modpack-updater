@@ -211,6 +211,26 @@ class BaseSourceTest {
         assertFalse(Files.exists(Layout.tempDir(workspace)));
     }
 
+    @Test
+    void rejectsAFileThatBecomesALinkAfterTheScan(@TempDir Path workspace) throws IOException {
+        Path base = Layout.baseDir(workspace, TAG);
+        TestFiles.write(base, "mods/a.jar", "original");
+        Path outside = workspace.resolve("outside.jar");
+        Files.writeString(outside, "outside");
+        BaseSource source = BaseSource.open(workspace, TAG);
+        try {
+            Files.delete(base.resolve("mods/a.jar"));
+            link(base.resolve("mods/a.jar"), outside);
+
+            UserError error = assertThrows(UserError.class, () -> source.file("mods/a.jar"));
+
+            assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
+        } finally {
+            source.close();
+        }
+        assertEquals("outside", Files.readString(outside));
+    }
+
     @ParameterizedTest(name = "raw {0} collides with packed {1}")
     @CsvSource({"file,file", "file,child", "child,file", "directory,file", "file,directory"})
     void rejectsRawAndPackedFileOrDirectoryCollisions(String raw, String packed, @TempDir Path workspace)

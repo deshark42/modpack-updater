@@ -33,27 +33,35 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipExtraField;
 import org.apache.commons.compress.archivers.zip.ZipFile;
 
-/** Materializes one publisher archive until all scans and random chunk reads have finished. */
+/**
+ * Materializes one publisher archive until all scans and random chunk reads have finished. The
+ * staging tree is created private to the run, so its entries are not re-validated against the
+ * workspace one by one during extraction; the staging root is checked when it is created, and
+ * cleanup still validates every stage directory before deleting it.
+ */
 public final class BaseArchive implements AutoCloseable {
 
     private static final int SEVEN_Z_MEMORY_LIMIT_KIB = 256 * 1024;
     private static final int WINDOWS_DEVICE_OR_REPARSE_POINT = 0x40 | 0x400;
     private static final int WINDOWS_UNIX_EXTENSION = 0x8000;
+    private static final Set<String> WINDOWS_DEVICES = Set.of("CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$");
 
     private final Path workspace;
     private final Path archive;
     private final Path root;
-    private final PathGuard guard;
+    private final Path realRoot;
+    private final boolean windowsPaths;
     private final Set<String> entries = new HashSet<>();
     private final Map<String, Boolean> directories = new HashMap<>();
     private final byte[] buffer = new byte[64 * 1024];
     private boolean closed;
 
-    private BaseArchive(Path workspace, Path archive, Path root) {
+    private BaseArchive(Path workspace, Path archive, Path root) throws IOException {
         this.workspace = workspace;
         this.archive = archive;
-        this.root = root;
-        this.guard = PathGuard.at(workspace);
+        this.root = root.normalize();
+        this.realRoot = root.toRealPath();
+        this.windowsPaths = root.getFileSystem().getSeparator().equals("\\");
     }
 
     public static BaseArchive open(Path workspace, Path archive) {
@@ -243,10 +251,24 @@ public final class BaseArchive implements AutoCloseable {
             slash = relative.indexOf('/', slash + 1);
         }
         directories.put(relative, directory);
-        return root.resolve(relative);
+        return entryPath(relative);
     }
 
-    private static String relative(String name, boolean directory) throws IOException {
+    /**
+     * Resolves one validated entry name below the staging root. Nothing below that root can already
+     * be a link: {@link #open} creates the root empty, so the per-entry real path walk PathGuard
+     * performs elsewhere would only re-resolve files and directories this class just created. The
+     * containment check keeps a future resolver change from escaping the staging root.
+     */
+    private Path entryPath(String relative) throws IOException {
+        Path target = root.resolve(relative).normalize();
+        if (!target.startsWith(root)) {
+            throw new IOException("unsafe entry path: " + relative);
+        }
+        return target;
+    }
+
+    private String relative(String name, boolean directory) throws IOException {
         if (name == null || name.isEmpty() || name.startsWith("/") || name.indexOf('\\') >= 0 || name.indexOf(':') >= 0) {
             throw new IOException("unsafe entry path: " + name);
         }
@@ -255,6 +277,11 @@ public final class BaseArchive implements AutoCloseable {
             if (part.isEmpty() || part.equals(".") || part.equals("..")) {
                 throw new IOException("unsafe entry path: " + name);
             }
+            // Win32 can discard device writes or silently change these names. Check their
+            // spelling without filesystem I/O, before creating any part of the entry.
+            if (windowsPaths && (part.endsWith(".") || part.endsWith(" ") || windowsDevice(part))) {
+                throw new IOException("unsafe entry path on Windows: " + name);
+            }
         }
         try {
             Path.of(relative);
@@ -262,6 +289,31 @@ public final class BaseArchive implements AutoCloseable {
             throw new IOException("unsafe entry path: " + name, e);
         }
         return relative;
+    }
+
+    private static boolean windowsDevice(String part) {
+        int dot = part.indexOf('.');
+        int end = dot < 0 ? part.length() : dot;
+        while (end > 0 && part.charAt(end - 1) == ' ') {
+            end--;
+        }
+        String stem = part.substring(0, end).toUpperCase(Locale.ROOT);
+        if (WINDOWS_DEVICES.contains(stem)) {
+            return true;
+        }
+        return stem.length() == 4 && (stem.startsWith("COM") || stem.startsWith("LPT"))
+                && "123456789\u00b9\u00b2\u00b3".indexOf(stem.charAt(3)) >= 0;
+    }
+
+    private void createDirectories(Path directory) throws IOException {
+        Files.createDirectories(directory);
+        Path relative = root.relativize(directory);
+        // A short (8.3) directory alias can refer to another entry already extracted in this
+        // run. Only names that can contain such an alias need a real-path lookup here.
+        if (windowsPaths && relative.toString().indexOf('~') >= 0
+                && !directory.toRealPath().equals(realRoot.resolve(relative))) {
+            throw new IOException("refusing a filesystem link or alias in archive entry: " + relative);
+        }
     }
 
     @FunctionalInterface
@@ -273,9 +325,7 @@ public final class BaseArchive implements AutoCloseable {
         if (size < 0 || (directory && size != 0)) {
             throw new IOException("invalid entry size: " + root.relativize(target));
         }
-        guard.require(target);
-        Files.createDirectories(directory ? target : target.getParent());
-        guard.require(target);
+        createDirectories(directory ? target : target.getParent());
         CRC32 crc = new CRC32();
         long count = 0;
         try (OutputStream out = directory ? OutputStream.nullOutputStream()
@@ -291,7 +341,6 @@ public final class BaseArchive implements AutoCloseable {
                 out.write(buffer, 0, read);
             }
         }
-        guard.require(target);
         if (count != size || (checksum >= 0 && crc.getValue() != checksum)) {
             throw new IOException("entry size or checksum mismatch: " + root.relativize(target));
         }

@@ -40,7 +40,7 @@ for (const note of notes) {
   const fail = (msg: string): void => {
     errors.push(`format: ${note.rel} — ${msg}`)
   }
-  const lines = readFileSync(resolve(agentNoteRoot, note.rel), 'utf8').split('\n')
+  const lines = readFileSync(resolve(agentNoteRoot, note.rel), 'utf8').split(/\r?\n/)
   // Format tokens inside fenced examples are not document structure.
   let inFence = false
   const prose = lines.filter((l) => {

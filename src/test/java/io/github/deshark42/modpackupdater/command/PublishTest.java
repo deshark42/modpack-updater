@@ -43,6 +43,8 @@ import java.util.zip.ZipOutputStream;
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -254,10 +256,13 @@ class PublishTest {
             }
             assertEquals(List.of(), staged(workspace), "the completed publish releases its archive staging");
             assertTrue(captured.outText().contains("4 files"), captured.outText());
+            String shown = Path.of(TAG, "base_pack", "instance." + extension).toString();
+            assertTrue(captured.outText().contains("extracting " + shown), captured.outText());
+            assertTrue(captured.outText().contains("extracted " + shown + ": 5 files"), captured.outText());
             String transcript = Files.readString(logs(workspace).get(0), StandardCharsets.UTF_8);
             String archiveName = workspace.relativize(archive).toString();
             int extracting = transcript.indexOf("extracting " + archiveName);
-            int extracted = transcript.indexOf("extracted " + archiveName + " in ");
+            int extracted = transcript.indexOf("extracted " + archiveName + ": 5 files");
             int scanned = transcript.indexOf("scanned ");
             assertTrue(extracting >= 0 && extracted > extracting && scanned > extracted, transcript);
             assertTrue(transcript.contains("replaced download/mods/replace.jar ("), transcript);
@@ -520,6 +525,28 @@ class PublishTest {
             assertFalse(Files.exists(workspace.resolve("escape.txt")));
             assertArrayEquals(goodBytes, Files.readAllBytes(good));
             assertArrayEquals(unsafeBytes, Files.readAllBytes(unsafe));
+        }
+    }
+
+    @ParameterizedTest(name = "Windows {0}: {1} cannot produce an incomplete release")
+    @CsvSource({"zip,.minecraft/NUL.txt", "7z,.minecraft/NUL.txt", "zip,config./secret.txt", "7z,config./secret.txt"})
+    @EnabledOnOs(OS.WINDOWS)
+    void rejectsWindowsPackedNamesBeforeAnyStorageAccess(String extension, String name, @TempDir Path workspace)
+            throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            Path good = Layout.basePackDir(workspace, TAG).resolve("a-good.zip");
+            archive(good, Map.of("good.txt", TestFiles.bytes("earlier archive")));
+            Path unsafe = Layout.basePackDir(workspace, TAG).resolve("z-unsafe." + extension);
+            archive(unsafe, Map.of(name, TestFiles.bytes("must not disappear"),
+                    "safe.txt", TestFiles.bytes("must not publish a partial archive")));
+            byte[] original = Files.readAllBytes(unsafe);
+
+            UserError error = assertThrows(UserError.class, () -> publish(workspace, TAG, "2.9.0"));
+
+            assertTrue(error.getMessage().contains("unsafe entry path"), error.getMessage());
+            assertNoStorageOrStagingSideEffects(s3, workspace);
+            assertArrayEquals(original, Files.readAllBytes(unsafe));
         }
     }
 
