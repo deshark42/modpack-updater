@@ -17,6 +17,11 @@ public final class Layout {
     public static final String OVERLAY = "overlay";
     public static final String REMOVE = "remove.txt";
     public static final String TMP = "tmp";
+    public static final String KEYS = "keys";
+    public static final String PRIVATE_KEY = "release-private.pem";
+    public static final String PUBLIC_KEY = "release-public.pem";
+    public static final String DEFAULT_PRIVATE_KEY = STATE_DIR + "/" + KEYS + "/" + PRIVATE_KEY;
+    public static final String DEFAULT_PUBLIC_KEY = STATE_DIR + "/" + KEYS + "/" + PUBLIC_KEY;
     /** Where an update stages the chunks it downloads. */
     public static final String BLOB = "blob";
     /** Where an update assembles the files it will put in place. */

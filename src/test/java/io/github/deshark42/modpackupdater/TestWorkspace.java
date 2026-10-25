@@ -48,6 +48,7 @@ public final class TestWorkspace {
             json += ", \"read_endpoint\": \"" + readEndpoint + "\"";
         }
         TestFiles.write(workspace, Layout.STATE_DIR + "/" + Layout.CONFIG, json + "}");
+        TestSigning.writeKeys(workspace);
     }
 
     /** The request path of a bucket object below the configured prefix, e.g. bucketPath("blob/ab/ab..."). */

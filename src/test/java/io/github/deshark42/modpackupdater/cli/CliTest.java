@@ -44,6 +44,10 @@ class CliTest {
                 Arguments.of("publish without --id", "needs --id", List.of("publish", "--tag", TAG)),
                 Arguments.of("init with --id", "init does not take --id",
                         List.of("init", "--tag", TAG, "--id", "1.0")),
+                Arguments.of("keygen with --tag", "keygen only takes --workspace", List.of("keygen", "--tag", TAG)),
+                Arguments.of("keygen with --id", "keygen only takes --workspace", List.of("keygen", "--id", "1")),
+                Arguments.of("keygen with cache age", "keygen only takes --workspace",
+                        List.of("keygen", "--cache-max-age-days", "1")),
                 Arguments.of("option without a value", "needs a value", List.of("update", "--tag")));
     }
 
@@ -60,6 +64,15 @@ class CliTest {
                         List.of("update", "--tag", TAG, "--cache-max-age-days", "7")),
                 Arguments.of("init with the option", "init does not take --cache-max-age-days",
                         List.of("init", "--cache-max-age-days", "7")));
+    }
+
+    @Test
+    void generatesKeysInTheWorkspaceSelectedOnTheCommandLine(@TempDir Path root) {
+        Path workspace = root.resolve("publisher");
+        assertEquals(Cli.OK, run(root, "keygen", "--workspace", workspace.toString()), logs.errText());
+        assertTrue(Files.isRegularFile(workspace.resolve(Layout.DEFAULT_PRIVATE_KEY)));
+        assertTrue(Files.isRegularFile(workspace.resolve(Layout.DEFAULT_PUBLIC_KEY)));
+        assertTrue(logs.outText().contains("public key SHA-256 fingerprint"), logs.outText());
     }
 
     @Test

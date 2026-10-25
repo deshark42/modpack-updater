@@ -127,7 +127,7 @@ publish 在每个 PUT 上带 `Cache-Control`：
 
 - 部署手册（`docs/deployment.md`）尚未落成。CDN 侧的必需条件——读地址不重定向、不改写路径；不覆盖源站 `Cache-Control`（尤其 `metadata/` 下的 `no-store`）；不对任何前缀做内容转码（尤其 `blob/` 与 `index/`）；不在发布前预取尚未发布的不可变 URL；升级后清一次 `metadata/` 的缓存——目前只在上面的「后果」里，读者得自己去找。
 - 三条部署侧人工核对同样待写入手册：连续发布 A、B，订阅者 update 到 A 后下一次看到 B；第二个订阅者首次更新同一 release 时每个块与块表在 CDN 上最多回源一次；读地址无重定向、CDN 不缓存 4xx。
-- 私有桶 + 公开边缘（OAI/OAC 回源）与私有桶 + 私有边缘（需 CDN 侧签名）两种部署形态的说明也待写；仓库目前只有 `docs/testing.md`，没有 README，若补文档，链接应从 `AGENTS.md` 引入。
+- 私有桶 + 公开边缘（OAI/OAC 回源）与私有桶 + 私有边缘（需 CDN 侧签名）两种部署形态的完整说明也待写；基本配置、读地址寻址与独立发布签名已在 [README](../../../../README.md) 中说明，由 `AGENTS.md` 引入。
 
 ## 相关
 

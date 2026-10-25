@@ -23,6 +23,7 @@ src/main/java/io/github/deshark42/modpackupdater/
   model/      manifest, pointer, config, layout, chunk table, path rules
   fs/         chunking, hashing, atomic writes, tree scan
   s3/         S3 client (SigV4) and the blob existence cache
+  security/   Ed25519 release signing and local PEM keys
   json/       JSON reading and writing (Gson)
   log/        logging setup, console and transcript writers
   util/       parallel execution
@@ -49,11 +50,14 @@ Usage:
 
 ```sh
 java -jar build/libs/modpack-updater-<version>.jar init [--tag <tag>]
+java -jar build/libs/modpack-updater-<version>.jar keygen
 java -jar build/libs/modpack-updater-<version>.jar publish --tag <tag> --id <release-id>
 java -jar build/libs/modpack-updater-<version>.jar update --tag <tag> [--id <release-id>]
 ```
 
 All commands take `--workspace`; `--cache-max-age-days` belongs to `publish`.
+
+Publisher setup, trusted public key distribution and mandatory release verification are documented in [README.md](README.md).
 
 ## Run relevant checks locally
 

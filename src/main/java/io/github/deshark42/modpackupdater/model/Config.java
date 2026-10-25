@@ -2,17 +2,27 @@ package io.github.deshark42.modpackupdater.model;
 
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
+import io.github.deshark42.modpackupdater.fs.PathGuard;
 import io.github.deshark42.modpackupdater.json.Json;
+import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-/** Connection settings, shared by publisher and subscriber and kept in .modpack-updater/config.json. */
+/** Storage settings and local signing key paths, kept in .modpack-updater/config.json. */
 public record Config(String endpoint, String readEndpoint, String region, String bucket, String prefix,
-                     boolean pathStyle, String accessKey, String secretKey, int concurrency) {
+                     boolean pathStyle, String accessKey, String secretKey, int concurrency,
+                     String signingPrivateKey, String trustedPublicKey) {
+
+    public Config(String endpoint, String readEndpoint, String region, String bucket, String prefix,
+            boolean pathStyle, String accessKey, String secretKey, int concurrency) {
+        this(endpoint, readEndpoint, region, bucket, prefix, pathStyle, accessKey, secretKey, concurrency,
+                Layout.DEFAULT_PRIVATE_KEY, Layout.DEFAULT_PUBLIC_KEY);
+    }
 
     /** Transfers that run at the same time unless config.json says otherwise. */
     public static final int DEFAULT_CONCURRENCY = 8;
@@ -30,6 +40,8 @@ public record Config(String endpoint, String readEndpoint, String region, String
         out.put("prefix", "");
         out.put("path_style", false);
         out.put("concurrency", DEFAULT_CONCURRENCY);
+        out.put("signing_private_key", Layout.DEFAULT_PRIVATE_KEY);
+        out.put("trusted_public_key", Layout.DEFAULT_PUBLIC_KEY);
         return out;
     }
 
@@ -122,7 +134,51 @@ public record Config(String endpoint, String readEndpoint, String region, String
                 Fields.optionalBoolean(object, "path_style", false, what),
                 accessKey,
                 secretKey,
-                Fields.optionalInt(object, "concurrency", DEFAULT_CONCURRENCY, what));
+                Fields.optionalInt(object, "concurrency", DEFAULT_CONCURRENCY, what),
+                Fields.optionalString(object, "signing_private_key", Layout.DEFAULT_PRIVATE_KEY, what),
+                Fields.optionalString(object, "trusted_public_key", Layout.DEFAULT_PUBLIC_KEY, what));
+    }
+
+    public Path privateKeyFile(Path workspace) {
+        return keyFile(workspace, signingPrivateKey);
+    }
+
+    public Path publicKeyFile(Path workspace) {
+        return keyFile(workspace, trustedPublicKey);
+    }
+
+    private static Path keyFile(Path workspace, String configured) {
+        Path root = workspace.toAbsolutePath().normalize();
+        Path file;
+        try {
+            file = root.resolve(configured).normalize();
+        } catch (java.nio.file.InvalidPathException | NullPointerException e) {
+            throw new UserError("invalid local signing key path", e);
+        }
+        if (file.getFileName() == null) {
+            throw new UserError("a local signing key path must name a file");
+        }
+        // An explicitly configured external path may itself be an alias into the instance.
+        try {
+            Path realRoot = root.toRealPath();
+            Path realFile = file.toRealPath();
+            requireProtectedKey(realRoot, realFile);
+        } catch (NoSuchFileException e) {
+            // Key loading reports missing files; an absent workspace has no existing payload.
+        } catch (IOException e) {
+            throw new UserError("cannot check local signing key path " + file, e);
+        }
+        if (file.startsWith(root)) {
+            requireProtectedKey(root, file);
+            return PathGuard.require(root, file);
+        }
+        return PathGuard.require(file.getParent(), file);
+    }
+
+    private static void requireProtectedKey(Path root, Path file) {
+        if (file.startsWith(root) && !file.startsWith(root.resolve(Layout.STATE_DIR))) {
+            throw new UserError("signing keys inside the workspace must stay under " + Layout.STATE_DIR);
+        }
     }
 
     public boolean anonymous() {

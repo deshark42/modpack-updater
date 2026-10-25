@@ -2,6 +2,7 @@ package io.github.deshark42.modpackupdater.cli;
 
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.command.Init;
+import io.github.deshark42.modpackupdater.command.Keygen;
 import io.github.deshark42.modpackupdater.command.Publish;
 import io.github.deshark42.modpackupdater.command.Update;
 import io.github.deshark42.modpackupdater.log.Logging;
@@ -12,7 +13,7 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** The command line: three commands, a handful of options, usage errors kept apart from real ones. */
+/** The command line: workspace commands and local signing key generation. */
 public final class Cli {
 
     public static final int USAGE_ERROR = 2;
@@ -25,6 +26,7 @@ public final class Cli {
             "usage: modpack-updater publish --tag <tag> --id <release-id> [options]",
             "       modpack-updater update --tag <tag> [--id <release-id>] [options]",
             "       modpack-updater init [--tag <tag>] [options]",
+            "       modpack-updater keygen [--workspace <dir>]",
             "options: --workspace <dir>   work in this directory instead of the current one",
             "         --id <release-id>   update: apply this release instead of the latest one",
             "         --cache-max-age-days <days>",
@@ -59,6 +61,15 @@ public final class Cli {
         String action = null;
         try {
             switch (command) {
+                case "keygen" -> {
+                    if (options.keySet().stream().anyMatch(key -> !key.equals("workspace"))) {
+                        return usage(err, "keygen only takes --workspace");
+                    }
+                    action = "generating release signing keys";
+                    Logging.begin(workspace, null, out, err);
+                    Keygen.run(workspace);
+                    return OK;
+                }
                 case "publish" -> {
                     if (tag == null) {
                         return usage(err, "publish needs --tag <tag>");

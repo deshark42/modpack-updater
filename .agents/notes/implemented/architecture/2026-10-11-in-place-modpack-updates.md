@@ -16,7 +16,7 @@ modpack-updater 把更新变成一次发布与一次订阅：发布者把自己�
 
 它的用户身份只有两个——发布者与订阅者。发布的内容是 client、server 还是其他实例，用 TAG 区分；服主与玩家的差异只是实例目录的内容不同，不构成两类用户或两套流程。
 
-交付形态是 Java CLI（Java 17，Gradle 构建，入口 io.github.deshark42.modpackupdater.Main），三个命令：init 铺出工作区骨架，publish 发布一个 tag，update 把某个 tag 的更新应用到当前实例。它通过 Prism Launcher 的 pre-launch command 在实例启动前执行。
+交付形态是 Java CLI（Java 17，Gradle 构建，入口 io.github.deshark42.modpackupdater.Main）：init 铺出工作区骨架，keygen 生成本地发布密钥，publish 签署并发布一个 tag，update 验签后把该 tag 的更新应用到当前实例。签名约束见[发布清单签名](../feature/2026-10-25-ed25519-release-signatures.md)。它通过 Prism Launcher 的 pre-launch command 在实例启动前执行。
 
 发布内容在对象存储中的布局见[对象存储布局](2026-10-13-object-storage-layout.md)，发布侧约定见[发布者工作区与发布命令](2026-10-13-publisher-workspace.md)，订阅侧约定见[订阅者工作区与更新流程](2026-10-14-subscriber-workspace.md)，清单与连接配置的字段见[发布内容格式与连接配置](2026-10-14-release-manifest-and-config.md)。
 

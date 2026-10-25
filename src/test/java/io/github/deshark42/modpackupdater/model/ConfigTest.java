@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
@@ -13,6 +14,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class ConfigTest {
 
@@ -26,6 +29,57 @@ class ConfigTest {
         assertFalse(config.pathStyle());
         assertTrue(config.anonymous());
         assertNull(config.readEndpoint(), "without a CDN the objects are read from the store itself");
+        assertEquals(Layout.DEFAULT_PRIVATE_KEY, config.signingPrivateKey());
+        assertEquals(Layout.DEFAULT_PUBLIC_KEY, config.trustedPublicKey());
+    }
+
+    @ParameterizedTest(name = "key path {0} cannot be replaced through a release")
+    @ValueSource(strings = {"mods/key.pem", "client/base/key.pem", "public.pem"})
+    void rejectsSigningKeysInThePublishableWorkspace(String path, @TempDir Path root) {
+        Config config = new Config("https://s3.example.com", null, "us-east-1", "pack", "", false,
+                null, null, Config.DEFAULT_CONCURRENCY, path, path);
+        UserError error = assertThrows(UserError.class, () -> config.publicKeyFile(root));
+        assertTrue(error.getMessage().contains("must stay under " + Layout.STATE_DIR), error.getMessage());
+    }
+
+    @Test
+    void readsConfiguredLocalSigningKeyPaths() {
+        Config config = Config.parse("{\"endpoint\":\"https://s3.example.com\",\"bucket\":\"pack\","
+                + "\"signing_private_key\":\".modpack-updater/custom-private.pem\","
+                + "\"trusted_public_key\":\".modpack-updater/custom-public.pem\"}", "config.json");
+        assertEquals(".modpack-updater/custom-private.pem", config.signingPrivateKey());
+        assertEquals(".modpack-updater/custom-public.pem", config.trustedPublicKey());
+    }
+
+    @Test
+    void rejectsAnExternalKeyAliasBackIntoPublishableContent(@TempDir Path root) throws IOException {
+        Path workspace = Files.createDirectory(root.resolve("instance"));
+        Path payload = workspace.resolve("mods/public.pem");
+        Files.createDirectories(payload.getParent());
+        Files.writeString(payload, "replaceable public key");
+        Path alias = root.resolve("outside-key.pem");
+        try {
+            Files.createSymbolicLink(alias, payload);
+        } catch (UnsupportedOperationException | IOException e) {
+            assumeTrue(false, "symbolic links need filesystem support and privileges: " + e);
+        }
+        Config config = new Config("https://s3.example.com", null, "us-east-1", "pack", "", false,
+                null, null, Config.DEFAULT_CONCURRENCY, Layout.DEFAULT_PRIVATE_KEY, alias.toString());
+
+        UserError error = assertThrows(UserError.class, () -> config.publicKeyFile(workspace));
+
+        assertTrue(error.getMessage().contains("must stay under " + Layout.STATE_DIR), error.getMessage());
+        assertEquals("replaceable public key", Files.readString(payload));
+    }
+
+    @Test
+    void resolvesConfiguredKeysRelativeToTheWorkspaceAndPermitsExternalKeys(@TempDir Path root) {
+        Path workspace = root.resolve("instance");
+        Config config = new Config("https://s3.example.com", null, "us-east-1", "pack", "", false,
+                null, null, Config.DEFAULT_CONCURRENCY, root.resolve("private.pem").toString(),
+                Layout.STATE_DIR + "/custom-public.pem");
+        assertEquals(root.resolve("private.pem"), config.privateKeyFile(workspace));
+        assertEquals(workspace.resolve(Layout.STATE_DIR).resolve("custom-public.pem"), config.publicKeyFile(workspace));
     }
 
     @Test

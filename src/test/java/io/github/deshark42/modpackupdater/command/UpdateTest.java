@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import io.github.deshark42.modpackupdater.FakeS3;
 import io.github.deshark42.modpackupdater.TestFiles;
 import io.github.deshark42.modpackupdater.TestLogs;
+import io.github.deshark42.modpackupdater.TestSigning;
 import io.github.deshark42.modpackupdater.TestWorkspace;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.Chunker;
@@ -109,6 +110,10 @@ class UpdateTest {
         return TestWorkspace.bucketPath(ObjectKeys.latest(tag));
     }
 
+    private static String signatureKey(String tag, String releaseId) {
+        return TestWorkspace.bucketPath(ObjectKeys.signature(tag, releaseId));
+    }
+
     private static String chunkKey(String hash) {
         return TestWorkspace.bucketPath(ObjectKeys.blob(hash));
     }
@@ -127,7 +132,8 @@ class UpdateTest {
      */
     private static long metadataBytes(FakeS3 s3, String tag, String releaseId, List<String> paths) {
         Manifest manifest = manifest(s3, tag, releaseId);
-        long bytes = s3.object(latestKey(tag)).length + s3.object(releaseKey(tag, releaseId)).length;
+        long bytes = s3.object(latestKey(tag)).length + s3.object(releaseKey(tag, releaseId)).length
+                + s3.object(signatureKey(tag, releaseId)).length;
         Set<String> tables = new HashSet<>();
         for (String path : paths) {
             tables.add(manifest.files().get(path).indexId());
@@ -286,7 +292,8 @@ class UpdateTest {
             assertEquals("2.9.0", applied(player, TAG));
             assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
             assertFalse(Files.exists(Layout.releaseFile(player, TAG, "2.9.1")));
-            assertEquals(List.of("GET " + latestKey(TAG), "GET " + releaseKey(TAG, "2.9.1")),
+            assertEquals(List.of("GET " + latestKey(TAG), "GET " + releaseKey(TAG, "2.9.1"),
+                            "GET " + signatureKey(TAG, "2.9.1")),
                     s3.requests().subList(requests, s3.requests().size()));
             assertNothingStaged(player);
         }
@@ -453,9 +460,11 @@ class UpdateTest {
             Path publisher = root.resolve("publisher");
             TestWorkspace.configure(publisher, s3);
             publish(publisher, TAG, "2.9.0", Map.of("mods/a.jar", TestFiles.bytes("untrusted config")));
-            // Another bucket writer can bypass Publish's input validation.
-            s3.put(releaseKey(TAG, "2.9.0"), TestFiles.bytes(s3.text(releaseKey(TAG, "2.9.0"))
-                    .replace("mods/a.jar", Layout.STATE_DIR + "/" + Layout.CONFIG)));
+            // Even an authorized signer must not be able to replace the updater's own state.
+            byte[] malicious = TestFiles.bytes(s3.text(releaseKey(TAG, "2.9.0"))
+                    .replace("mods/a.jar", Layout.STATE_DIR + "/" + Layout.CONFIG));
+            s3.put(releaseKey(TAG, "2.9.0"), malicious);
+            s3.put(signatureKey(TAG, "2.9.0"), TestSigning.sign(malicious));
             Path player = root.resolve("player");
             TestWorkspace.configure(player, s3);
             Config.fillMissing(player);
@@ -469,7 +478,8 @@ class UpdateTest {
             assertFalse(Files.exists(Layout.currentFile(player, TAG)));
             assertFalse(Files.exists(Layout.releasesDir(player, TAG)));
             assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
-            assertEquals(List.of("GET " + latestKey(TAG), "GET " + releaseKey(TAG, "2.9.0")),
+            assertEquals(List.of("GET " + latestKey(TAG), "GET " + releaseKey(TAG, "2.9.0"),
+                            "GET " + signatureKey(TAG, "2.9.0")),
                     s3.requests().subList(before, s3.requests().size()));
             assertNothingStaged(player);
         }
@@ -1154,8 +1164,9 @@ class UpdateTest {
             assertTrue(bodies.get(bodies.size() - 2).startsWith("downloaded nothing"),
                     "nothing came over the wire: " + captured.outText());
             String table = manifest(s3, TAG, "2.9.0").files().get("mods/a.jar").indexId();
-            assertEquals(s3.object(indexKey(table)).length + s3.object(releaseKey(TAG, "2.9.0")).length, delta,
-                    "only the chunk table and the manifest came over the wire: " + s3.requests());
+            assertEquals(s3.object(indexKey(table)).length + s3.object(releaseKey(TAG, "2.9.0")).length
+                            + s3.object(signatureKey(TAG, "2.9.0")).length, delta,
+                    "only the chunk table, manifest and signature came over the wire: " + s3.requests());
         }
     }
 

@@ -28,6 +28,7 @@ class ObjectKeysTest {
     @Test
     void namesAReleaseUnderItsTag() {
         assertEquals("metadata/client/releases/2.9.0.json", ObjectKeys.release("client", "2.9.0"));
+        assertEquals("metadata/client/releases/2.9.0.json.sig", ObjectKeys.signature("client", "2.9.0"));
     }
 
     @Test
@@ -42,6 +43,8 @@ class ObjectKeysTest {
         assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL,
                 ObjectKeys.cacheControl(ObjectKeys.release("client", "2.9.0")));
         assertEquals(ObjectKeys.NO_STORE_CACHE_CONTROL, ObjectKeys.cacheControl(ObjectKeys.latest("client")));
+        assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL,
+                ObjectKeys.cacheControl(ObjectKeys.signature("client", "2.9.0")));
         assertNull(ObjectKeys.cacheControl("state/current.json"),
                 "an object of a kind whose caching was not decided is not called immutable");
     }

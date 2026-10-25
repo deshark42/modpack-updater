@@ -28,6 +28,8 @@ public final class Init {
               "prefix": "",
               "path_style": false,
               "concurrency": 8,
+              "signing_private_key": ".modpack-updater/keys/release-private.pem",
+              "trusted_public_key": ".modpack-updater/keys/release-public.pem",
               "access_key": "",
               "secret_key": ""
             }

@@ -22,6 +22,7 @@ import io.github.deshark42.modpackupdater.model.SafePath;
 import io.github.deshark42.modpackupdater.s3.ObjectReader;
 import io.github.deshark42.modpackupdater.s3.S3ReadStore;
 import io.github.deshark42.modpackupdater.s3.S3Store;
+import io.github.deshark42.modpackupdater.security.ReleaseSigning;
 import io.github.deshark42.modpackupdater.util.Parallel;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
@@ -35,6 +36,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.PublicKey;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -80,6 +82,7 @@ public final class Update {
         }
         long startedAt = System.nanoTime();
         Config config = Workspace.load(workspace);
+        PublicKey trustedKey = ReleaseSigning.publicKey(config.publicKeyFile(workspace));
         ObjectReader store = config.readEndpoint() == null ? new S3Store(config) : new S3ReadStore(config);
 
         // an explicit release id bypasses latest.json entirely, so a pinned update works even while
@@ -112,8 +115,14 @@ public final class Update {
         LOG.info("updating tag {} to release {}", tag, targetId);
 
         String targetKey = ObjectKeys.release(tag, targetId);
-        Manifest target = Manifest.parse(new String(store.getBytes(targetKey), StandardCharsets.UTF_8),
-                store.key(targetKey));
+        byte[] manifestBytes = store.getBytes(targetKey);
+        byte[] signature = store.getBytes(ObjectKeys.signature(tag, targetId));
+        ReleaseSigning.verify(manifestBytes, signature, trustedKey);
+        Manifest target = Manifest.parse(new String(manifestBytes, StandardCharsets.UTF_8), store.key(targetKey));
+        if (!tag.equals(target.tag()) || !targetId.equals(target.releaseId())) {
+            throw new UserError("signed manifest identity does not match requested tag " + tag + " release " + targetId);
+        }
+        LOG.info("verified the release signature for tag {} release {}", tag, targetId);
         Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
         Plan plan = Plan.between(local, target);
         if (applied == null) {

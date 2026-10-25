@@ -8,7 +8,7 @@ Status: implemented
 
 ## 决策
 
-三份文件：release 清单（每个 release 一份，写完不变）、latest（每个 tag 一份，唯一可覆写）、config.json（两端各一份）。发布写入顺序与 blob/、index/ 内部布局见[对象存储布局](2026-10-13-object-storage-layout.md)。
+三种 JSON 文件：release 清单（每个 release 一份，写完不变）、latest（每个 tag 一份，唯一可覆写）、config.json（两端各一份）；release 清单还配有强制验证的独立签名，见[发布清单签名](../feature/2026-10-25-ed25519-release-signatures.md)。发布写入顺序与 blob/、index/ 内部布局见[对象存储布局](2026-10-13-object-storage-layout.md)。
 
 **release 清单** metadata/<tag>/releases/<release_id>.json
 
@@ -31,9 +31,9 @@ Status: implemented
 - files 的值是 {hash, size, index_id}：hash 是整文件 sha256；index_id 是块表（chunk table，桶里存于 index/ 下）的 id；哈希算法由 hash_algorithm 声明（当前只有 sha256）；size 是整文件大小：下载前先用它预筛目标路径上的既有文件，大小不符即判为内容不同，不必读文件；拼装完成后再与整文件哈希一起校验。分块与块表的来源见[按内容定义分块传输发布内容](2026-10-22-content-defined-chunked-transfer.md)。
 - 清单不记块与块表的路径：路径由 index_id 与块哈希推导，所以调整 blob/、index/ 内部布局不必重写任何清单。
 - 只记文件：空目录、权限位、符号链接都不进清单。
-- published_at 只作信息，不参与任何判断；tag 与 release_id 是冗余记录，只为清单被单独取出时仍能自证身份。
+- published_at 只作信息，不参与任何判断；tag 与 release_id 在验签后必须与请求身份一致，防止把其他 tag 或版本的有效清单替换进来，认证约束由[发布清单签名](../feature/2026-10-25-ed25519-release-signatures.md)持有。
 - version 是格式版本：清单是 2，latest 与订阅者的 current.json 仍带各自的 version 1。
-- release 清单以 gzip 存放，对象上声明 Content-Encoding: gzip；latest.json 只有几十字节，保持明文。订阅者按响应头解压，没有该头的旧清单按明文读，所以发布端升级不影响已有发布。
+- release 清单以 gzip 存放，对象上声明 Content-Encoding: gzip；latest.json 只有几十字节，保持明文。订阅者按响应头解压，没有该头的对象按明文读；两种传输形式都必须通过发布验签，未签名的历史发布需要以新 id 重新发布。
 
 **latest** metadata/<tag>/latest.json
 
@@ -54,14 +54,17 @@ Status: implemented
   "prefix": "gtnh/",
   "path_style": true,
   "concurrency": 8,
+  "signing_private_key": ".modpack-updater/keys/release-private.pem",
+  "trusted_public_key": ".modpack-updater/keys/release-public.pem",
   "access_key": "…",
   "secret_key": "…"
 }
 ```
 
-- init 写出的模板就是这组键，密钥可以留空，公开桶即整段省掉密钥、工具以匿名方式读取；私有桶才需要。
+- init 写出的模板就是这组键，S3 访问密钥可以留空，公开桶可省掉 access_key 与 secret_key、工具以匿名方式读取；发布私钥与可信公钥仍按各自角色必需。
 - read_endpoint 可选，只用于读侧：订阅者读取对象时的 CDN 地址，对象键直接接在它后面、不插入 bucket。缺失或空串表示直连对象存储；写与发布端始终走 endpoint。见[经 CDN 读取对象存储](../../implemented/architecture/2026-10-25-cdn-read-endpoint.md)。
-- 连接信息与密钥只从 config.json 读取，工具不看环境变量：少一条取值路径，少一处需要解释的行为。
+- 连接信息与 S3 访问密钥只从 config.json 读取，工具不看环境变量：少一条取值路径，少一处需要解释的行为。
+- `signing_private_key` 与 `trusted_public_key` 配置本地 PEM 文件路径，不是文件内容或下载 URL；缺失时补上上例的默认路径，但不自动生成或下载密钥。发布私钥和订阅者公钥的角色、位置约束及升级方式见[发布清单签名](../feature/2026-10-25-ed25519-release-signatures.md)。
 - path_style 给 MinIO 与自建端点用，AWS 可省略。
 - prefix 可选，默认空。tag 不进 config，由命令参数给出。
 - concurrency 是同时在传的块与块表的数量，默认 8，取值 1–64：块只有几十 KiB，耗时以请求往返为主，4 个并发等不满上行带宽。
@@ -85,8 +88,8 @@ Status: implemented
 - 内容不变的同一份发布内容（同一份 base/ 与 overlay/）用两个 release_id 各发布一次，两份清单除 release_id 与 published_at 外逐字节一致：序列化确定，不随目录遍历顺序漂移。
 - 订阅者只读 latest.json 就能判断本地是否落后；落后时用本地清单与目标清单相减，不读取任何块即可列出新增、删除、修改三类路径。
 - 遇到不认识的 version、越界的 tag 或 release_id，两端都在动手之前报错退出。
-- 公开桶（config.json 里没有密钥）下订阅者能完成更新；私有桶下 config.json 里的密钥足以完成读写。
+- 公开桶无需 S3 访问密钥，私有桶靠 config.json 里的访问密钥完成存储读写；两者都要求发布者使用私钥签署、订阅者使用可信公钥验证。
 - 清单整体进内存：十万级文件的整合包会明显吃内存与解析时间；届时换流式解析即可，格式不必变。
-- tag、release_id、published_at 是冗余记录，容易被当成判据；实现上不允许任何逻辑依赖它们。
+- published_at 不用于选择新旧版本；签署的 tag 和 release_id 则参与请求身份绑定，不能只凭签名有效就接受其他身份的清单。
 - 路径与标识的字符集若不严格执行，<tag>/current.json 这类拼接会被路径穿越，所以校验要在两端各自的入口做一次。
-- 密钥只能写进 config.json，就会随工作区一起被复制、备份、外发；这是为了"只从一处取值"而接受的代价，公开桶不需要密钥，私有桶的使用者要自己看住这个文件。
+- S3 访问密钥只能写进 config.json，就会随工作区一起被复制、备份、外发；这是为了"只从一处取值"而接受的代价，公开桶不需要 S3 访问密钥，私有桶的使用者要自己看住这个文件。

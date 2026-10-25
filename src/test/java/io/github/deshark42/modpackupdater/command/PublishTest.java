@@ -176,7 +176,7 @@ class PublishTest {
                     "chunk tables go before the manifest");
             assertTrue(requests.indexOf(releasePut("2.9.0")) < requests.indexOf(latestPut()),
                     "the manifest goes before the latest pointer");
-            assertEquals(6, s3.objectCount(), "2 chunks, 2 chunk tables, the manifest and the pointer");
+            assertEquals(7, s3.objectCount(), "2 chunks, 2 chunk tables, manifest, signature and pointer");
 
             String release = s3.text(releaseKey("2.9.0"));
             assertEquals("2", Json.asObject(Json.parse(release), "release").get("version").toString());
@@ -215,8 +215,10 @@ class PublishTest {
             assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL, sent.get(chunk), sent.toString());
             assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL, sent.get(table), sent.toString());
             assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL, sent.get(release), sent.toString());
+            assertEquals(ObjectKeys.IMMUTABLE_CACHE_CONTROL,
+                    sent.get(TestWorkspace.bucketPath(ObjectKeys.signature(TAG, "2.9.0"))), sent.toString());
             assertEquals(ObjectKeys.NO_STORE_CACHE_CONTROL, sent.get(latestKey()), sent.toString());
-            assertEquals(4, sent.size(), sent.toString());
+            assertEquals(5, sent.size(), sent.toString());
         }
     }
 
@@ -280,7 +282,7 @@ class PublishTest {
             assertEquals(2, requests.stream().filter(request -> request.startsWith("PUT " + indexesPrefix())).count(),
                     "one chunk table per distinct content: " + requests);
             assertNotNull(s3.object(chunkKey(chunkOf("A"))));
-            assertEquals(7, s3.objectCount(), "2 chunks, 2 chunk tables, 2 manifests and the pointer");
+            assertEquals(9, s3.objectCount(), "2 chunks, 2 chunk tables, 2 manifests, 2 signatures and the pointer");
         }
     }
 

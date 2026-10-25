@@ -19,10 +19,12 @@ import io.github.deshark42.modpackupdater.model.RemoveRules;
 import io.github.deshark42.modpackupdater.model.SafePath;
 import io.github.deshark42.modpackupdater.s3.BlobCache;
 import io.github.deshark42.modpackupdater.s3.S3Store;
+import io.github.deshark42.modpackupdater.security.ReleaseSigning;
 import io.github.deshark42.modpackupdater.util.Parallel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.PrivateKey;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -40,8 +42,8 @@ import org.slf4j.LoggerFactory;
 /**
  * Publish one complete release of a tag: merge the tag's base tree with its overlay, drop what
  * remove.txt takes out of base, split the files into content-defined chunks, upload the chunks and
- * chunk tables the bucket does not have yet, then write the release manifest and finally the latest
- * pointer.
+ * chunk tables the bucket does not have yet, then write the release manifest, its Ed25519 signature,
+ * and finally the latest pointer.
  *
  * <p>The console shows the milestones of the run; the transcript keeps the per-file detail as well.
  */
@@ -123,6 +125,7 @@ public final class Publish {
         String latestKey = ObjectKeys.latest(tag);
 
         Config config = Workspace.load(workspace);
+        PrivateKey signingKey = ReleaseSigning.privateKey(config.privateKeyFile(workspace));
         S3Store store = new S3Store(config);
         if (store.exists(releaseKey)) {
             throw new UserError("release " + releaseId + " of tag " + tag
@@ -144,6 +147,11 @@ public final class Publish {
         });
         LOG.info("split {} into {}", Text.count(entries.size(), "file"),
                 Text.count(placements.size(), "chunk"));
+
+        Manifest manifest = new Manifest(tag, releaseId, Instant.now().truncatedTo(ChronoUnit.SECONDS),
+                Manifest.SHA256, new TreeMap<>(entries));
+        byte[] manifestBytes = manifest.toJson().getBytes(StandardCharsets.UTF_8);
+        byte[] signature = ReleaseSigning.sign(manifestBytes, signingKey);
 
         // Ask which chunks and chunk tables are missing before uploading, so progress can count
         // them. Objects the cache already knows cost no request at all.
@@ -214,9 +222,11 @@ public final class Publish {
                     Sizes.rate(tableBytes, tableNanos));
         }
 
-        Manifest manifest = new Manifest(tag, releaseId, Instant.now().truncatedTo(ChronoUnit.SECONDS),
-                Manifest.SHA256, new TreeMap<>(entries));
-        LOG.info("wrote {}: {}", releaseKey, writeGzip(store, releaseKey, manifest.toJson()));
+        int compressed = store.putGzip(releaseKey, manifestBytes);
+        LOG.info("wrote {}: {} -> {}", releaseKey, Sizes.human(manifestBytes.length), Sizes.human(compressed));
+        String signatureKey = ObjectKeys.signature(tag, releaseId);
+        store.putBytes(signatureKey, signature);
+        LOG.info("wrote {}: {}", signatureKey, Sizes.human(signature.length));
         LOG.info("wrote {}: {}", latestKey, write(store, latestKey, new Pointer(releaseId).toJson()));
         LOG.info(uploadedSummary(uploading.size(), skipped, uploadedBytes.get(), uploadNanos, toUpload));
         LOG.info("published release {} of tag {} as the latest in {}", releaseId, tag,
@@ -247,13 +257,6 @@ public final class Publish {
         byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
         store.putBytes(key, bytes);
         return Sizes.human(bytes.length);
-    }
-
-    /** A release manifest is worth compressing; the latest pointer is a few dozen bytes. */
-    private static String writeGzip(S3Store store, String key, String json) {
-        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
-        int stored = store.putGzip(key, bytes);
-        return Sizes.human(bytes.length) + " -> " + Sizes.human(stored);
     }
 
     /** Where one chunk's bytes can be read back from, and the path it belongs to in the release. */

@@ -9,7 +9,7 @@ public final class ObjectKeys {
 
     /**
      * The Cache-Control of an object that is only ever added, never rewritten or deleted: content
-     * addressed blobs and indexes, and the manifest of the release its id names.
+     * addressed blobs and indexes, and each release's manifest and detached signature.
      */
     public static final String IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
@@ -40,13 +40,18 @@ public final class ObjectKeys {
         return METADATA + "/" + Names.requireTag(tag) + "/latest.json";
     }
 
+    public static String signature(String tag, String releaseId) {
+        return release(tag, releaseId) + ".sig";
+    }
+
     /**
      * How long caches may keep the object under this key, or null for a kind whose caching has not
      * been decided: no kind is immutable by default, so a new one has to say so here.
      */
     public static String cacheControl(String key) {
         if (key.startsWith(BLOB + "/") || key.startsWith(INDEX + "/")
-                || (key.startsWith(METADATA + "/") && key.contains("/releases/") && key.endsWith(".json"))) {
+                || (key.startsWith(METADATA + "/") && key.contains("/releases/")
+                && (key.endsWith(".json") || key.endsWith(".json.sig")))) {
             return IMMUTABLE_CACHE_CONTROL;
         }
         if (key.startsWith(METADATA + "/") && key.endsWith("/latest.json")) {

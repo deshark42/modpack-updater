@@ -20,6 +20,7 @@ Status: implemented
 ├── mmc-pack.json
 ├── .modpack-updater/
 │   ├── config.json              # 与发布者共用同一份字段定义
+│   ├── keys/release-public.pem  # 通过可信渠道安装的发布者公钥，无需私钥
 │   ├── logs/                    # 每次 update 的运行日志，按天一份
 │   └── <tag>/
 │       ├── current.json         # 当前版本标识
@@ -31,7 +32,7 @@ Status: implemented
 └── modpack-updater-<version>.jar
 ```
 
-- 订阅者只需要 config.json，可以用 modpack-updater init（不带 --tag）生成；它同样只写缺失的部分，不覆盖已有内容。
+- 订阅者需要 config.json 和独立安装的可信发布公钥；config 可用 modpack-updater init（不带 --tag）生成，它只写缺失的部分，不覆盖已有内容。公钥安装与强制验签见[发布清单签名](../feature/2026-10-25-ed25519-release-signatures.md)。
 - 每次 update 都在 .modpack-updater/logs/ 下留一份运行日志：按天一个文件，名字带命令、tag 与日期（例如 update-client-2026-10-14.log），同一天的多次运行追加进同一份；已经是最新或中途失败的 update 也留文件。终端只显示 INFO 及以上的里程碑，日志文件还记下 DEBUG 级的逐文件过程，比终端显示的多，但只在终端上原地重画的下载进度条不进日志。
 - config.json 与发布者共用同一份字段定义，tag 不进 config。读取走哪条连接由 config.json 的 read_endpoint 决定：缺失或空串时直连对象存储，配置后经 CDN 匿名读（写侧与发布端的存在性检查仍走 endpoint）；见[经 CDN 读取对象存储](../../implemented/architecture/2026-10-25-cdn-read-endpoint.md)。
 - 被追踪的是整棵实例目录，不只是 .minecraft/：清单路径相对工作区根解析。按 MultiMC 规范打包的整合包通常在 .minecraft/ 之外还带 libraries/、patches/、instance.cfg、mmc-pack.json 与图标等实例级文件，它们和 .minecraft/ 内的文件一样可能出现在清单里。
@@ -43,7 +44,7 @@ Status: implemented
 
 更新流程：
 
-1. 取该 tag 的 latest.json（或 `--id` 指定的 release）与本地当前版本比对，不同则取新的 release 清单。
+1. 加载本地可信公钥，取该 tag 的 latest.json（或 `--id` 指定的 release）与本地当前版本比对；不同则取目标清单原字节及独立签名，先验签再解析，并验证清单身份与请求一致。
 2. 比较本地清单与目标清单，得出新增、删除、修改三类差异。这一步只比较两份清单，不检查本地文件：只有清单真的变化时才处理文件，玩家自定义的内容与游戏运行时自行改写的文件不会因为本地内容不同而被纳入处理。新增与修改的路径进入"要下载"集合，删除的路径进入"要删除"集合。
 3. 下载阶段逐条检查"要下载"集合的目标路径：路径不存在就直接下载块并拼装；路径存在则整文件 sha256 与目标清单一致就跳过（不取块表、不下载），不一致就先把现有内容切块供复用，再只下载缺失块、按块表顺序拼装。切块来源是目标路径的现有文件、本次删除路径的现有文件，以及 <tag>/backup/<目标版本>/ 里上一次离开目标版本时留下的副本；后两者按各自的目标块表参数切分，没有目标块表的路径（删除的、按旧路径寻址的保留副本）用本轮目标块表出现过的参数切分。读不到的文件视为不一致，退化为全量下载。下载的块落在 .modpack-updater/tmp/blob，拼装出的新文件落在 .modpack-updater/tmp/file，整文件 sha256 校验通过才算拼装成功。块如何从旧副本复用见[按内容定义分块传输发布内容](2026-10-22-content-defined-chunked-transfer.md)。
 4. 应用：先删除"要删除"集合中的路径（移入 <tag>/backup/<旧版本标识>/）；再放"要下载"集合中的新文件，目标路径已有内容则先移入同一备份目录，再放入拼装好的文件。移动发生在所有块都已就位之后，因此下载或拼装失败不会提前搬走旧文件。
