@@ -1,6 +1,7 @@
 package io.github.deshark42.modpackupdater.model;
 
 import io.github.deshark42.modpackupdater.UserError;
+import io.github.deshark42.modpackupdater.fs.PathGuard;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 
@@ -48,6 +49,6 @@ public final class SafePath {
     }
 
     public static Path resolve(Path root, String relative) {
-        return root.resolve(require(relative)).normalize();
+        return PathGuard.require(root, root.resolve(require(relative)).normalize());
     }
 }

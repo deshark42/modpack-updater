@@ -1,5 +1,6 @@
 package io.github.deshark42.modpackupdater.log;
 
+import io.github.deshark42.modpackupdater.fs.PathGuard;
 import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -104,10 +105,11 @@ public final class Logging {
     /** Opens the day's transcript, pruning the ones that have aged out first. */
     private static Run.Transcript open(Path workspace, String name, Clock clock) {
         Path directory = Layout.logsDir(workspace);
+        Path file = PathGuard.require(workspace,
+                directory.resolve(name + "-" + LocalDate.now(clock) + ".log"));
         try {
             Files.createDirectories(directory);
-            prune(directory, clock);
-            Path file = directory.resolve(name + "-" + LocalDate.now(clock) + ".log");
+            prune(workspace, directory, clock);
             return new Run.Transcript(file, Files.newBufferedWriter(file, StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND));
         } catch (IOException e) {
@@ -116,13 +118,13 @@ public final class Logging {
     }
 
     /** Removes the transcripts older than the retention window; a file that cannot be read is kept. */
-    private static void prune(Path directory, Clock clock) {
+    private static void prune(Path workspace, Path directory, Clock clock) {
         long cutoff = clock.millis() - TimeUnit.DAYS.toMillis(KEEP_DAYS);
         try (Stream<Path> files = Files.list(directory)) {
             for (Path file : files.toList()) {
                 try {
                     if (file.getFileName().toString().endsWith(".log")
-                            && Files.getLastModifiedTime(file).toMillis() < cutoff) {
+                            && Files.getLastModifiedTime(PathGuard.require(workspace, file)).toMillis() < cutoff) {
                         Files.deleteIfExists(file);
                     }
                 } catch (IOException e) {

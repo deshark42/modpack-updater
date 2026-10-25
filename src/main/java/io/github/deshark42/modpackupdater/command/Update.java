@@ -3,6 +3,7 @@ package io.github.deshark42.modpackupdater.command;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
 import io.github.deshark42.modpackupdater.fs.Chunker;
+import io.github.deshark42.modpackupdater.fs.PathGuard;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.fs.Sizes;
 import io.github.deshark42.modpackupdater.log.Logging;
@@ -113,6 +114,7 @@ public final class Update {
         String targetKey = ObjectKeys.release(tag, targetId);
         Manifest target = Manifest.parse(new String(store.getBytes(targetKey), StandardCharsets.UTF_8),
                 store.key(targetKey));
+        Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
         Plan plan = Plan.between(local, target);
         if (applied == null) {
             LOG.info("tag {} has no release applied yet, so {} is the first one", tag, target.releaseId());
@@ -136,6 +138,16 @@ public final class Update {
                 ? Layout.initialBackupDir(workspace, tag)
                 : Layout.backupDir(workspace, tag, applied);
         List<String> downloads = plan.downloads();
+        // Validate every affected source and backup destination before touching any payload file.
+        // A late path in the plan must not fail only after earlier files have already moved.
+        for (String path : downloads) {
+            SafePath.resolve(workspace, path);
+            SafePath.resolve(backup, path);
+        }
+        for (String path : plan.deleted()) {
+            SafePath.resolve(workspace, path);
+            SafePath.resolve(backup, path);
+        }
 
         int moved = 0;
         int fetchedFiles = 0;
@@ -174,8 +186,8 @@ public final class Update {
                 }
                 LOG.debug("fetching {} ({})", Text.count(toFetch.size(), "file"),
                         Sizes.human(neededBytes));
-                deleteTree(blobDir);
-                deleteTree(fileDir);
+                deleteTree(workspace, blobDir);
+                deleteTree(workspace, fileDir);
                 try {
                     Map<String, ChunkTable> tables = chunkTables(store, target, toFetch, config.concurrency());
                     Reuse reuse = localChunks(workspace, backup, plan, toFetch, tag, targetId, target, tables,
@@ -241,11 +253,10 @@ public final class Update {
                         Text.relativeTo(workspace, backup));
             }
         } finally {
-            deleteTree(blobDir);
-            deleteTree(fileDir);
+            deleteTree(workspace, blobDir);
+            deleteTree(workspace, fileDir);
         }
 
-        Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
         target.write(releaseFile);
         new Pointer(target.releaseId()).write(currentFile);
         LOG.info("wrote {}", Text.relativeTo(workspace, releaseFile));
@@ -367,7 +378,8 @@ public final class Update {
         Path kept = Layout.backupDir(workspace, tag, targetId);
         List<Path> keptCopies;
         try (var walk = Files.walk(kept)) {
-            keptCopies = walk.filter(Files::isRegularFile).toList();
+            keptCopies = walk.peek(path -> PathGuard.require(workspace, path))
+                    .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).toList();
         } catch (IOException e) {
             return new Reuse(existing, read.get()); // a kept directory that cannot be listed only costs reuse
         }
@@ -529,12 +541,15 @@ public final class Update {
         return true;
     }
 
-    private static void deleteTree(Path dir) {
-        if (dir == null || !Files.exists(dir)) {
+    private static void deleteTree(Path workspace, Path dir) {
+        PathGuard.require(workspace, dir);
+        if (!Files.exists(dir, LinkOption.NOFOLLOW_LINKS)) {
             return;
         }
         try (var walk = Files.walk(dir)) {
-            for (Path path : walk.sorted(Comparator.reverseOrder()).toList()) {
+            for (Path path : walk.peek(file -> PathGuard.require(workspace, file))
+                    .sorted(Comparator.reverseOrder()).toList()) {
+                PathGuard.require(workspace, path);
                 deleteQuietly(path);
             }
         } catch (IOException e) {

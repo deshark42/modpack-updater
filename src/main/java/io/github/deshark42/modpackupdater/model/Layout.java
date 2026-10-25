@@ -1,5 +1,6 @@
 package io.github.deshark42.modpackupdater.model;
 
+import io.github.deshark42.modpackupdater.fs.PathGuard;
 import java.nio.file.Path;
 
 /** Every path the tool knows about, in one place: the layout the notes describe. */
@@ -26,61 +27,70 @@ public final class Layout {
     private Layout() {
     }
 
+    private static Path checked(Path workspaceRoot, String... parts) {
+        Path path = workspaceRoot;
+        for (String part : parts) {
+            path = path.resolve(part);
+        }
+        return PathGuard.require(workspaceRoot, path);
+    }
+
     public static Path stateDir(Path workspaceRoot) {
-        return workspaceRoot.resolve(STATE_DIR);
+        return checked(workspaceRoot, STATE_DIR);
     }
 
     public static Path configFile(Path workspaceRoot) {
-        return stateDir(workspaceRoot).resolve(CONFIG);
+        return checked(workspaceRoot, STATE_DIR, CONFIG);
     }
 
     public static Path logsDir(Path workspaceRoot) {
-        return stateDir(workspaceRoot).resolve(LOGS);
+        return checked(workspaceRoot, STATE_DIR, LOGS);
     }
 
     /** Where an update stages what it downloads before putting it in place. */
     public static Path tempDir(Path workspaceRoot) {
-        return stateDir(workspaceRoot).resolve(TMP);
+        return checked(workspaceRoot, STATE_DIR, TMP);
     }
 
     /** The downloaded chunks of one run; content already on disk is referenced, never copied here. */
     public static Path blobTempDir(Path workspaceRoot) {
-        return tempDir(workspaceRoot).resolve(BLOB);
+        return checked(workspaceRoot, STATE_DIR, TMP, BLOB);
     }
 
     /** The files one run assembled and is about to put in place. */
     public static Path fileTempDir(Path workspaceRoot) {
-        return tempDir(workspaceRoot).resolve(FILE);
+        return checked(workspaceRoot, STATE_DIR, TMP, FILE);
     }
 
     /** The append-only record of blobs this workspace has confirmed in the bucket. */
     public static Path knownBlobsFile(Path workspaceRoot) {
-        return stateDir(workspaceRoot).resolve(KNOWN_BLOBS);
+        return checked(workspaceRoot, STATE_DIR, KNOWN_BLOBS);
     }
 
     public static Path tagDir(Path workspaceRoot, String tag) {
-        return stateDir(workspaceRoot).resolve(Names.requireTag(tag));
+        return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag));
     }
 
     public static Path currentFile(Path workspaceRoot, String tag) {
-        return tagDir(workspaceRoot, tag).resolve(CURRENT);
+        return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), CURRENT);
     }
 
     public static Path releasesDir(Path workspaceRoot, String tag) {
-        return tagDir(workspaceRoot, tag).resolve(RELEASES);
+        return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), RELEASES);
     }
 
     public static Path releaseFile(Path workspaceRoot, String tag, String releaseId) {
-        return releasesDir(workspaceRoot, tag).resolve(Names.requireReleaseId(releaseId) + ".json");
+        return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), RELEASES,
+                Names.requireReleaseId(releaseId) + ".json");
     }
 
     /** The directory every release's moved-away files are kept under. */
     public static Path backupsDir(Path workspaceRoot, String tag) {
-        return tagDir(workspaceRoot, tag).resolve(BACKUP);
+        return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), BACKUP);
     }
 
     public static Path backupDir(Path workspaceRoot, String tag, String releaseId) {
-        return backupsDir(workspaceRoot, tag).resolve(Names.requireReleaseId(releaseId));
+        return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), BACKUP, Names.requireReleaseId(releaseId));
     }
 
     /**
@@ -88,23 +98,23 @@ public final class Layout {
      * release id may start with a dot, so this cannot collide with one.
      */
     public static Path initialBackupDir(Path workspaceRoot, String tag) {
-        return backupsDir(workspaceRoot, tag).resolve(INITIAL);
+        return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), BACKUP, INITIAL);
     }
 
     /** The directory a tag is published from: base/, overlay/ and remove.txt live side by side. */
     public static Path tagRoot(Path workspaceRoot, String tag) {
-        return workspaceRoot.resolve(Names.requireTag(tag));
+        return checked(workspaceRoot, Names.requireTag(tag));
     }
 
     public static Path baseDir(Path workspaceRoot, String tag) {
-        return tagRoot(workspaceRoot, tag).resolve(BASE);
+        return checked(workspaceRoot, Names.requireTag(tag), BASE);
     }
 
     public static Path overlayDir(Path workspaceRoot, String tag) {
-        return tagRoot(workspaceRoot, tag).resolve(OVERLAY);
+        return checked(workspaceRoot, Names.requireTag(tag), OVERLAY);
     }
 
     public static Path removeFile(Path workspaceRoot, String tag) {
-        return tagRoot(workspaceRoot, tag).resolve(REMOVE);
+        return checked(workspaceRoot, Names.requireTag(tag), REMOVE);
     }
 }

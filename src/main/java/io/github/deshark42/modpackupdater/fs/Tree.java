@@ -24,8 +24,15 @@ public final class Tree {
         try {
             Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
                 @Override
+                public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attrs) {
+                    PathGuard.require(root, directory);
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                     if (attrs.isRegularFile()) {
+                        PathGuard.require(root, file);
                         files.put(relative(root, file), attrs.size());
                     }
                     return FileVisitResult.CONTINUE;

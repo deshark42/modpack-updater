@@ -28,14 +28,22 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class UpdateTest {
 
@@ -219,6 +227,224 @@ class UpdateTest {
         ChunkTable table = Chunker.split(Layout.baseDir(publisher, tag).resolve(relative), Chunking.DEFAULT,
                 cuts::add).table();
         return new ChunkTableSplit(table, cuts);
+    }
+
+    /** Windows junctions need no symbolic-link privilege; both are forbidden below a workspace. */
+    private static void directoryLink(Path link, Path target) throws Exception {
+        Files.createDirectories(link.getParent());
+        if (System.getProperty("os.name").startsWith("Windows")) {
+            Process process = new ProcessBuilder("cmd.exe", "/c", "mklink", "/J", link.toString(), target.toString())
+                    .redirectErrorStream(true).start();
+            try {
+                assertTrue(process.waitFor(10, TimeUnit.SECONDS), "junction creation timed out");
+                assertEquals(0, process.exitValue(), new String(process.getInputStream().readAllBytes(),
+                        StandardCharsets.UTF_8));
+            } finally {
+                process.destroyForcibly();
+            }
+        } else {
+            Files.createSymbolicLink(link, target);
+        }
+    }
+
+    @ParameterizedTest(name = "a linked directory cannot be used to {0} a payload file")
+    @ValueSource(strings = {"add", "replace", "delete"})
+    void refusesLinkedPayloadDirectoriesBeforeApplyingAnyPath(String action, @TempDir Path root) throws Exception {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            Map<String, byte[]> before = new HashMap<>();
+            before.put("config/options.cfg", TestFiles.bytes("old config"));
+            if (!action.equals("add")) {
+                before.put("mods/a.jar", TestFiles.bytes("old mod"));
+            }
+            publish(publisher, TAG, "2.9.0", before);
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, TAG, null);
+            Path outside = root.resolve("outside");
+            if (Files.exists(player.resolve("mods"))) {
+                Files.move(player.resolve("mods"), outside);
+            } else {
+                TestFiles.write(outside, "a.jar", "old mod");
+            }
+            directoryLink(player.resolve("mods"), outside);
+            Map<String, byte[]> after = new HashMap<>();
+            after.put("config/options.cfg", TestFiles.bytes("new config"));
+            if (!action.equals("delete")) {
+                after.put("mods/a.jar", TestFiles.bytes("new mod"));
+            }
+            publish(publisher, TAG, "2.9.1", after);
+            int requests = s3.requests().size();
+
+            UserError error = assertThrows(UserError.class, () -> update(player, TAG, null));
+
+            assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
+            assertEquals("old mod", Files.readString(outside.resolve("a.jar")));
+            assertEquals("old config", Files.readString(player.resolve("config/options.cfg")),
+                    "a safe path earlier in the plan is not applied before the unsafe path is found");
+            assertEquals("2.9.0", applied(player, TAG));
+            assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
+            assertFalse(Files.exists(Layout.releaseFile(player, TAG, "2.9.1")));
+            assertEquals(List.of("GET " + latestKey(TAG), "GET " + releaseKey(TAG, "2.9.1")),
+                    s3.requests().subList(requests, s3.requests().size()));
+            assertNothingStaged(player);
+        }
+    }
+
+    @ParameterizedTest(name = "state directory {0} cannot redirect update IO")
+    @ValueSource(strings = {"logs", "tmp", "tmp/blob", "tmp/file", "tmp/blob/nested",
+            "client/releases", "client/backup/.initial", "client/backup/.initial/mods"})
+    void refusesLinkedStateDirectoriesWithoutChangingExternalFiles(String relative, @TempDir Path root)
+            throws Exception {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods/a.jar", TestFiles.bytes("new mod")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            Config.fillMissing(player);
+            String config = Files.readString(Layout.configFile(player));
+            Path outside = root.resolve("outside");
+            TestFiles.write(outside, "sentinel", "external");
+            directoryLink(player.resolve(Layout.STATE_DIR).resolve(relative), outside);
+            int requests = s3.requests().size();
+
+            UserError error = assertThrows(UserError.class, () -> update(player, TAG, null));
+
+            assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
+            assertEquals("external", Files.readString(outside.resolve("sentinel")));
+            try (var entries = Files.list(outside)) {
+                assertEquals(List.of("sentinel"), entries.map(path -> path.getFileName().toString()).toList());
+            }
+            assertEquals(config, Files.readString(Layout.configFile(player)));
+            assertFalse(Files.exists(player.resolve("mods/a.jar")));
+            assertFalse(Files.exists(player.resolve(Layout.STATE_DIR).resolve(TAG).resolve(Layout.CURRENT)));
+            assertTrue(s3.requests().subList(requests, s3.requests().size()).stream()
+                    .noneMatch(request -> request.startsWith("GET " + TestWorkspace.bucketPath(ObjectKeys.BLOB + "/"))),
+                    "unsafe state is rejected before chunks are downloaded");
+        }
+    }
+
+    @Test
+    void refusesALinkedStateRootBeforeOpeningALog(@TempDir Path root) throws Exception {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            Path state = Layout.stateDir(player);
+            Path outside = root.resolve("outside");
+            Files.move(state, outside);
+            String config = Files.readString(outside.resolve(Layout.CONFIG));
+            directoryLink(state, outside);
+
+            UserError error = assertThrows(UserError.class, () -> update(player, TAG, null));
+
+            assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
+            assertEquals(config, Files.readString(outside.resolve(Layout.CONFIG)));
+            assertFalse(Files.exists(outside.resolve(Layout.LOGS)));
+            assertFalse(Files.exists(outside.resolve(TAG)));
+            assertEquals(List.of(), s3.requests());
+        }
+    }
+
+    @Test
+    void refusesLinksInsideKeptBackupsBeforeReusingTheirContents(@TempDir Path root) throws Exception {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods/a.jar", TestFiles.bytes("old mod")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, TAG, null);
+            publish(publisher, TAG, "2.9.1", Map.of("mods/a.jar", TestFiles.bytes("new mod")));
+            Path outside = root.resolve("outside");
+            TestFiles.write(outside, "a.jar", "external");
+            directoryLink(Layout.backupDir(player, TAG, "2.9.1").resolve("mods"), outside);
+            int requests = s3.requests().size();
+
+            UserError error = assertThrows(UserError.class, () -> update(player, TAG, null));
+
+            assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
+            assertEquals("external", Files.readString(outside.resolve("a.jar")));
+            assertEquals("old mod", Files.readString(player.resolve("mods/a.jar")));
+            assertEquals("2.9.0", applied(player, TAG));
+            assertFalse(Files.exists(Layout.backupDir(player, TAG, "2.9.0")));
+            assertTrue(s3.requests().subList(requests, s3.requests().size()).stream()
+                    .noneMatch(request -> request.startsWith("GET " + TestWorkspace.bucketPath(ObjectKeys.BLOB + "/"))));
+            assertNothingStaged(player);
+        }
+    }
+
+    @Test
+    void replacesAnOrdinaryFileWithADirectoryOfTrackedFiles(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods", TestFiles.bytes("old file")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, TAG, null);
+            publish(publisher, TAG, "2.9.1", Map.of("mods/a.jar", TestFiles.bytes("new mod")));
+
+            update(player, TAG, null);
+
+            assertEquals("new mod", Files.readString(player.resolve("mods/a.jar")));
+            assertEquals("old file", Files.readString(Layout.backupDir(player, TAG, "2.9.0").resolve("mods")));
+            assertEquals("2.9.1", applied(player, TAG));
+        }
+    }
+
+    @Test
+    void refusesALinkedTranscriptBeforeAppendingToAnExternalFile(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3(); TestLogs logs = new TestLogs()) {
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            Path outside = root.resolve("external.log");
+            Files.writeString(outside, "external");
+            Clock clock = Clock.fixed(Instant.parse("2026-10-25T00:00:00Z"), ZoneOffset.UTC);
+            Path directory = Layout.logsDir(player);
+            Files.createDirectories(directory);
+            Path transcript = directory.resolve("update-" + TAG + "-" + LocalDate.now(clock) + ".log");
+            try {
+                Files.createSymbolicLink(transcript, outside);
+            } catch (UnsupportedOperationException | IOException e) {
+                assumeTrue(false, "file symbolic links require filesystem support and Windows privileges: " + e);
+            }
+
+            UserError error = assertThrows(UserError.class, () -> {
+                logs.begin(player, "update-" + TAG, clock);
+                Update.run(player, TAG, null);
+            });
+
+            assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
+            assertEquals("external", Files.readString(outside));
+            assertFalse(Files.exists(Layout.currentFile(player, TAG)));
+            assertEquals(List.of(), s3.requests());
+        }
+    }
+
+    @Test
+    void refusesALinkedConfigFileBeforeReadingOrFillingDefaults(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            Path config = Layout.configFile(player);
+            Path outside = root.resolve("external-config.json");
+            Files.move(config, outside);
+            String before = Files.readString(outside);
+            try {
+                Files.createSymbolicLink(config, outside);
+            } catch (UnsupportedOperationException | IOException e) {
+                assumeTrue(false, "file symbolic links require filesystem support and Windows privileges: " + e);
+            }
+
+            UserError error = assertThrows(UserError.class, () -> update(player, TAG, null));
+
+            assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
+            assertEquals(before, Files.readString(outside));
+            assertFalse(Files.exists(Layout.currentFile(player, TAG)));
+            assertEquals(List.of(), s3.requests());
+        }
     }
 
     @Test
