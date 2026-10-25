@@ -169,12 +169,17 @@ public final class Update {
         try {
             // The plan says what may have to change; the target paths say what still does. Hashing
             // happens before any chunk table is fetched, so a file that already matches the target
-            // costs no request beyond the two manifests.
+            // costs no request beyond the two manifests. It is also the longest stretch with no
+            // other output, so it gets the same bar the transfers use.
             Set<String> skipped = ConcurrentHashMap.newKeySet();
+            int toCheck = downloads.size();
+            AtomicInteger checked = new AtomicInteger();
+            Logging.progress("check", 0, toCheck, "file");
             Parallel.forEach(downloads, config.concurrency(), path -> {
                 if (matchesTarget(workspace, path, target.files().get(path))) {
                     skipped.add(path);
                 }
+                Logging.progress("check", checked.incrementAndGet(), toCheck, "file");
             });
             List<String> toFetch = new ArrayList<>();
             for (String path : downloads) {
