@@ -69,9 +69,16 @@ public final class Publish {
         }
         long startedAt = System.nanoTime();
         LOG.info("publishing release {} of tag {}", releaseId, tag);
-        Path base = Layout.baseDir(workspace, tag);
+        try (BaseSource source = BaseSource.open(workspace, tag)) {
+            publish(workspace, tag, releaseId, cacheMaxAgeDays, source, startedAt);
+        }
+    }
+
+    private static void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
+            BaseSource source, long startedAt) {
+        Path base = source.root();
         Path overlay = Layout.overlayDir(workspace, tag);
-        String baseName = Text.relativeTo(workspace, base);
+        String baseName = Text.relativeTo(workspace, source.input());
         Map<String, Long> baseFiles = Tree.list(base);
         LOG.info("scanned {}: {}, {}", baseName, Text.count(baseFiles.size(), "file"),
                 Sizes.human(total(baseFiles)));

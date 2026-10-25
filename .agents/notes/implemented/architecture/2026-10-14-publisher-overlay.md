@@ -21,7 +21,7 @@ publish 在扫描阶段把三者合成一份**有效清单**，其余流程（�
 
 overlay/ 与 base/ 共用同一路径空间：`overlay/.minecraft/mods/example-mod.jar` 对应的清单路径是 `.minecraft/mods/example-mod.jar`，与 base/ 下的同名路径指同一个位置。overlay/ 与 remove.txt 自身可以不存在，缺失时按空处理。
 
-overlay/ 与 base/ 生命周期无关：官方更新只替换 base/，发布者不必在每次官方更新后重做自己的改动。
+overlay/ 与 base 生命周期无关：官方更新只替换 base 目录或压缩包，发布者不必在每次官方更新后重做自己的改动。[压缩包 base 输入](../feature/2026-10-25-archive-base-input.md)只扩展 base 的读取方式，不取代本记录的合并与删除语义；压缩包展开后同样使用本记录的路径空间和规则。
 
 删除是**显式意图**，不是推断：publish 仍然不与上一次 release 的清单比较，某个路径不再发布只有两种可能——它已不在 base/ 里，或被 remove.txt 命中。
 

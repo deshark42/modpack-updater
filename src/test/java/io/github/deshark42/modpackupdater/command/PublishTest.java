@@ -1,5 +1,6 @@
 package io.github.deshark42.modpackupdater.command;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -23,18 +24,27 @@ import io.github.deshark42.modpackupdater.model.Manifest;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import io.github.deshark42.modpackupdater.model.Pointer;
 import io.github.deshark42.modpackupdater.s3.S3Store;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
+import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class PublishTest {
 
@@ -192,6 +202,111 @@ class PublishTest {
             assertEquals(Chunking.DEFAULT, stored.chunking());
             assertEquals("2.9.0", Pointer.parse(s3.text(latestKey()), "latest").releaseId());
             assertTrue(captured.outText().contains("3 files"), captured.outText());
+        }
+    }
+
+    @ParameterizedTest(name = "publishes a {0} base archive")
+    @ValueSource(strings = {"zip", "7z"})
+    void publishesAnArchiveBaseWithOverlayAndRemoveRules(String extension, @TempDir Path workspace)
+            throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            Files.createDirectories(Layout.baseDir(workspace, TAG));
+            Path archive = Layout.tagRoot(workspace, TAG).resolve("base." + extension);
+            Map<String, byte[]> archived = Map.of(
+                    "download/mods/keep.jar", TestFiles.bytes("kept from archive"),
+                    "download/mods/replace.jar", TestFiles.bytes("base copy"),
+                    "download/mods/remove.jar", TestFiles.bytes("remove me"),
+                    "download/config/restore.cfg", TestFiles.bytes("base config"),
+                    Layout.STATE_DIR + "/untrusted.json", TestFiles.bytes("untrusted state"));
+            archive(archive, archived);
+            byte[] archiveBytes = Files.readAllBytes(archive);
+            TestWorkspace.overlay(workspace, TAG, "download/mods/replace.jar", "overlay copy");
+            TestWorkspace.overlay(workspace, TAG, "download/config/restore.cfg", "restored by overlay");
+            TestWorkspace.overlay(workspace, TAG, "download/config/added.cfg", "overlay addition");
+            TestWorkspace.remove(workspace, TAG,
+                    "remove.jar\nrestore.cfg\n/" + Layout.STATE_DIR + "/\n");
+
+            publish(workspace, TAG, "2.9.0");
+
+            Manifest manifest = Manifest.parse(s3.text(releaseKey("2.9.0")), "release");
+            Map<String, byte[]> expected = new TreeMap<>(Map.of(
+                    "download/mods/keep.jar", archived.get("download/mods/keep.jar"),
+                    "download/mods/replace.jar", TestFiles.bytes("overlay copy"),
+                    "download/config/restore.cfg", TestFiles.bytes("restored by overlay"),
+                    "download/config/added.cfg", TestFiles.bytes("overlay addition")));
+            assertEquals(List.copyOf(expected.keySet()), List.copyOf(manifest.files().keySet()));
+            for (Map.Entry<String, byte[]> file : expected.entrySet()) {
+                FileEntry entry = manifest.files().get(file.getKey());
+                ChunkTable table = ChunkTable.parse(s3.text(indexKey(entry.indexId())), "chunk table");
+                ByteArrayOutputStream uploaded = new ByteArrayOutputStream();
+                for (String chunk : table.chunks()) {
+                    uploaded.write(s3.object(chunkKey(chunk)));
+                }
+                assertArrayEquals(file.getValue(), uploaded.toByteArray(), file.getKey());
+            }
+            assertEquals("2.9.0", Pointer.parse(s3.text(latestKey()), "latest").releaseId());
+            assertArrayEquals(archiveBytes, Files.readAllBytes(archive), "the publisher leaves its input intact");
+            try (var baseFiles = Files.list(Layout.baseDir(workspace, TAG))) {
+                assertEquals(0, baseFiles.count(), "the init-created directory remains empty");
+            }
+            assertEquals(List.of(), staged(workspace), "the completed publish releases its archive staging");
+        }
+    }
+
+    @Test
+    void rejectsABrokenArchiveBeforeContactingTheBucket(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            Files.createDirectories(Layout.tagRoot(workspace, TAG));
+            Path archive = Layout.tagRoot(workspace, TAG).resolve("base.zip");
+            archive(archive, Map.of("mods/a.jar", TestFiles.bytes("archive content")));
+            byte[] complete = Files.readAllBytes(archive);
+            byte[] broken = Arrays.copyOf(complete, complete.length - 10);
+            Files.write(archive, broken);
+
+            UserError error = assertThrows(UserError.class, () -> publish(workspace, TAG, "2.9.0"));
+
+            assertTrue(error.getMessage().contains("archive"), error.getMessage());
+            assertTrue(error.getMessage().contains(archive.toString()), error.getMessage());
+            assertEquals(List.of(), s3.requests(), "no upload or metadata request happens for an unreadable base");
+            assertEquals(0, s3.objectCount(), "no release, signature, pointer, chunk or table is published");
+            assertFalse(Files.exists(Layout.knownBlobsFile(workspace)));
+            assertEquals(List.of(), staged(workspace), "failed extraction leaves no staging files");
+            assertArrayEquals(broken, Files.readAllBytes(archive), "failed extraction preserves the source archive");
+        }
+    }
+
+    private static void archive(Path archive, Map<String, byte[]> files) throws IOException {
+        if (archive.toString().endsWith(".zip")) {
+            try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(archive), StandardCharsets.UTF_8)) {
+                for (Map.Entry<String, byte[]> file : new TreeMap<>(files).entrySet()) {
+                    output.putNextEntry(new ZipEntry(file.getKey()));
+                    output.write(file.getValue());
+                    output.closeEntry();
+                }
+            }
+        } else {
+            try (SevenZOutputFile output = new SevenZOutputFile(archive.toFile())) {
+                for (Map.Entry<String, byte[]> file : new TreeMap<>(files).entrySet()) {
+                    SevenZArchiveEntry entry = new SevenZArchiveEntry();
+                    entry.setName(file.getKey());
+                    entry.setSize(file.getValue().length);
+                    output.putArchiveEntry(entry);
+                    output.write(file.getValue());
+                    output.closeArchiveEntry();
+                }
+            }
+        }
+    }
+
+    private static List<Path> staged(Path workspace) throws IOException {
+        Path temp = Layout.tempDir(workspace);
+        if (!Files.exists(temp)) {
+            return List.of();
+        }
+        try (var entries = Files.list(temp)) {
+            return entries.toList();
         }
     }
 
@@ -561,7 +676,13 @@ class PublishTest {
             TestWorkspace.base(workspace, TAG, "mods/a.jar", "A");
             publish(workspace, TAG, "2.9.0");
             String latest = s3.text(latestKey());
-            TestWorkspace.base(workspace, TAG, "mods/b.jar", "B");
+            Path base = Layout.baseDir(workspace, TAG);
+            Files.delete(base.resolve("mods/a.jar"));
+            Files.delete(base.resolve("mods"));
+            Files.delete(base);
+            Path archive = Layout.tagRoot(workspace, TAG).resolve("base.zip");
+            archive(archive, Map.of("mods/a.jar", TestFiles.bytes("A"), "mods/b.jar", TestFiles.bytes("B")));
+            byte[] archiveBytes = Files.readAllBytes(archive);
             String chunk = chunkOf("B");
             s3.failPut(releaseKey("2.9.1"));
 
@@ -573,6 +694,8 @@ class PublishTest {
             assertTrue(cache(workspace).contains(chunk), cache(workspace));
             assertNull(s3.object(releaseKey("2.9.1")), "a failed publish writes no manifest");
             assertEquals(latest, s3.text(latestKey()), "latest still points at the release it pointed at");
+            assertEquals(List.of(), staged(workspace), "a failed publish releases its archive staging");
+            assertArrayEquals(archiveBytes, Files.readAllBytes(archive), "the publisher leaves its input intact");
         }
     }
 

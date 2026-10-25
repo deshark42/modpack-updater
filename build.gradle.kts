@@ -19,6 +19,10 @@ dependencies {
     runtimeOnly("org.tinylog:slf4j-tinylog:2.8.1")
     // Source: https://mvnrepository.com/artifact/com.google.code.gson/gson
     implementation("com.google.code.gson:gson:2.14.0")
+    // Source: https://mvnrepository.com/artifact/org.apache.commons/commons-compress
+    implementation("org.apache.commons:commons-compress:1.28.0")
+    // Source: https://mvnrepository.com/artifact/org.tukaani/xz
+    implementation("org.tukaani:xz:1.12")
 
     // Source: https://mvnrepository.com/artifact/org.junit/junit-bom
     implementation(platform("org.junit:junit-bom:6.1.3"))

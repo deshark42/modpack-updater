@@ -41,7 +41,22 @@ java -jar modpack-updater-0.1.0.jar keygen
 
 私有桶还需设置 `access_key`、`secret_key`；公开读取可省略。私钥和公钥路径相对工作区，也可以填写工作区外的绝对路径。位于工作区内的密钥必须在 `.modpack-updater/` 下，防止私钥进入发布内容或可信公钥被普通更新替换。
 
-把实例文件放进 `client/base/`，额外修改放进 `client/overlay/`；`client/remove.txt` 用于排除 base 中的路径。发布一个新版本：
+把实例文件放进 `client/base/`，或者直接把下载的 ZIP / 7z 压缩包放成 `client/base.zip` / `client/base.7z`，无需手工解压，也不需要安装外部解压命令。额外修改仍放进 `client/overlay/`；`client/remove.txt` 用于排除 base 中的路径。
+
+例如，使用压缩包时的布局为：
+
+```text
+client/
+├── base.zip        # 或 base.7z，二选一
+├── overlay/
+└── remove.txt
+```
+
+压缩包内的路径直接作为实例相对路径：不会自动去掉顶层目录，也不会继续展开里面的 jar、zip 等文件。overlay 的同路径文件仍覆盖 base，remove 仍只排除 base 中的文件。一个 tag 只能选择一个 base 来源：两个压缩包并存，或压缩包与非空 `base/` 并存都会报错；`init` 创建的空 `base/` 可以保留。
+
+发布时会将压缩包展开到工作区内部的临时目录，直到上传结束；正常成功或失败时都会清理。因此需要容纳解压后内容的额外磁盘空间。加密、损坏或含有不安全路径、链接等不支持条目的压缩包会报错，不会发布部分内容。7z 只支持常规编码；若压缩包使用了 7-Zip 面向可执行文件的 BCJ2 过滤器（打包含 exe/dll 的目录时可能出现），当前版本无法解压，请改用 ZIP 或关闭该过滤器重新打包。压缩包内的文件名必须能用 UTF-8 表示（带 UTF-8 标志，或名字字节可严格按 UTF-8 解码，或带 Info-ZIP Unicode Path 字段且字段名可用 UTF-8 解码）；不带 Unicode Path 字段、名字字节又不能严格按 UTF-8 解码的旧式 ANSI/GBK 命名会被拒绝，避免发布乱码路径，请用 UTF-8 重新打包。压缩包文件名区分大小写，只认 `base.zip` 与 `base.7z`，大小写不符的文件会报错而不是被静默忽略。
+
+发布一个新版本：
 
 ```sh
 java -jar modpack-updater-0.1.0.jar publish --tag client --id 1.0.0
