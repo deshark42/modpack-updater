@@ -34,6 +34,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -44,6 +45,7 @@ import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 class PublishTest {
@@ -205,14 +207,14 @@ class PublishTest {
         }
     }
 
-    @ParameterizedTest(name = "publishes a {0} base archive")
-    @ValueSource(strings = {"zip", "7z"})
+    @ParameterizedTest(name = "publishes a {0} base_pack archive")
+    @ValueSource(strings = {"zip", "ZIP", "7z", "7Z"})
     void publishesAnArchiveBaseWithOverlayAndRemoveRules(String extension, @TempDir Path workspace)
             throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);
             Files.createDirectories(Layout.baseDir(workspace, TAG));
-            Path archive = Layout.tagRoot(workspace, TAG).resolve("base." + extension);
+            Path archive = Layout.basePackDir(workspace, TAG).resolve("instance." + extension);
             Map<String, byte[]> archived = Map.of(
                     "download/mods/keep.jar", TestFiles.bytes("kept from archive"),
                     "download/mods/replace.jar", TestFiles.bytes("base copy"),
@@ -251,15 +253,23 @@ class PublishTest {
                 assertEquals(0, baseFiles.count(), "the init-created directory remains empty");
             }
             assertEquals(List.of(), staged(workspace), "the completed publish releases its archive staging");
+            assertTrue(captured.outText().contains("4 files"), captured.outText());
+            String transcript = Files.readString(logs(workspace).get(0), StandardCharsets.UTF_8);
+            assertTrue(transcript.contains("replaced download/mods/replace.jar ("), transcript);
+            assertTrue(transcript.contains("dropped download/mods/remove.jar ("), transcript);
         }
     }
 
-    @Test
-    void rejectsABrokenArchiveBeforeContactingTheBucket(@TempDir Path workspace) throws IOException {
+    @ParameterizedTest(name = "a broken {0} leaves no storage or staging side effects")
+    @ValueSource(strings = {"zip", "7z"})
+    void rejectsABrokenArchiveBeforeContactingTheBucket(String extension, @TempDir Path workspace)
+            throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);
-            Files.createDirectories(Layout.tagRoot(workspace, TAG));
-            Path archive = Layout.tagRoot(workspace, TAG).resolve("base.zip");
+            Path goodArchive = Layout.basePackDir(workspace, TAG).resolve("a-good.zip");
+            archive(goodArchive, Map.of("kept.txt", TestFiles.bytes("a valid earlier archive")));
+            byte[] goodBytes = Files.readAllBytes(goodArchive);
+            Path archive = Layout.basePackDir(workspace, TAG).resolve("z-broken." + extension);
             archive(archive, Map.of("mods/a.jar", TestFiles.bytes("archive content")));
             byte[] complete = Files.readAllBytes(archive);
             byte[] broken = Arrays.copyOf(complete, complete.length - 10);
@@ -274,11 +284,305 @@ class PublishTest {
             assertFalse(Files.exists(Layout.knownBlobsFile(workspace)));
             assertEquals(List.of(), staged(workspace), "failed extraction leaves no staging files");
             assertArrayEquals(broken, Files.readAllBytes(archive), "failed extraction preserves the source archive");
+            assertArrayEquals(goodBytes, Files.readAllBytes(goodArchive), "earlier archives remain intact");
         }
     }
 
+    @ParameterizedTest(name = "merges mapped ZIP and 7z archives with raw base={0}")
+    @ValueSource(booleans = {false, true})
+    void mergesRawFilesAndMultipleMappedArchivesWithoutRecursivelyUnpacking(boolean withRawBase,
+            @TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            Path nestedArchive = workspace.resolve("nested.zip");
+            archive(nestedArchive, Map.of("must-stay-packed.txt", TestFiles.bytes("nested content")));
+            byte[] nestedBytes = Files.readAllBytes(nestedArchive);
+            Path first = Layout.basePackDir(workspace, TAG).resolve("one_path/test.zip");
+            Path second = Layout.basePackDir(workspace, TAG).resolve("one_path/more.7z");
+            Path root = Layout.basePackDir(workspace, TAG).resolve("top.zip");
+            archive(first, Map.of(
+                    "root.txt", TestFiles.bytes("root in test.zip"),
+                    "second_path/second.txt", TestFiles.bytes("nested path in test.zip"),
+                    "embedded.zip", nestedBytes,
+                    "empty_shared/", new byte[0]));
+            archive(second, Map.of(
+                    "extra.txt", TestFiles.bytes("from 7z"),
+                    "second_path/third.txt", TestFiles.bytes("merged directory from 7z"),
+                    "empty_shared/", new byte[0]));
+            archive(root, Map.of("global.txt", TestFiles.bytes("from root archive")));
+            Map<Path, byte[]> inputs = Map.of(first, Files.readAllBytes(first),
+                    second, Files.readAllBytes(second), root, Files.readAllBytes(root));
+            Map<String, byte[]> expected = new TreeMap<>(Map.of(
+                    "one_path/root.txt", TestFiles.bytes("root in test.zip"),
+                    "one_path/second_path/second.txt", TestFiles.bytes("nested path in test.zip"),
+                    "one_path/embedded.zip", nestedBytes,
+                    "one_path/extra.txt", TestFiles.bytes("from 7z"),
+                    "one_path/second_path/third.txt", TestFiles.bytes("merged directory from 7z"),
+                    "global.txt", TestFiles.bytes("from root archive")));
+            if (withRawBase) {
+                TestWorkspace.base(workspace, TAG, "one_path/raw.txt", "raw base file");
+                TestWorkspace.base(workspace, TAG, "one_path/second_path/raw.txt", "raw shared directory");
+                TestFiles.write(Layout.baseDir(workspace, TAG), "one_path/raw.zip", nestedBytes);
+                Files.createDirectories(Layout.baseDir(workspace, TAG).resolve("one_path/empty_shared"));
+                Files.createDirectories(Layout.basePackDir(workspace, TAG).resolve("one_path/raw.txt"));
+                expected.put("one_path/raw.txt", TestFiles.bytes("raw base file"));
+                expected.put("one_path/second_path/raw.txt", TestFiles.bytes("raw shared directory"));
+                expected.put("one_path/raw.zip", nestedBytes);
+            }
+
+            publish(workspace, TAG, "2.9.0");
+
+            assertPublishedFiles(s3, "2.9.0", expected);
+            assertEquals("2.9.0", Pointer.parse(s3.text(latestKey()), "latest").releaseId());
+            for (Map.Entry<Path, byte[]> input : inputs.entrySet()) {
+                assertArrayEquals(input.getValue(), Files.readAllBytes(input.getKey()), input.getKey().toString());
+            }
+            if (withRawBase) {
+                assertEquals("raw base file", Files.readString(Layout.baseDir(workspace, TAG)
+                        .resolve("one_path/raw.txt")));
+                assertEquals("raw shared directory", Files.readString(Layout.baseDir(workspace, TAG)
+                        .resolve("one_path/second_path/raw.txt")));
+                assertArrayEquals(nestedBytes, Files.readAllBytes(Layout.baseDir(workspace, TAG)
+                        .resolve("one_path/raw.zip")));
+            } else {
+                assertFalse(Files.exists(Layout.baseDir(workspace, TAG)), "a pack-only publish needs no base directory");
+            }
+            assertEquals(List.of(), staged(workspace), "all extracted archives are released after uploading");
+        }
+    }
+
+    @ParameterizedTest(name = "an empty {0} is a usable input")
+    @ValueSource(strings = {"base", "base_pack", "both"})
+    void publishesEmptyInputDirectories(String input, @TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            if (!input.equals("base_pack")) {
+                Files.createDirectories(Layout.baseDir(workspace, TAG));
+            }
+            if (!input.equals("base")) {
+                Files.createDirectories(Layout.basePackDir(workspace, TAG));
+            }
+
+            publish(workspace, TAG, "2.9.0");
+
+            assertPublishedFiles(s3, "2.9.0", Map.of());
+            assertEquals("2.9.0", Pointer.parse(s3.text(latestKey()), "latest").releaseId());
+            assertEquals(List.of(), staged(workspace));
+        }
+    }
+
+    @ParameterizedTest(name = "{0}: {1} conflicts with packed {2} before filtering")
+    @CsvSource({
+            "base, collision.txt, collision.txt",
+            "base, collision, collision/child.txt",
+            "base, collision/child.txt, collision",
+            "base, collision, collision/",
+            "base-directory, collision, collision",
+            "pack, collision.txt, collision.txt",
+            "pack, collision, collision/child.txt",
+            "pack, collision/child.txt, collision",
+            "pack, collision, collision/",
+            "pack, collision/, collision"
+    })
+    void rejectsMergedInputCollisionsBeforeRemoveOverlayAndAnyBucketAccess(String firstSource,
+            String firstPath, String secondPath, @TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            Map<Path, byte[]> inputs = new HashMap<>();
+            if (firstSource.equals("base")) {
+                TestWorkspace.base(workspace, TAG, firstPath, "identical bytes");
+            } else if (firstSource.equals("base-directory")) {
+                Files.createDirectories(Layout.baseDir(workspace, TAG).resolve(firstPath));
+            } else {
+                Path first = Layout.basePackDir(workspace, TAG).resolve("a-first.zip");
+                archive(first, Map.of(firstPath,
+                        firstPath.endsWith("/") ? new byte[0] : TestFiles.bytes("identical bytes")));
+                inputs.put(first, Files.readAllBytes(first));
+            }
+            Path second = Layout.basePackDir(workspace, TAG).resolve("b-second.7z");
+            archive(second, Map.of(secondPath,
+                    secondPath.endsWith("/") ? new byte[0] : TestFiles.bytes("identical bytes")));
+            inputs.put(second, Files.readAllBytes(second));
+            TestWorkspace.remove(workspace, TAG, "*\n");
+            TestWorkspace.overlay(workspace, TAG, secondPath.endsWith("/") ? secondPath + "overlay.txt" : secondPath,
+                    "an overlay cannot hide a base collision");
+
+            UserError error = assertThrows(UserError.class, () -> publish(workspace, TAG, "2.9.0"));
+
+            assertTrue(error.getMessage().contains("collision"), error.getMessage());
+            assertTrue(error.getMessage().contains("conflict"), error.getMessage());
+            assertNoStorageOrStagingSideEffects(s3, workspace);
+            for (Map.Entry<Path, byte[]> input : inputs.entrySet()) {
+                assertArrayEquals(input.getValue(), Files.readAllBytes(input.getKey()), input.getKey().toString());
+            }
+            if (firstSource.equals("base")) {
+                assertEquals("identical bytes", Files.readString(Layout.baseDir(workspace, TAG).resolve(firstPath)));
+            } else if (firstSource.equals("base-directory")) {
+                assertTrue(Files.isDirectory(Layout.baseDir(workspace, TAG).resolve(firstPath)));
+            }
+        }
+    }
+
+    @ParameterizedTest(name = "native path identity: {0} {1} versus packed {2}")
+    @CsvSource({
+            "base, mods/A.jar, mods/a.jar",
+            "base, Mods/a.jar, mods/a.jar",
+            "base, Mods, mods/a.jar",
+            "base, Mods/a.jar, mods",
+            "base, Mods, mods/",
+            "base-directory, Mods, mods",
+            "pack, mods/A.jar, mods/a.jar",
+            "pack, Mods/a.jar, mods/a.jar",
+            "pack, Mods, mods/a.jar",
+            "pack, Mods/a.jar, mods",
+            "pack, Mods, mods/",
+            "pack, Mods/, mods"
+    })
+    void handlesCaseOnlyMergedPathsAccordingToThePublishersFileSystem(String firstSource,
+            String firstPath, String secondPath, @TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            boolean aliasesOnThisFileSystem = workspace.resolve("Mods").equals(workspace.resolve("mods"));
+            byte[] firstBytes = TestFiles.bytes("first source content");
+            byte[] secondBytes = TestFiles.bytes("second source content");
+            Map<Path, byte[]> archiveInputs = new HashMap<>();
+            Map<String, byte[]> expected = new TreeMap<>();
+            if (firstSource.equals("base")) {
+                TestFiles.write(Layout.baseDir(workspace, TAG), firstPath, firstBytes);
+                expected.put(firstPath, firstBytes);
+            } else if (firstSource.equals("base-directory")) {
+                Files.createDirectories(Layout.baseDir(workspace, TAG).resolve(firstPath));
+            } else {
+                Path first = Layout.basePackDir(workspace, TAG).resolve("a-first.zip");
+                archive(first, Map.of(firstPath, firstPath.endsWith("/") ? new byte[0] : firstBytes));
+                archiveInputs.put(first, Files.readAllBytes(first));
+                if (!firstPath.endsWith("/")) {
+                    expected.put(firstPath, firstBytes);
+                }
+            }
+            Path second = Layout.basePackDir(workspace, TAG).resolve("b-second.7z");
+            archive(second, Map.of(secondPath, secondPath.endsWith("/") ? new byte[0] : secondBytes));
+            archiveInputs.put(second, Files.readAllBytes(second));
+            if (!secondPath.endsWith("/")) {
+                expected.put(secondPath, secondBytes);
+            }
+            if (aliasesOnThisFileSystem) {
+                TestWorkspace.remove(workspace, TAG, "*\n");
+                TestWorkspace.overlay(workspace, TAG,
+                        secondPath.endsWith("/") ? secondPath + "overlay.txt" : secondPath,
+                        "an overlay cannot hide a native path collision");
+
+                UserError error = assertThrows(UserError.class, () -> publish(workspace, TAG, "2.9.0"));
+
+                assertTrue(error.getMessage().contains("collision"), error.getMessage());
+                assertTrue(error.getMessage().contains("conflict"), error.getMessage());
+                assertNoStorageOrStagingSideEffects(s3, workspace);
+            } else {
+                publish(workspace, TAG, "2.9.0");
+
+                assertPublishedFiles(s3, "2.9.0", expected);
+                assertEquals("2.9.0", Pointer.parse(s3.text(latestKey()), "latest").releaseId());
+            }
+            for (Map.Entry<Path, byte[]> input : archiveInputs.entrySet()) {
+                assertArrayEquals(input.getValue(), Files.readAllBytes(input.getKey()), input.getKey().toString());
+            }
+            if (firstSource.equals("base")) {
+                assertArrayEquals(firstBytes, Files.readAllBytes(Layout.baseDir(workspace, TAG).resolve(firstPath)));
+            } else if (firstSource.equals("base-directory")) {
+                assertTrue(Files.isDirectory(Layout.baseDir(workspace, TAG).resolve(firstPath)));
+            }
+            assertEquals(List.of(), staged(workspace), "native path handling releases every archive staging directory");
+        }
+    }
+
+    @ParameterizedTest(name = "unsafe paths in a {0} archive fail without publishing")
+    @ValueSource(strings = {"zip", "7z"})
+    void rejectsUnsafePackedPathsAndCleansEarlierExtractions(String extension, @TempDir Path workspace)
+            throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            Path good = Layout.basePackDir(workspace, TAG).resolve("a-good.zip");
+            archive(good, Map.of("good.txt", TestFiles.bytes("good archive content")));
+            Path unsafe = Layout.basePackDir(workspace, TAG).resolve("z-unsafe." + extension);
+            archive(unsafe, Map.of("../escape.txt", TestFiles.bytes("must not escape"),
+                    "safe.txt", TestFiles.bytes("must not publish a partial archive")));
+            byte[] goodBytes = Files.readAllBytes(good);
+            byte[] unsafeBytes = Files.readAllBytes(unsafe);
+
+            assertThrows(UserError.class, () -> publish(workspace, TAG, "2.9.0"));
+
+            assertNoStorageOrStagingSideEffects(s3, workspace);
+            assertFalse(Files.exists(workspace.resolve("escape.txt")));
+            assertArrayEquals(goodBytes, Files.readAllBytes(good));
+            assertArrayEquals(unsafeBytes, Files.readAllBytes(unsafe));
+        }
+    }
+
+    @ParameterizedTest(name = "base_pack rejects the non-archive file {0}")
+    @ValueSource(strings = {"z-readme.txt", "nested/z-mod.jar"})
+    void rejectsNonArchivePackFilesWithoutPublishingOrLeavingStaging(String name, @TempDir Path workspace)
+            throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            Path good = Layout.basePackDir(workspace, TAG).resolve("a-good.zip");
+            archive(good, Map.of("good.txt", TestFiles.bytes("good archive content")));
+            byte[] goodBytes = Files.readAllBytes(good);
+            TestFiles.write(Layout.basePackDir(workspace, TAG), name, "not a supported archive");
+
+            UserError error = assertThrows(UserError.class, () -> publish(workspace, TAG, "2.9.0"));
+
+            assertTrue(error.getMessage().contains(Path.of(name).getFileName().toString()), error.getMessage());
+            assertNoStorageOrStagingSideEffects(s3, workspace);
+            assertArrayEquals(goodBytes, Files.readAllBytes(good));
+            assertEquals("not a supported archive", Files.readString(Layout.basePackDir(workspace, TAG).resolve(name)));
+        }
+    }
+
+    @ParameterizedTest(name = "legacy {0} requests migration instead of publishing empty inputs")
+    @ValueSource(strings = {"base.zip", "base.7z"})
+    void rejectsLegacyRootArchivesWithAMigrationHint(String name, @TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            Files.createDirectories(Layout.baseDir(workspace, TAG));
+            Files.createDirectories(Layout.basePackDir(workspace, TAG));
+            Path legacy = Layout.tagRoot(workspace, TAG).resolve(name);
+            archive(legacy, Map.of("mods/a.jar", TestFiles.bytes("legacy content")));
+            byte[] original = Files.readAllBytes(legacy);
+
+            UserError error = assertThrows(UserError.class, () -> publish(workspace, TAG, "2.9.0"));
+
+            assertTrue(error.getMessage().contains(name), error.getMessage());
+            assertTrue(error.getMessage().contains("base_pack"), error.getMessage());
+            assertNoStorageOrStagingSideEffects(s3, workspace);
+            assertArrayEquals(original, Files.readAllBytes(legacy));
+        }
+    }
+
+    private static void assertPublishedFiles(FakeS3 s3, String releaseId, Map<String, byte[]> expected)
+            throws IOException {
+        Manifest manifest = Manifest.parse(s3.text(releaseKey(releaseId)), "release");
+        assertEquals(List.copyOf(new TreeMap<>(expected).keySet()), List.copyOf(manifest.files().keySet()));
+        for (Map.Entry<String, byte[]> file : expected.entrySet()) {
+            FileEntry entry = manifest.files().get(file.getKey());
+            ChunkTable table = ChunkTable.parse(s3.text(indexKey(entry.indexId())), "chunk table");
+            ByteArrayOutputStream uploaded = new ByteArrayOutputStream();
+            for (String chunk : table.chunks()) {
+                uploaded.write(s3.object(chunkKey(chunk)));
+            }
+            assertArrayEquals(file.getValue(), uploaded.toByteArray(), file.getKey());
+        }
+    }
+
+    private static void assertNoStorageOrStagingSideEffects(FakeS3 s3, Path workspace) throws IOException {
+        assertEquals(List.of(), s3.requests(), "invalid merged inputs cause no metadata request or upload");
+        assertEquals(0, s3.objectCount(), "no release, signature, pointer, chunk or table is published");
+        assertFalse(Files.exists(Layout.knownBlobsFile(workspace)), "no existence cache is written");
+        assertEquals(List.of(), staged(workspace), "all archive extractions are cleaned up");
+    }
+
     private static void archive(Path archive, Map<String, byte[]> files) throws IOException {
-        if (archive.toString().endsWith(".zip")) {
+        Files.createDirectories(archive.getParent());
+        if (archive.toString().toLowerCase(Locale.ROOT).endsWith(".zip")) {
             try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(archive), StandardCharsets.UTF_8)) {
                 for (Map.Entry<String, byte[]> file : new TreeMap<>(files).entrySet()) {
                     output.putNextEntry(new ZipEntry(file.getKey()));
@@ -291,6 +595,7 @@ class PublishTest {
                 for (Map.Entry<String, byte[]> file : new TreeMap<>(files).entrySet()) {
                     SevenZArchiveEntry entry = new SevenZArchiveEntry();
                     entry.setName(file.getKey());
+                    entry.setDirectory(file.getKey().endsWith("/"));
                     entry.setSize(file.getValue().length);
                     output.putArchiveEntry(entry);
                     output.write(file.getValue());
@@ -375,10 +680,16 @@ class PublishTest {
     }
 
     @Test
-    void reportsATagWithoutABaseDirectory(@TempDir Path workspace) {
-        UserError error = assertThrows(UserError.class,
-                () -> publish(workspace, TAG, "2.9.0"));
-        assertTrue(error.getMessage().contains("no such directory"), error.getMessage());
+    void reportsATagWithoutEitherBaseInputDirectory(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+
+            UserError error = assertThrows(UserError.class,
+                    () -> publish(workspace, TAG, "2.9.0"));
+
+            assertTrue(error.getMessage().contains("base"), error.getMessage());
+            assertNoStorageOrStagingSideEffects(s3, workspace);
+        }
     }
 
     @Test
@@ -680,7 +991,7 @@ class PublishTest {
             Files.delete(base.resolve("mods/a.jar"));
             Files.delete(base.resolve("mods"));
             Files.delete(base);
-            Path archive = Layout.tagRoot(workspace, TAG).resolve("base.zip");
+            Path archive = Layout.basePackDir(workspace, TAG).resolve("replacement.zip");
             archive(archive, Map.of("mods/a.jar", TestFiles.bytes("A"), "mods/b.jar", TestFiles.bytes("B")));
             byte[] archiveBytes = Files.readAllBytes(archive);
             String chunk = chunkOf("B");

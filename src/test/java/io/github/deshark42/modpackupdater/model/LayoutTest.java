@@ -22,6 +22,7 @@ class LayoutTest {
         assertEquals("backup", Layout.BACKUP);
         assertEquals("logs", Layout.LOGS);
         assertEquals("base", Layout.BASE);
+        assertEquals("base_pack", Layout.BASE_PACK);
         assertEquals("overlay", Layout.OVERLAY);
         assertEquals("remove.txt", Layout.REMOVE);
         assertEquals("tmp", Layout.TMP);
@@ -60,6 +61,7 @@ class LayoutTest {
     void publishesFromTheTagDirectoryAtTheWorkspaceRoot() {
         assertEquals(WORKSPACE.resolve("client"), Layout.tagRoot(WORKSPACE, "client"));
         assertEquals(WORKSPACE.resolve("client/base"), Layout.baseDir(WORKSPACE, "client"));
+        assertEquals(WORKSPACE.resolve("client/base_pack"), Layout.basePackDir(WORKSPACE, "client"));
         assertEquals(WORKSPACE.resolve("client/overlay"), Layout.overlayDir(WORKSPACE, "client"));
         assertEquals(WORKSPACE.resolve("client/remove.txt"), Layout.removeFile(WORKSPACE, "client"));
     }

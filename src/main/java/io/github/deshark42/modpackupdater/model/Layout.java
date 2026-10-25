@@ -14,6 +14,7 @@ public final class Layout {
     public static final String BACKUP = "backup";
     public static final String LOGS = "logs";
     public static final String BASE = "base";
+    public static final String BASE_PACK = "base_pack";
     public static final String OVERLAY = "overlay";
     public static final String REMOVE = "remove.txt";
     public static final String TMP = "tmp";
@@ -106,13 +107,17 @@ public final class Layout {
         return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), BACKUP, INITIAL);
     }
 
-    /** The directory a tag is published from: base/, overlay/ and remove.txt live side by side. */
+    /** The directory a tag is published from: base/, base_pack/, overlay/ and remove.txt. */
     public static Path tagRoot(Path workspaceRoot, String tag) {
         return checked(workspaceRoot, Names.requireTag(tag));
     }
 
     public static Path baseDir(Path workspaceRoot, String tag) {
         return checked(workspaceRoot, Names.requireTag(tag), BASE);
+    }
+
+    public static Path basePackDir(Path workspaceRoot, String tag) {
+        return checked(workspaceRoot, Names.requireTag(tag), BASE_PACK);
     }
 
     public static Path overlayDir(Path workspaceRoot, String tag) {

@@ -36,6 +36,7 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -76,10 +77,10 @@ public final class Publish {
 
     private static void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
             BaseSource source, long startedAt) {
-        Path base = source.root();
         Path overlay = Layout.overlayDir(workspace, tag);
-        String baseName = Text.relativeTo(workspace, source.input());
-        Map<String, Long> baseFiles = Tree.list(base);
+        String baseName = source.inputs().stream().map(input -> Text.relativeTo(workspace, input))
+                .collect(Collectors.joining(" + "));
+        Map<String, Long> baseFiles = source.files();
         LOG.info("scanned {}: {}, {}", baseName, Text.count(baseFiles.size(), "file"),
                 Sizes.human(total(baseFiles)));
         boolean hasOverlay = Files.isDirectory(overlay);
@@ -145,8 +146,7 @@ public final class Publish {
         Map<String, Placement> placements = new ConcurrentHashMap<>();
         Map<String, byte[]> tables = new ConcurrentHashMap<>();
         Parallel.forEach(files.keySet(), config.concurrency(), path -> {
-            Path root = overlaid.contains(path) ? overlay : base;
-            Path file = SafePath.resolve(root, path);
+            Path file = overlaid.contains(path) ? SafePath.resolve(overlay, path) : source.file(path);
             Chunker.Result split = Chunker.split(file, Chunking.DEFAULT,
                     cut -> placements.putIfAbsent(cut.hash(), new Placement(file, path, cut)));
             entries.put(path, new FileEntry(split.hash(), split.table().size(), split.table().indexId()));

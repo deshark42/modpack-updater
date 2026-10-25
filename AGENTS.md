@@ -1,6 +1,6 @@
 # AGENTS.md
 
-modpack-updater is a Java 17 CLI that publishes a Minecraft modpack instance's tracked files to S3-compatible object storage and applies a release in place on another instance. A publisher packs a tag's `base/`, `overlay/` and `remove.txt`; a subscriber diffs release manifests and transfers only the chunks it does not already have.
+modpack-updater is a Java 17 CLI that publishes a Minecraft modpack instance's tracked files to S3-compatible object storage and applies a release in place on another instance. A publisher merges a tag's `base/` files with archives under `base_pack/`, then applies `overlay/` and `remove.txt`; a subscriber diffs release manifests and transfers only the chunks it does not already have.
 
 Agent Notes are agent-written RFCs that record the rationale and the rejected alternatives behind a durable decision. The contract for this repository is [.agents/notes/README.md](.agents/notes/README.md); work under `.agents/notes/` also follows [.agents/notes/AGENTS.md](.agents/notes/AGENTS.md).
 

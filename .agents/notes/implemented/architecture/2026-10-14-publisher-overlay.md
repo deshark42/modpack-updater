@@ -15,13 +15,13 @@ Status: implemented
 
 ## 决策
 
-`<tag>/` 下与 base/ 并列的两个发布侧输入是 `overlay/`（发布者自己的文件：对 base/ 的新增或覆盖）与 `remove.txt`（从 base/ 中剔除的路径，一行一条）；它们在发布者工作区里的位置见[发布者工作区与发布命令](2026-10-13-publisher-workspace.md)。
+本记录中的 base 指由 base/ 与 base_pack/ 无冲突合成的逻辑路径空间，而非仅指物理 base/ 目录。`<tag>/` 下与它们并列的两个发布侧输入是 `overlay/`（发布者自己的文件：对 base/ 的新增或覆盖）与 `remove.txt`（从 base/ 中剔除的路径，一行一条）；它们在发布者工作区里的位置见[发布者工作区与发布命令](2026-10-13-publisher-workspace.md)。
 
 publish 在扫描阶段把三者合成一份**有效清单**，其余流程（块去重、上传、写 release 清单、覆写 latest）不变。有效清单 = base/ 的全部文件 + overlay/ 路径的文件（增加或覆盖），再去掉 remove.txt 命中的 base/ 文件。
 
 overlay/ 与 base/ 共用同一路径空间：`overlay/.minecraft/mods/example-mod.jar` 对应的清单路径是 `.minecraft/mods/example-mod.jar`，与 base/ 下的同名路径指同一个位置。overlay/ 与 remove.txt 自身可以不存在，缺失时按空处理。
 
-overlay/ 与 base 生命周期无关：官方更新只替换 base 目录或压缩包，发布者不必在每次官方更新后重做自己的改动。[压缩包 base 输入](../feature/2026-10-25-archive-base-input.md)只扩展 base 的读取方式，不取代本记录的合并与删除语义；压缩包展开后同样使用本记录的路径空间和规则。
+overlay/ 与 base 生命周期无关：官方更新只替换 base/ 文件或 base_pack/ 内的压缩包，发布者不必在每次官方更新后重做自己的改动。[可组合 base 输入](../feature/2026-10-25-composable-base-inputs.md)持有来源组合及冲突拒绝，不取代本记录的合并与删除语义；remove 作用于合并后的 base，overlay 再新增或覆盖。来源间的冲突在本记录的规则生效前就失败，不能由 remove 或 overlay 消解。
 
 删除是**显式意图**，不是推断：publish 仍然不与上一次 release 的清单比较，某个路径不再发布只有两种可能——它已不在 base/ 里，或被 remove.txt 命中。
 
@@ -44,7 +44,7 @@ remove.txt 只作用于 base/：同路径以 overlay/ 为准，规则命中 over
 
 匹配语义由 src/test/java/io/github/deshark42/modpackupdater/model/RemoveRulesTest.java 锁定：锚定与逐段通配、`**` 跨目录（含零层）、目录规则剔除子树且不命中同名文件、`?` 与字符类、整体匹配，以及拒绝 `../escape.jar`、`mods/../../escape.jar` 与 `C:/escape.jar`。
 
-合并结果由 src/test/java/io/github/deshark42/modpackupdater/command/PublishTest.java 锁定：同路径 overlay/ 胜出、remove.txt 只作用于 base/、坏规则在接触存储之前就报错。src/test/java/io/github/deshark42/modpackupdater/command/InitTest.java 锁定 init 铺出的三个发布侧输入、模板里零条生效规则，以及重复执行只补缺失、不改写已有 remove.txt。
+合并结果由 src/test/java/io/github/deshark42/modpackupdater/command/PublishTest.java 锁定：同路径 overlay/ 胜出、remove.txt 只作用于 base/、坏规则在接触存储之前就报错。src/test/java/io/github/deshark42/modpackupdater/command/InitTest.java 锁定 init 铺出的 base/、base_pack/、overlay/ 与 remove.txt、模板里零条生效规则，以及重复执行只补缺失、不改写已有 remove.txt。
 
 ## 曾考虑的替代方案
 

@@ -59,10 +59,12 @@ class InitTest {
         Path config = Layout.configFile(workspace);
         assertTrue(Files.isRegularFile(config), logs.outText());
         assertTrue(Files.isDirectory(Layout.baseDir(workspace, TAG)), logs.outText());
+        assertTrue(Files.isDirectory(Layout.basePackDir(workspace, TAG)), logs.outText());
         assertTrue(Files.isDirectory(Layout.overlayDir(workspace, TAG)), logs.outText());
         assertTrue(Files.isRegularFile(Layout.removeFile(workspace, TAG)), logs.outText());
         assertTrue(said(logs, "created", workspace, config), logs.outText());
         assertTrue(said(logs, "created", workspace, Layout.baseDir(workspace, TAG)), logs.outText());
+        assertTrue(said(logs, "created", workspace, Layout.basePackDir(workspace, TAG)), logs.outText());
         assertTrue(said(logs, "created", workspace, Layout.overlayDir(workspace, TAG)), logs.outText());
         assertTrue(said(logs, "created", workspace, Layout.removeFile(workspace, TAG)), logs.outText());
         assertTrue(logs.outText().contains("fill in \"endpoint\" and \"bucket\""), logs.outText());
@@ -91,6 +93,7 @@ class InitTest {
             endpoint = s3.url();
         }
         TestFiles.write(Layout.baseDir(workspace, TAG), "mods/a.jar", TestFiles.bytes("A"));
+        TestFiles.write(Layout.basePackDir(workspace, TAG), "packs/keep.zip", "existing archive");
         TestFiles.write(Layout.overlayDir(workspace, TAG), "mods/a.jar", TestFiles.bytes("mine"));
         TestFiles.write(workspace, TAG + "/" + Layout.REMOVE, "example-mod-*.jar\n");
 
@@ -105,10 +108,13 @@ class InitTest {
         assertEquals("example-mod-*.jar\n", Files.readString(Layout.removeFile(workspace, TAG)));
         assertTrue(said(logs, "kept", workspace, Layout.configFile(workspace)), logs.outText());
         assertTrue(said(logs, "kept", workspace, Layout.baseDir(workspace, TAG)), logs.outText());
+        assertTrue(said(logs, "kept", workspace, Layout.basePackDir(workspace, TAG)), logs.outText());
         assertTrue(said(logs, "kept", workspace, Layout.overlayDir(workspace, TAG)), logs.outText());
         assertTrue(said(logs, "kept", workspace, Layout.removeFile(workspace, TAG)), logs.outText());
         assertFalse(logs.outText().contains("created"), logs.outText());
         assertEquals("A", Files.readString(Layout.baseDir(workspace, TAG).resolve("mods/a.jar")));
+        assertEquals("existing archive",
+                Files.readString(Layout.basePackDir(workspace, TAG).resolve("packs/keep.zip")));
         assertEquals("mine", Files.readString(Layout.overlayDir(workspace, TAG).resolve("mods/a.jar")));
     }
 
