@@ -139,6 +139,20 @@ class PublishTest {
     }
 
     @Test
+    void refusesReservedContentBeforeContactingTheBucket(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            TestWorkspace.base(workspace, TAG, Layout.STATE_DIR + "/" + Layout.CONFIG, "untrusted config");
+
+            UserError error = assertThrows(UserError.class, () -> publish(workspace, TAG, "2.9.0"));
+
+            assertTrue(error.getMessage().contains("reserved state directory"), error.getMessage());
+            assertEquals(List.of(), s3.requests(), "no release, pointer, chunk or table reaches the bucket");
+            assertFalse(Files.exists(Layout.knownBlobsFile(workspace)));
+        }
+    }
+
+    @Test
     void uploadsEveryDistinctChunkAndTableAndPointsLatestAtTheRelease(@TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             TestWorkspace.configure(workspace, s3);

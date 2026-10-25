@@ -17,6 +17,7 @@ import io.github.deshark42.modpackupdater.fs.Chunker;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.model.ChunkTable;
 import io.github.deshark42.modpackupdater.model.Chunking;
+import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.Layout;
 import io.github.deshark42.modpackupdater.model.Manifest;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
@@ -218,6 +219,62 @@ class UpdateTest {
         ChunkTable table = Chunker.split(Layout.baseDir(publisher, tag).resolve(relative), Chunking.DEFAULT,
                 cuts::add).table();
         return new ChunkTableSplit(table, cuts);
+    }
+
+    @Test
+    void refusesARemoteManifestThatReplacesItsOwnConfig(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods/a.jar", TestFiles.bytes("untrusted config")));
+            // Another bucket writer can bypass Publish's input validation.
+            s3.put(releaseKey(TAG, "2.9.0"), TestFiles.bytes(s3.text(releaseKey(TAG, "2.9.0"))
+                    .replace("mods/a.jar", Layout.STATE_DIR + "/" + Layout.CONFIG)));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            Config.fillMissing(player);
+            String config = Files.readString(Layout.configFile(player));
+            int before = s3.requests().size();
+
+            UserError error = assertThrows(UserError.class, () -> update(player, TAG, null));
+
+            assertTrue(error.getMessage().contains("reserved state directory"), error.getMessage());
+            assertEquals(config, Files.readString(Layout.configFile(player)));
+            assertFalse(Files.exists(Layout.currentFile(player, TAG)));
+            assertFalse(Files.exists(Layout.releasesDir(player, TAG)));
+            assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
+            assertEquals(List.of("GET " + latestKey(TAG), "GET " + releaseKey(TAG, "2.9.0")),
+                    s3.requests().subList(before, s3.requests().size()));
+            assertNothingStaged(player);
+        }
+    }
+
+    @Test
+    void refusesReservedPathsInTheOldLocalManifestBeforeDeletingAnything(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods/a.jar", TestFiles.bytes("A")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, TAG, null);
+            Path old = Layout.releaseFile(player, TAG, "2.9.0");
+            Files.writeString(old, Files.readString(old).replace("mods/a.jar", Layout.STATE_DIR + "/" + Layout.CONFIG));
+            publish(publisher, TAG, "2.9.1", Map.of("mods/b.jar", TestFiles.bytes("B")));
+            String config = Files.readString(Layout.configFile(player));
+            int before = s3.requests().size();
+
+            UserError error = assertThrows(UserError.class, () -> update(player, TAG, null));
+
+            assertTrue(error.getMessage().contains("reserved state directory"), error.getMessage());
+            assertEquals(config, Files.readString(Layout.configFile(player)));
+            assertEquals("A", Files.readString(player.resolve("mods/a.jar")));
+            assertFalse(Files.exists(player.resolve("mods/b.jar")));
+            assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
+            assertEquals("2.9.0", applied(player, TAG));
+            assertEquals(List.of("GET " + latestKey(TAG)), s3.requests().subList(before, s3.requests().size()));
+            assertNothingStaged(player);
+        }
     }
 
     @Test

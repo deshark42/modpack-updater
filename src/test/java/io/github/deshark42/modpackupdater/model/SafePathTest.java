@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class SafePathTest {
 
@@ -19,6 +20,20 @@ class SafePathTest {
         assertEquals("mods/x.jar", SafePath.require("mods/./x.jar"));
         assertEquals("a/b", SafePath.require("a/b/"));
         assertEquals("a/b", SafePath.require("a//b"));
+        assertEquals("config/.modpack-updater/file", SafePath.require("config/.modpack-updater/file"));
+        assertEquals(".modpack-updater-extra/file", SafePath.require(".modpack-updater-extra/file"));
+    }
+
+    @ParameterizedTest(name = "\"{0}\" is reserved for the updater")
+    @ValueSource(strings = {".modpack-updater", ".modpack-updater/config.json",
+            ".modpack-updater/client/current.json", ".modpack-updater/client/releases/old.json",
+            ".modpack-updater/client/backup/old/mods/a.jar", ".modpack-updater/tmp/file",
+            ".modpack-updater/logs/run.log", ".MODPACK-UPDATER/config.json",
+            "./.modpack-updater/config.json", "mods/../.modpack-updater/config.json",
+            ".modpack-updater./config.json", ".modpack-updater /config.json"})
+    void rejectsTheStateDirectoryAndItsPortableAliases(String path) {
+        UserError error = assertThrows(UserError.class, () -> SafePath.require(path));
+        assertTrue(error.getMessage().contains("reserved state directory"), error.getMessage());
     }
 
     @ParameterizedTest(name = "\"{0}\" is rejected: {1}")

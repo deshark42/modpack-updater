@@ -69,7 +69,7 @@ Status: implemented
 
 **取值与字符集**
 
-- 路径是工作区相对的 POSIX 路径，用 / 分隔；不得以 / 开头，不得出现空段、. 或 .. 段与反斜杠。
+- 路径是工作区相对的 POSIX 路径，用 / 分隔；拒绝绝对路径、反斜杠与冒号，冗余分隔符及 .、.. 段规范化后不得逃出工作区。首段不得使用更新器保留的 `.modpack-updater` 命名空间，跨平台别名与校验入口见[状态路径保护](../bug-fix/2026-10-25-reserve-updater-state-paths.md)。
 - tag 取 [a-z0-9][a-z0-9._-]*，release_id 取 [A-Za-z0-9][A-Za-z0-9._+-]*。两者都会成为路径段与文件名，字符集之外一律拒绝，否则订阅者拼 <tag>/current.json 时会被路径穿越。
 - release_id 在每个 tag 内唯一，不同 tag 之间互不相干。
 - 两端遇到不认识的 version 直接报错，不猜着解析。

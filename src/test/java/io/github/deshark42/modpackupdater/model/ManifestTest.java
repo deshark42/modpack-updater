@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -117,6 +118,15 @@ class ManifestTest {
         UserError error = assertThrows(UserError.class,
                 () -> Manifest.parse(manifest(entry(path, HASH, 1)), "m.json"), path);
         assertTrue(error.getMessage().contains("manifest path"), path + ": " + error.getMessage());
+    }
+
+    @Test
+    void rejectsReservedPathsWhenConstructedDirectly() {
+        UserError error = assertThrows(UserError.class, () -> new Manifest("client", "r", Instant.EPOCH,
+                Manifest.SHA256, Map.of(Layout.STATE_DIR + "/" + Layout.CONFIG,
+                        new FileEntry(HASH, 1, INDEX_ID))));
+
+        assertTrue(error.getMessage().contains("reserved state directory"), error.getMessage());
     }
 
     @Test

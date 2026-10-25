@@ -35,6 +35,7 @@ public record Manifest(String tag, String releaseId, Instant publishedAt, String
         if (!SHA256.equals(hashAlgorithm)) {
             throw new UserError("unsupported hash_algorithm \"" + hashAlgorithm + "\": this tool only knows " + SHA256);
         }
+        files.keySet().forEach(SafePath::require);
         files = Collections.unmodifiableMap(new TreeMap<>(files));
     }
 

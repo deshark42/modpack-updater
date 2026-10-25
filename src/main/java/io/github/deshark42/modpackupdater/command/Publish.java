@@ -117,6 +117,8 @@ public final class Publish {
                     Text.relativeTo(workspace, overlay), baseName, Text.count(added, "file"),
                     Text.count(replaced, "file"));
         }
+        // Reject reserved paths before any content or metadata can reach the bucket.
+        files.keySet().forEach(SafePath::require);
         String releaseKey = ObjectKeys.release(tag, releaseId);
         String latestKey = ObjectKeys.latest(tag);
 
