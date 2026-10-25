@@ -155,17 +155,22 @@ public final class Publish {
 
         // Ask which chunks and chunk tables are missing before uploading, so progress can count
         // them. Objects the cache already knows cost no request at all.
+        int objectsToCheck = placements.size() + tables.size();
+        AtomicInteger checked = new AtomicInteger();
+        Logging.progress("check", 0, objectsToCheck, "object");
         Map<String, Placement> pendingChunks = new ConcurrentHashMap<>();
         Parallel.forEach(placements.entrySet(), config.concurrency(), chunk -> {
             if (!cache.chunkExists(store, chunk.getKey())) {
                 pendingChunks.put(chunk.getKey(), chunk.getValue());
             }
+            Logging.progress("check", checked.incrementAndGet(), objectsToCheck, "object");
         });
         Map<String, byte[]> pendingTables = new ConcurrentHashMap<>();
         Parallel.forEach(tables.entrySet(), config.concurrency(), table -> {
             if (!cache.indexExists(store, table.getKey())) {
                 pendingTables.put(table.getKey(), table.getValue());
             }
+            Logging.progress("check", checked.incrementAndGet(), objectsToCheck, "object");
         });
 
         int toUpload = pendingChunks.size();

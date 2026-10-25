@@ -3,6 +3,7 @@ package io.github.deshark42.modpackupdater.log;
 import io.github.deshark42.modpackupdater.fs.Sizes;
 import java.io.PrintStream;
 import java.util.Locale;
+import java.util.function.LongSupplier;
 
 /**
  * Work in flight as one line redrawn in place: how far along, how fast, and how much longer. Only
@@ -24,6 +25,7 @@ final class Progress {
 
     private final PrintStream err;
     private final boolean enabled;
+    private final LongSupplier nanoTime;
     private boolean drawn;
     private long startedAt;
     private long lastFrame;
@@ -32,16 +34,21 @@ final class Progress {
     private String verb = "";
 
     Progress(PrintStream err, boolean enabled) {
-        this.err = err;
-        this.enabled = enabled;
+        this(err, enabled, System::nanoTime);
     }
 
-    /** One file finished; called from the worker threads that move the files. */
+    Progress(PrintStream err, boolean enabled, LongSupplier nanoTime) {
+        this.err = err;
+        this.enabled = enabled;
+        this.nanoTime = nanoTime;
+    }
+
+    /** Work finished; negative bytes select an object rate instead of a transfer rate. */
     synchronized void update(String verb, long done, long total, long bytes, String noun) {
         if (!enabled || total <= 0 || done >= total) {
             return;
         }
-        long now = System.nanoTime();
+        long now = nanoTime.getAsLong();
         if (!verb.equals(this.verb)) {
             this.verb = verb;
             startedAt = now;
@@ -56,7 +63,7 @@ final class Progress {
         long nanos = Math.max(1, now - startedAt);
         double seconds = nanos / 1e9;
         long perSecond = seconds > 0 ? Math.round((done - startDone) / seconds) : 0;
-        String moved = Sizes.rate(bytes - startBytes, nanos);
+        String moved = bytes < 0 ? count(perSecond, noun) + "/s" : Sizes.rate(bytes - startBytes, nanos);
         String tail = String.format(Locale.ROOT, "%3d%% \u00b7 %d/%s \u00b7 %s \u00b7 ETA %s",
                 100 * done / total, done, count(total, noun), moved, eta(total - done, perSecond));
         int width = barWidth(tail.length());

@@ -65,6 +65,21 @@ class LoggingTest {
     }
 
     @Test
+    void capturedOutputDoesNotContainProgressFrames(@TempDir Path workspace) {
+        try (TestLogs logs = new TestLogs()) {
+            logs.begin(workspace);
+
+            Logging.progress("check", 0, 10, "object");
+            Logging.progress("check", 5, 10, "object");
+            Logging.progress("upload", 1, 10, 1024, "chunk");
+            Logging.clearProgress();
+
+            assertEquals("", logs.outText());
+            assertEquals("", logs.errText());
+        }
+    }
+
+    @Test
     void warningsAndErrorsGoToTheErrorStream(@TempDir Path workspace) {
         try (TestLogs logs = new TestLogs()) {
             logs.begin(workspace);

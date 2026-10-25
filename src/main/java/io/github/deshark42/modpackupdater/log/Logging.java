@@ -53,7 +53,12 @@ public final class Logging {
     /** Starts the run being logged; {@code clock} dates the transcript and ages out old ones. */
     public static void begin(Path workspace, String transcriptName, PrintStream out, PrintStream err,
             Clock clock) {
-        Run next = new Run(out, err, new Progress(err, bar(err)),
+        begin(workspace, transcriptName, out, err, clock, new Progress(err, bar(err)));
+    }
+
+    static void begin(Path workspace, String transcriptName, PrintStream out, PrintStream err,
+            Clock clock, Progress progress) {
+        Run next = new Run(out, err, progress,
                 transcriptName == null ? null : open(workspace, transcriptName, clock));
         run = next;
         if (next.transcript() != null) {
@@ -83,7 +88,12 @@ public final class Logging {
         }
     }
 
-    /** One file finished, for the bar drawn only on a terminal. */
+    /** Work counted in objects rather than transferred bytes. */
+    public static void progress(String verb, long done, long total, String noun) {
+        progress(verb, done, total, -1, noun);
+    }
+
+    /** Work finished, for the bar drawn only on a terminal. */
     public static void progress(String verb, long done, long total, long bytes, String noun) {
         Run current = run;
         if (current != null) {
