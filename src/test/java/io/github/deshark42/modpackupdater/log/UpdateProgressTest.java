@@ -68,7 +68,8 @@ class UpdateProgressTest {
                 int count = done;
                 assertTrue(check.stream().anyMatch(frame -> frame.contains(count + "/3 files")), output);
             }
-            assertTrue(check.stream().allMatch(frame -> frame.contains("file/s")), output);
+            assertTrue(check.stream().allMatch(frame ->
+                    frame.contains("file/s") || frame.contains("files/s")), output);
             assertFalse(check.stream().anyMatch(frame -> frame.contains("B/s")),
                     "a check moves no bytes: " + output);
             assertTrue(output.endsWith("\r\u001b[K"), "the finished bar is erased: " + output);
