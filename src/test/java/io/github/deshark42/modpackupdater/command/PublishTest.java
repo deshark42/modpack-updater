@@ -406,7 +406,8 @@ class PublishTest {
             Manifest manifest = Manifest.parse(s3.text(releaseKey("2.9.0")), "release");
             assertEquals(List.of("mods/a.jar"), List.copyOf(manifest.files().keySet()));
             assertTrue(captured.outText().contains(
-                    "removed 3 files from client/base by the 3 rules in client/remove.txt"),
+                    "removed 3 files from " + Path.of(TAG, "base") + " by the 3 rules in "
+                            + Path.of(TAG, "remove.txt")),
                     captured.outText());
             assertTrue(captured.errText().contains("matched nothing: ghost.jar"), captured.errText());
             String transcript = Files.readString(logs(workspace).get(0), StandardCharsets.UTF_8);
@@ -459,7 +460,8 @@ class PublishTest {
             List<String> bodies = lines.stream().map(PublishTest::body).toList();
             assertTrue(bodies.get(0).startsWith("logging this run to "), lines.toString());
             assertTrue(bodies.contains("publishing release 2.9.0 of tag client"), lines.toString());
-            assertTrue(bodies.stream().anyMatch(body -> body.startsWith("scanned client/base: 1 file")),
+            assertTrue(bodies.stream().anyMatch(
+                    body -> body.startsWith("scanned " + Path.of(TAG, "base") + ": 1 file")),
                     lines.toString());
             assertTrue(bodies.stream().anyMatch(body -> body.equals("split 1 file into 1 chunk")),
                     lines.toString());
