@@ -36,7 +36,8 @@ import org.apache.commons.compress.archivers.zip.ZipFile;
 /**
  * Materializes one publisher archive until all scans and random chunk reads have finished. The
  * staging tree is created private to the run, so its entries are not re-validated against the
- * workspace one by one; only the staging root itself is checked.
+ * workspace one by one during extraction; the staging root is checked when it is created, and
+ * cleanup still validates every stage directory before deleting it.
  */
 public final class BaseArchive implements AutoCloseable {
 

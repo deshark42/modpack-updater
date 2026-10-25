@@ -1,5 +1,6 @@
 package io.github.deshark42.modpackupdater.fs;
 
+import java.util.Collection;
 import java.util.Locale;
 
 /** Byte counts and byte rates for the lines the commands print. */
@@ -21,6 +22,15 @@ public final class Sizes {
             unit++;
         }
         return String.format(Locale.ROOT, "%.1f %s", value, UNITS[unit]);
+    }
+
+    /** The sum of a group of byte counts, such as a manifest's file sizes. */
+    public static long total(Collection<Long> sizes) {
+        long bytes = 0;
+        for (long size : sizes) {
+            bytes += size;
+        }
+        return bytes;
     }
 
     /** "17.5 B/s": a byte count spread over the time it took to move it. */

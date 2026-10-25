@@ -61,7 +61,7 @@ final class BaseSource implements AutoCloseable {
             for (Map.Entry<String, Path> entry : packed.entrySet()) {
                 String shown = Text.relativeTo(workspace, entry.getValue());
                 int filesBefore = result.sizes.size();
-                long bytesBefore = total(result.sizes);
+                long bytesBefore = Sizes.total(result.sizes.values());
                 long startedAt = System.nanoTime();
                 LOG.info("extracting {}", shown);
                 BaseArchive archive = BaseArchive.open(workspace, entry.getValue());
@@ -71,7 +71,7 @@ final class BaseSource implements AutoCloseable {
                 result.scan(archive.root(), prefix, null, false);
                 LOG.info("extracted {}: {}, {} in {}", shown,
                         Text.count(result.sizes.size() - filesBefore, "file"),
-                        Sizes.human(total(result.sizes) - bytesBefore),
+                        Sizes.human(Sizes.total(result.sizes.values()) - bytesBefore),
                         Text.duration(System.nanoTime() - startedAt));
             }
             result.inputs = hasBase
@@ -175,14 +175,6 @@ final class BaseSource implements AutoCloseable {
         } else {
             paths.put(key, source);
         }
-    }
-
-    private static long total(Map<String, Long> sizes) {
-        long bytes = 0;
-        for (long size : sizes.values()) {
-            bytes += size;
-        }
-        return bytes;
     }
 
     private Path identity(String logical) {
