@@ -255,6 +255,11 @@ class PublishTest {
             assertEquals(List.of(), staged(workspace), "the completed publish releases its archive staging");
             assertTrue(captured.outText().contains("4 files"), captured.outText());
             String transcript = Files.readString(logs(workspace).get(0), StandardCharsets.UTF_8);
+            String archiveName = workspace.relativize(archive).toString();
+            int extracting = transcript.indexOf("extracting " + archiveName);
+            int extracted = transcript.indexOf("extracted " + archiveName + " in ");
+            int scanned = transcript.indexOf("scanned ");
+            assertTrue(extracting >= 0 && extracted > extracting && scanned > extracted, transcript);
             assertTrue(transcript.contains("replaced download/mods/replace.jar ("), transcript);
             assertTrue(transcript.contains("dropped download/mods/remove.jar ("), transcript);
         }

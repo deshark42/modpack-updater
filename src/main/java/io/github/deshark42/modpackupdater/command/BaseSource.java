@@ -3,6 +3,7 @@ package io.github.deshark42.modpackupdater.command;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.BaseArchive;
 import io.github.deshark42.modpackupdater.fs.PathGuard;
+import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.IOException;
 import java.nio.file.FileVisitResult;
@@ -19,9 +20,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Merges base files with archive contents and owns extracted files until publication finishes. */
 final class BaseSource implements AutoCloseable {
+
+    private static final Logger LOG = LoggerFactory.getLogger(BaseSource.class);
 
     private final Path workspace;
     private final List<BaseArchive> archives = new ArrayList<>();
@@ -53,8 +58,12 @@ final class BaseSource implements AutoCloseable {
                 result.scan(packs, "", packed);
             }
             for (Map.Entry<String, Path> entry : packed.entrySet()) {
+                String archiveName = Text.relativeTo(workspace, entry.getValue());
+                LOG.info("extracting {}", archiveName);
+                long startedAt = System.nanoTime();
                 BaseArchive archive = BaseArchive.open(workspace, entry.getValue());
                 result.archives.add(archive);
+                LOG.info("extracted {} in {}", archiveName, Text.duration(System.nanoTime() - startedAt));
                 int slash = entry.getKey().lastIndexOf('/');
                 String prefix = slash < 0 ? "" : entry.getKey().substring(0, slash);
                 result.scan(archive.root(), prefix, null);
@@ -90,11 +99,12 @@ final class BaseSource implements AutoCloseable {
     }
 
     private void scan(Path root, String prefix, Map<String, Path> packed) {
+        PathGuard guard = PathGuard.at(workspace);
         try {
             Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) {
-                    PathGuard.require(workspace, directory);
+                    guard.require(directory);
                     String path = target(prefix, root.relativize(directory));
                     if (packed == null && !directory.equals(root)) {
                         register(path, directory, true);
@@ -104,7 +114,7 @@ final class BaseSource implements AutoCloseable {
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
-                    PathGuard.require(workspace, file);
+                    guard.require(file);
                     if (!attributes.isRegularFile()) {
                         throw new UserError("base input is not a regular file: " + file);
                     }

@@ -43,6 +43,7 @@ public final class BaseArchive implements AutoCloseable {
     private final Path workspace;
     private final Path archive;
     private final Path root;
+    private final PathGuard guard;
     private final Set<String> entries = new HashSet<>();
     private final Map<String, Boolean> directories = new HashMap<>();
     private final byte[] buffer = new byte[64 * 1024];
@@ -52,6 +53,7 @@ public final class BaseArchive implements AutoCloseable {
         this.workspace = workspace;
         this.archive = archive;
         this.root = root;
+        this.guard = PathGuard.at(workspace);
     }
 
     public static BaseArchive open(Path workspace, Path archive) {
@@ -241,7 +243,7 @@ public final class BaseArchive implements AutoCloseable {
             slash = relative.indexOf('/', slash + 1);
         }
         directories.put(relative, directory);
-        return PathGuard.require(workspace, root.resolve(relative));
+        return root.resolve(relative);
     }
 
     private static String relative(String name, boolean directory) throws IOException {
@@ -271,12 +273,9 @@ public final class BaseArchive implements AutoCloseable {
         if (size < 0 || (directory && size != 0)) {
             throw new IOException("invalid entry size: " + root.relativize(target));
         }
-        Files.createDirectories(PathGuard.require(workspace, target.getParent()));
-        PathGuard.require(workspace, target);
-        if (directory) {
-            Files.createDirectories(target);
-            PathGuard.require(workspace, target);
-        }
+        guard.require(target);
+        Files.createDirectories(directory ? target : target.getParent());
+        guard.require(target);
         CRC32 crc = new CRC32();
         long count = 0;
         try (OutputStream out = directory ? OutputStream.nullOutputStream()
@@ -292,7 +291,7 @@ public final class BaseArchive implements AutoCloseable {
                 out.write(buffer, 0, read);
             }
         }
-        PathGuard.require(workspace, target);
+        guard.require(target);
         if (count != size || (checksum >= 0 && crc.getValue() != checksum)) {
             throw new IOException("entry size or checksum mismatch: " + root.relativize(target));
         }
@@ -312,7 +311,8 @@ public final class BaseArchive implements AutoCloseable {
     }
 
     private static void deleteStage(Path workspace, Path stage) throws IOException {
-        PathGuard.require(workspace, stage);
+        PathGuard guard = PathGuard.at(workspace);
+        guard.require(stage);
         if (!Files.exists(stage, LinkOption.NOFOLLOW_LINKS)) {
             return;
         }
@@ -320,13 +320,13 @@ public final class BaseArchive implements AutoCloseable {
         Files.walkFileTree(stage, new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) {
-                PathGuard.require(workspace, directory);
+                guard.require(directory);
                 return FileVisitResult.CONTINUE;
             }
 
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
-                PathGuard.require(workspace, file.getParent());
+                guard.require(file.getParent());
                 Files.delete(file);
                 return FileVisitResult.CONTINUE;
             }
@@ -336,7 +336,7 @@ public final class BaseArchive implements AutoCloseable {
                 if (error != null) {
                     throw error;
                 }
-                PathGuard.require(workspace, directory);
+                guard.require(directory);
                 Files.delete(directory);
                 return FileVisitResult.CONTINUE;
             }

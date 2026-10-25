@@ -14,6 +14,10 @@ import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class PathGuardTest {
 
@@ -99,7 +103,75 @@ class PathGuardTest {
         Path file = selected.resolve("mods/a.jar");
         assertEquals(selected, PathGuard.require(selected, selected));
         assertEquals(file, PathGuard.require(selected, file));
+        assertEquals(file, PathGuard.at(selected).require(file));
         assertEquals("A", Files.readString(file));
+    }
+
+    @Test
+    void rechecksNewAndReplacedDescendantsOfACapturedRoot(@TempDir Path root) throws Exception {
+        Path workspace = Files.createDirectory(root.resolve("instance"));
+        Path outside = Files.createDirectory(root.resolve("outside"));
+        PathGuard guard = PathGuard.at(workspace);
+        Path parent = workspace.resolve("mods");
+        Path file = parent.resolve("nested/a.jar");
+        assertEquals(file, guard.require(file));
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "ordinary file");
+        assertEquals(file, guard.require(file));
+        // Keep the checked tree, but replace its original name with a junction/symlink.
+        Files.move(parent, workspace.resolve("old-mods"));
+        directoryLink(parent, outside);
+
+        UserError error = assertThrows(UserError.class, () -> guard.require(file));
+
+        assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
+        try (var files = Files.list(outside)) {
+            assertEquals(0, files.count());
+        }
+    }
+
+    @Test
+    void capturedRootStillRejectsEscapesAndPermitsFileToDirectoryTransitions(@TempDir Path root)
+            throws IOException {
+        Path workspace = Files.createDirectory(root.resolve("instance"));
+        PathGuard guard = PathGuard.at(workspace);
+        Path file = workspace.resolve("mods/nested/a.jar");
+        TestFiles.write(workspace, "mods", "old file");
+
+        assertEquals(file, guard.require(file));
+        assertThrows(UserError.class, () -> guard.require(root.resolve("outside")));
+        Files.delete(workspace.resolve("mods"));
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "new file");
+        assertEquals(file, guard.require(file));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"existing.jar", "missing/a.jar"})
+    void rejectsNestedLinksEvenWhenTheirTargetsStayInsideTheRoot(String suffix, @TempDir Path root)
+            throws Exception {
+        Path state = Files.createDirectories(root.resolve(".modpack-updater/state"));
+        Files.writeString(state.resolve("existing.jar"), "internal state");
+        Path parent = Files.createDirectories(root.resolve("nested/ordinary"));
+        directoryLink(parent.resolve("linked"), state);
+        Path target = parent.resolve("linked").resolve(suffix);
+
+        assertThrows(UserError.class, () -> PathGuard.require(root, target));
+        assertThrows(UserError.class, () -> PathGuard.at(root).require(target));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"existing.jar", "missing/a.jar"})
+    @EnabledOnOs(OS.WINDOWS)
+    void rejectsNativeDirectoryAliasesBeforeExistingAndMissingSuffixes(String suffix, @TempDir Path root)
+            throws IOException {
+        Path directory = Files.createDirectory(root.resolve("mods"));
+        Files.writeString(directory.resolve("existing.jar"), "ordinary file");
+        // Win32 accepts a trailing dot as an alias for the directory, without a reparse point.
+        Path target = root.resolve("mods.").resolve(suffix);
+
+        assertThrows(UserError.class, () -> PathGuard.require(root, target));
+        assertThrows(UserError.class, () -> PathGuard.at(root).require(target));
     }
 
     @Test
