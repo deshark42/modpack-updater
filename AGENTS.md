@@ -73,3 +73,5 @@ Before pushing, follow [pre-push-checks](.agents/skills/pre-push-checks/SKILL.md
 ## Conventions
 
 - **Create Agent Notes only for durable decision rationale;** mechanical/local edits are exempt, including local UI changes ([scope](.agents/notes/README.md#when-to-write-one)). Archived notes are frozen: never edit or treat them as current authority ([archive policy](.agents/notes/README.md#archiving-and-deletion)).
+
+- **Testing policy** — [docs/testing.md](docs/testing.md).
