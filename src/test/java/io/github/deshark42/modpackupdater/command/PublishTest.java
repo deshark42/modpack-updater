@@ -254,6 +254,9 @@ class PublishTest {
             }
             assertEquals(List.of(), staged(workspace), "the completed publish releases its archive staging");
             assertTrue(captured.outText().contains("4 files"), captured.outText());
+            String shown = Path.of(TAG, "base_pack", "instance." + extension).toString();
+            assertTrue(captured.outText().contains("extracting " + shown), captured.outText());
+            assertTrue(captured.outText().contains("extracted " + shown + ": 5 files"), captured.outText());
             String transcript = Files.readString(logs(workspace).get(0), StandardCharsets.UTF_8);
             assertTrue(transcript.contains("replaced download/mods/replace.jar ("), transcript);
             assertTrue(transcript.contains("dropped download/mods/remove.jar ("), transcript);

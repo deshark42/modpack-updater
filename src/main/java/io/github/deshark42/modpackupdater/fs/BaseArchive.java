@@ -33,7 +33,11 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipExtraField;
 import org.apache.commons.compress.archivers.zip.ZipFile;
 
-/** Materializes one publisher archive until all scans and random chunk reads have finished. */
+/**
+ * Materializes one publisher archive until all scans and random chunk reads have finished. The
+ * staging tree is created private to the run, so its entries are not re-validated against the
+ * workspace one by one; only the staging root itself is checked.
+ */
 public final class BaseArchive implements AutoCloseable {
 
     private static final int SEVEN_Z_MEMORY_LIMIT_KIB = 256 * 1024;
@@ -51,7 +55,7 @@ public final class BaseArchive implements AutoCloseable {
     private BaseArchive(Path workspace, Path archive, Path root) {
         this.workspace = workspace;
         this.archive = archive;
-        this.root = root;
+        this.root = root.normalize();
     }
 
     public static BaseArchive open(Path workspace, Path archive) {
@@ -241,7 +245,21 @@ public final class BaseArchive implements AutoCloseable {
             slash = relative.indexOf('/', slash + 1);
         }
         directories.put(relative, directory);
-        return PathGuard.require(workspace, root.resolve(relative));
+        return entryPath(relative);
+    }
+
+    /**
+     * Resolves one validated entry name below the staging root. Nothing below that root can already
+     * be a link: {@link #open} creates the root empty, so the per-entry real path walk PathGuard
+     * performs elsewhere would only re-resolve files and directories this class just created. The
+     * containment check keeps a future resolver change from escaping the staging root.
+     */
+    private Path entryPath(String relative) throws IOException {
+        Path target = root.resolve(relative).normalize();
+        if (!target.startsWith(root)) {
+            throw new IOException("unsafe entry path: " + relative);
+        }
+        return target;
     }
 
     private static String relative(String name, boolean directory) throws IOException {
@@ -271,11 +289,9 @@ public final class BaseArchive implements AutoCloseable {
         if (size < 0 || (directory && size != 0)) {
             throw new IOException("invalid entry size: " + root.relativize(target));
         }
-        Files.createDirectories(PathGuard.require(workspace, target.getParent()));
-        PathGuard.require(workspace, target);
+        Files.createDirectories(target.getParent());
         if (directory) {
             Files.createDirectories(target);
-            PathGuard.require(workspace, target);
         }
         CRC32 crc = new CRC32();
         long count = 0;
@@ -292,7 +308,6 @@ public final class BaseArchive implements AutoCloseable {
                 out.write(buffer, 0, read);
             }
         }
-        PathGuard.require(workspace, target);
         if (count != size || (checksum >= 0 && crc.getValue() != checksum)) {
             throw new IOException("entry size or checksum mismatch: " + root.relativize(target));
         }
