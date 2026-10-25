@@ -126,6 +126,7 @@ public final class Cli {
                     }
                     for (String updateTag : updateTags) {
                         action = "updating tag " + updateTag;
+                        Logging.resetProgress();
                         Update.run(workspace, updateTag, releaseId);
                     }
                     return OK;

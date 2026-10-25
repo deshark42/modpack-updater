@@ -75,6 +75,12 @@ final class Progress {
         drawn = true;
     }
 
+    /** Starts a separate operation, even when it reports the same verb as the previous one. */
+    synchronized void reset() {
+        clear();
+        verb = null;
+    }
+
     /** Erases the bar, if one is on screen, so whatever is printed next starts on a clean line. */
     synchronized void clear() {
         if (drawn) {

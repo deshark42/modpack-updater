@@ -52,6 +52,44 @@ class ProgressTest {
     }
 
     @Test
+    void resettingRestartsTheSettleWindowAndRateForTheSameVerb() {
+        progress.update("download", 100, 1000, 1_048_576, "chunk");
+        nanos.addAndGet(1_000_000_000L);
+        progress.update("download", 200, 1000, 2_097_152, "chunk");
+        output.reset();
+
+        progress.reset();
+
+        assertEquals("\r\u001b[K", text());
+        output.reset();
+        progress.update("download", 1, 10, 1024, "chunk");
+        assertEquals("", text());
+        nanos.addAndGet(200_000_000L);
+        progress.update("download", 2, 10, 2048, "chunk");
+        assertEquals("", text(), "the new transfer gets its own settle window");
+        nanos.addAndGet(800_000_000L);
+        progress.update("download", 3, 10, 3072, "chunk");
+
+        assertTrue(text().contains("30% · 3/10 chunks · 2.0 KiB/s · ETA 0:04"), text());
+        assertFalse(text().contains("· -"), "the earlier transfer cannot produce a negative rate: " + text());
+    }
+
+    @Test
+    void clearingPreservesTheCurrentTransfersRateAndTimer() {
+        progress.update("download", 10, 100, 10_240, "chunk");
+        nanos.addAndGet(1_000_000_000L);
+        progress.update("download", 20, 100, 20_480, "chunk");
+
+        progress.clear();
+
+        output.reset();
+        nanos.addAndGet(100_000_000L);
+        progress.update("download", 21, 100, 21_504, "chunk");
+
+        assertTrue(text().contains("21% · 21/100 chunks · 10.0 KiB/s · ETA 0:08"), text());
+    }
+
+    @Test
     void quickChecksAndEmptyWorkDoNotDrawAFrame() {
         progress.update("check", 0, 0, -1, "object");
         progress.update("check", 0, 2, -1, "object");

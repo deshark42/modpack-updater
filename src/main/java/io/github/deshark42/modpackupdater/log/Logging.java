@@ -88,6 +88,14 @@ public final class Logging {
         }
     }
 
+    /** Starts a separate operation with fresh progress statistics without reopening the transcript. */
+    public static void resetProgress() {
+        Run current = run;
+        if (current != null) {
+            current.progress().reset();
+        }
+    }
+
     /** Work counted in objects rather than transferred bytes. */
     public static void progress(String verb, long done, long total, String noun) {
         progress(verb, done, total, -1, noun);
