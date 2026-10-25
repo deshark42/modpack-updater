@@ -6,10 +6,13 @@ import io.github.deshark42.modpackupdater.command.Keygen;
 import io.github.deshark42.modpackupdater.command.Publish;
 import io.github.deshark42.modpackupdater.command.Update;
 import io.github.deshark42.modpackupdater.log.Logging;
+import io.github.deshark42.modpackupdater.model.Names;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,11 +27,12 @@ public final class Cli {
 
     private static final String USAGE = String.join(System.lineSeparator(),
             "usage: modpack-updater publish --tag <tag> --id <release-id> [options]",
-            "       modpack-updater update --tag <tag> [--id <release-id>] [options]",
+            "       modpack-updater update --tag <tag> [--tag <tag> ...] [--id <release-id>] [options]",
             "       modpack-updater init [--tag <tag>] [options]",
             "       modpack-updater keygen [--workspace <dir>]",
             "options: --workspace <dir>   work in this directory instead of the current one",
-            "         --id <release-id>   update: apply this release instead of the latest one",
+            "         --tag <tag>         update: repeat to update tags in order; stop on the first failure",
+            "         --id <release-id>   update: apply this release (one distinct tag only)",
             "         --cache-max-age-days <days>",
             "                             how long the local blob cache stays usable (default "
                     + Publish.DEFAULT_CACHE_MAX_AGE_DAYS + ")");
@@ -42,6 +46,7 @@ public final class Cli {
         }
         String command = args[0];
         Map<String, String> options = new HashMap<>();
+        Set<String> updateTags = new LinkedHashSet<>();
         for (int i = 1; i < args.length; i++) {
             String argument = args[i];
             switch (argument) {
@@ -49,7 +54,11 @@ public final class Cli {
                     if (i + 1 == args.length) {
                         return usage(err, argument + " needs a value");
                     }
-                    options.put(argument.substring(2), args[++i]);
+                    String value = args[++i];
+                    options.put(argument.substring(2), value);
+                    if (command.equals("update") && argument.equals("--tag")) {
+                        updateTags.add(value);
+                    }
                 }
                 default -> {
                     return usage(err, "unknown option: " + argument);
@@ -96,15 +105,29 @@ public final class Cli {
                     return OK;
                 }
                 case "update" -> {
-                    if (tag == null) {
+                    if (updateTags.isEmpty()) {
                         return usage(err, "update needs --tag <tag>");
                     }
                     if (options.containsKey("cache-max-age-days")) {
                         return usage(err, "update does not take --cache-max-age-days");
                     }
-                    action = "updating tag " + tag;
-                    Logging.begin(workspace, "update-" + tag, out, err);
-                    Update.run(workspace, tag, options.get("id"));
+                    String releaseId = options.get("id");
+                    if (updateTags.size() > 1 && releaseId != null) {
+                        return usage(err, "update with multiple tags does not take --id");
+                    }
+                    action = "updating tag " + updateTags.iterator().next();
+                    Logging.begin(workspace, updateTags.size() == 1 ? "update-" + tag : "update", out, err);
+                    for (String updateTag : updateTags) {
+                        action = "updating tag " + updateTag;
+                        Names.requireTag(updateTag);
+                    }
+                    if (releaseId != null) {
+                        Names.requireReleaseId(releaseId);
+                    }
+                    for (String updateTag : updateTags) {
+                        action = "updating tag " + updateTag;
+                        Update.run(workspace, updateTag, releaseId);
+                    }
                     return OK;
                 }
                 case "init" -> {

@@ -53,9 +53,12 @@ java -jar build/libs/modpack-updater-<version>.jar init [--tag <tag>]
 java -jar build/libs/modpack-updater-<version>.jar keygen
 java -jar build/libs/modpack-updater-<version>.jar publish --tag <tag> --id <release-id>
 java -jar build/libs/modpack-updater-<version>.jar update --tag <tag> [--id <release-id>]
+java -jar build/libs/modpack-updater-<version>.jar update --tag <tag> --tag <tag> [--tag <tag> ...]
 ```
 
 All commands take `--workspace`; `--cache-max-age-days` belongs to `publish`.
+
+For `update`, repeated `--tag` values run sequentially in first-occurrence order, with duplicates skipped. The first failure stops the batch; earlier successful tags are not rolled back. `--id` is only allowed with one distinct tag. This is not a merged subscription or an overlay: tag payload paths must not conflict, including file/directory prefixes.
 
 Publisher setup, trusted public key distribution and mandatory release verification are documented in [README.md](README.md).
 
