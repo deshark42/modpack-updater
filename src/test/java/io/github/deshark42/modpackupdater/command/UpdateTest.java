@@ -74,6 +74,13 @@ class UpdateTest {
         return parts.length < 4 ? "" : parts[3];
     }
 
+    private static List<String> stageStarts(String transcript) {
+        String prefix = "tag " + TAG + ": ";
+        return transcript.lines().filter(line -> line.contains(" DEBUG ")).map(UpdateTest::body)
+                .filter(message -> message.startsWith(prefix))
+                .map(message -> message.substring(prefix.length())).toList();
+    }
+
     /** Whether this is the transcript line that reports one added, replaced or deleted path. */
     private static boolean isItemLine(String line) {
         String message = body(line);
@@ -651,6 +658,18 @@ class UpdateTest {
                     "one file line per file, none per chunk: " + transcript);
             assertTrue(transcript.contains("downloaded "), transcript);
             assertEquals(0, reportedReuse(player), "a first update has no local copy to reuse");
+            assertEquals(List.of(
+                    "loading workspace configuration", "validating signing key paths", "loading trusted public key",
+                    "locating updater and workspace", "initializing object store", "resolving latest release",
+                    "reading local release pointer", "fetching target manifest for release 2.9.0",
+                    "fetching target signature for release 2.9.0", "verifying target signature for release 2.9.0",
+                    "parsing and validating target manifest for release 2.9.0",
+                    "checking 5 target manifest paths for release 2.9.0", "building update plan",
+                    "validating affected paths and backups", "checking local target content", "preparing staging directories",
+                    "fetching chunk tables", "finding reusable local chunks", "planning missing chunks",
+                    "downloading missing chunks", "assembling target files", "applying files and moving backups",
+                    "cleaning staging directories", "writing local release state"), stageStarts(transcript));
+            assertFalse(captured.outText().contains("tag client:"), "stage details stay out of the console");
 
             ChunkTableSplit split = split(publisher, TAG, "mods/a.jar");
             assertTrue(split.table().chunks().size() > 1, "the sample is split into several chunks");
@@ -1100,6 +1119,7 @@ class UpdateTest {
             publish(publisher, TAG, "2.9.1", Map.of("mods/a.jar", TestFiles.bytes("A2")));
             s3.fail("GET", releaseKey(TAG, "2.9.1"), 500);
             int requestsBefore = s3.requests().size();
+            int transcriptBefore = transcript(player).length();
 
             UserError error = assertThrows(UserError.class,
                     () -> update(player, TAG, null));
@@ -1112,6 +1132,9 @@ class UpdateTest {
             List<String> requests = s3.requests().subList(requestsBefore, s3.requests().size());
             assertTrue(requests.stream().noneMatch(request -> request.startsWith("GET " + TestWorkspace.bucketPath(
                     ObjectKeys.BLOB + "/"))), requests.toString());
+            List<String> stages = stageStarts(transcript(player).substring(transcriptBefore));
+            assertEquals("fetching target manifest for release 2.9.1", stages.get(stages.size() - 1),
+                    "the failing stage is logged before its request, not only after success");
         }
     }
 
@@ -1142,10 +1165,20 @@ class UpdateTest {
             }
 
             int beforeSecond = s3.requests().size();
+            int transcriptBeforeSecond = transcript(player).length();
             update(player, TAG, null);
             assertEquals(List.of("GET " + latestKey(TAG)),
                     s3.requests().subList(beforeSecond, s3.requests().size()),
                     "a workspace that is already at the latest release only reads its pointer");
+            String secondTranscript = transcript(player).substring(transcriptBeforeSecond);
+            assertEquals(List.of(
+                    "loading workspace configuration", "validating signing key paths", "loading trusted public key",
+                    "locating updater and workspace", "initializing object store", "resolving latest release",
+                    "reading local release pointer", "reading local manifest for release 2.9.0",
+                    "checking 2 local manifest paths for release 2.9.0"), stageStarts(secondTranscript));
+            assertFalse(captured.outText().contains("tag client:"), "stage details stay out of the console");
+            List<String> messages = captured.outText().lines().map(UpdateTest::body).toList();
+            assertEquals("tag client is already at release 2.9.0", messages.get(messages.size() - 1));
         }
     }
 

@@ -86,16 +86,23 @@ public final class Update {
             Names.requireReleaseId(releaseId);
         }
         long startedAt = System.nanoTime();
+        LOG.debug("tag {}: loading workspace configuration", tag);
         Config config = Workspace.load(workspace);
+        LOG.debug("tag {}: validating signing key paths", tag);
         config.privateKeyFile(workspace); // Validate its location without requiring a subscriber to hold a private key.
-        PublicKey trustedKey = ReleaseSigning.publicKey(config.publicKeyFile(workspace));
+        Path publicKeyFile = config.publicKeyFile(workspace);
+        LOG.debug("tag {}: loading trusted public key", tag);
+        PublicKey trustedKey = ReleaseSigning.publicKey(publicKeyFile);
+        LOG.debug("tag {}: locating updater and workspace", tag);
         UpdaterProtection protection = new UpdaterProtection(workspace, updater);
+        LOG.debug("tag {}: initializing object store", tag);
         ObjectReader store = config.readEndpoint() == null ? new S3Store(config) : new S3ReadStore(config);
 
         // an explicit release id bypasses latest.json entirely, so a pinned update works even while
         // the pointer is missing or names a release the caller does not want
         String targetId = releaseId;
         if (targetId == null) {
+            LOG.debug("tag {}: resolving latest release", tag);
             String latestKey = ObjectKeys.latest(tag);
             Pointer latest = Pointer.parse(new String(store.getBytes(latestKey), StandardCharsets.UTF_8),
                     store.key(latestKey));
@@ -104,6 +111,7 @@ public final class Update {
 
         String applied = null;
         Manifest local = null;
+        LOG.debug("tag {}: reading local release pointer", tag);
         Path currentFile = Layout.currentFile(workspace, tag);
         if (Files.exists(currentFile)) {
             applied = Pointer.read(currentFile).releaseId();
@@ -112,7 +120,9 @@ public final class Update {
                 throw new UserError("cannot tell which files are already applied: " + appliedManifest
                         + " is missing; restore it or delete " + currentFile);
             }
+            LOG.debug("tag {}: reading local manifest for release {}", tag, applied);
             local = Manifest.read(appliedManifest);
+            LOG.debug("tag {}: checking {} local manifest paths for release {}", tag, local.files().size(), applied);
             protection.require(local);
         }
 
@@ -122,16 +132,22 @@ public final class Update {
         }
         LOG.info("updating tag {} to release {}", tag, targetId);
 
+        LOG.debug("tag {}: fetching target manifest for release {}", tag, targetId);
         String targetKey = ObjectKeys.release(tag, targetId);
         byte[] manifestBytes = store.getBytes(targetKey);
+        LOG.debug("tag {}: fetching target signature for release {}", tag, targetId);
         byte[] signature = store.getBytes(ObjectKeys.signature(tag, targetId));
+        LOG.debug("tag {}: verifying target signature for release {}", tag, targetId);
         ReleaseSigning.verify(manifestBytes, signature, trustedKey);
+        LOG.debug("tag {}: parsing and validating target manifest for release {}", tag, targetId);
         Manifest target = Manifest.parse(new String(manifestBytes, StandardCharsets.UTF_8), store.key(targetKey));
         if (!tag.equals(target.tag()) || !targetId.equals(target.releaseId())) {
             throw new UserError("signed manifest identity does not match requested tag " + tag + " release " + targetId);
         }
+        LOG.debug("tag {}: checking {} target manifest paths for release {}", tag, target.files().size(), targetId);
         protection.require(target);
         LOG.info("verified the release signature for tag {} release {}", tag, targetId);
+        LOG.debug("tag {}: building update plan", tag);
         Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
         Plan plan = Plan.between(local, target);
         if (applied == null) {
@@ -152,6 +168,7 @@ public final class Update {
 
         // files moved out of the way are named after the release they came from; a first update has
         // no such release, so it gets a directory no release id can name
+        LOG.debug("tag {}: validating affected paths and backups", tag);
         Path backup = applied == null
                 ? Layout.initialBackupDir(workspace, tag)
                 : Layout.backupDir(workspace, tag, applied);
@@ -173,6 +190,7 @@ public final class Update {
         long downloadNanos = 0;
         int reused = 0;
         int reusedFiles = 0;
+        LOG.debug("tag {}: checking local target content", tag);
         Path blobDir = Layout.blobTempDir(workspace);
         Path fileDir = Layout.fileTempDir(workspace);
         try {
@@ -209,12 +227,16 @@ public final class Update {
                 }
                 LOG.debug("fetching {} ({})", Text.count(toFetch.size(), "file"),
                         Sizes.human(neededBytes));
+                LOG.debug("tag {}: preparing staging directories", tag);
                 deleteTree(workspace, blobDir);
                 deleteTree(workspace, fileDir);
                 try {
+                    LOG.debug("tag {}: fetching chunk tables", tag);
                     Map<String, ChunkTable> tables = chunkTables(store, target, toFetch, config.concurrency());
+                    LOG.debug("tag {}: finding reusable local chunks", tag);
                     Reuse reuse = localChunks(workspace, backup, plan, toFetch, tag, targetId, target, tables,
                             config.concurrency());
+                    LOG.debug("tag {}: planning missing chunks", tag);
                     Map<String, Local> existing = reuse.chunks();
                     Set<String> needed = new LinkedHashSet<>();
                     for (String path : toFetch) {
@@ -233,11 +255,13 @@ public final class Update {
                                 Text.count(reusedFiles, "file"));
                     }
                     if (!missing.isEmpty()) {
+                        LOG.debug("tag {}: downloading missing chunks", tag);
                         Files.createDirectories(blobDir);
                         Download download = download(store, missing, blobDir, config.concurrency());
                         downloadedBytes = download.bytes();
                         downloadNanos = download.nanos();
                     }
+                    LOG.debug("tag {}: assembling target files", tag);
                     assembled = assembleAll(toFetch, target, tables, existing, blobDir, fileDir,
                             config.concurrency());
                 } catch (IOException e) {
@@ -249,6 +273,7 @@ public final class Update {
             // Deletions go first, so a path that becomes a file can replace a directory that shrank
             // out of the manifest. A target that already exists is moved aside before its new
             // content goes in, which is what makes the old file recoverable.
+            LOG.debug("tag {}: applying files and moving backups", tag);
             for (String path : plan.deleted()) {
                 moved += moveAside(workspace, backup, path) ? 1 : 0;
             }
@@ -276,10 +301,12 @@ public final class Update {
                         Text.relativeTo(workspace, backup));
             }
         } finally {
+            LOG.debug("tag {}: cleaning staging directories", tag);
             deleteTree(workspace, blobDir);
             deleteTree(workspace, fileDir);
         }
 
+        LOG.debug("tag {}: writing local release state", tag);
         target.write(releaseFile);
         new Pointer(target.releaseId()).write(currentFile);
         LOG.info("wrote {}", Text.relativeTo(workspace, releaseFile));
