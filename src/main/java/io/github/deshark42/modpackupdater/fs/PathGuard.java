@@ -7,6 +7,10 @@ import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 /** Rejects filesystem redirections below a caller-selected root, including Windows junctions. */
 public final class PathGuard {
@@ -34,7 +38,26 @@ public final class PathGuard {
     }
 
     public Path require(Path path) {
-        return require(base, path, realBase);
+        inspect(base, path, realBase, null);
+        return path;
+    }
+
+    /**
+     * Checks one read-only set of paths, sharing metadata only during this invocation. Returns the
+     * attributes of fully existing requested paths, keyed by absolute normalized path; missing paths
+     * and paths blocked by an ordinary file have no entry. Do not use this snapshot across mutations.
+     * Ordinary require calls and subsequent inspections still check descendants afresh.
+     */
+    public Map<Path, BasicFileAttributes> inspectAll(Iterable<Path> paths) {
+        Inspection inspection = new Inspection();
+        Map<Path, BasicFileAttributes> result = new HashMap<>();
+        for (Path path : paths) {
+            BasicFileAttributes attributes = inspect(base, path, realBase, inspection);
+            if (attributes != null) {
+                result.put(path.toAbsolutePath().normalize(), attributes);
+            }
+        }
+        return Map.copyOf(result);
     }
 
     /**
@@ -45,39 +68,55 @@ public final class PathGuard {
      */
     public static Path require(Path root, Path path) {
         Path base = root.toAbsolutePath().normalize();
-        return require(base, path, null);
+        inspect(base, path, null, null);
+        return path;
     }
 
-    private static Path require(Path base, Path path, Path realBase) {
+    private static BasicFileAttributes inspect(Path base, Path path, Path realBase, Inspection inspection) {
         Path absolute = path.toAbsolutePath().normalize();
         if (!absolute.startsWith(base)) {
             throw new UserError("path escapes its filesystem root: " + path);
         }
-        if (absolute.equals(base)) {
-            return path;
+        if (absolute.equals(base) && inspection == null) {
+            return null;
         }
         try {
+            if (absolute.equals(base)) {
+                return Files.readAttributes(base, BasicFileAttributes.class); // The selected root may be a link.
+            }
             if (realBase == null) {
                 try {
                     realBase = base.toRealPath();
                 } catch (NoSuchFileException e) {
-                    return path; // a new workspace has no existing descendants yet
+                    return null; // a new workspace has no existing descendants yet
                 }
             }
             Path current = base;
             Path existing = base;
+            BasicFileAttributes deepest = null;
             for (Path part : base.relativize(absolute)) {
                 current = current.resolve(part);
                 BasicFileAttributes attributes;
-                try {
-                    attributes = Files.readAttributes(current, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-                } catch (NoSuchFileException e) {
+                if (inspection != null && inspection.attributes.containsKey(current)) {
+                    attributes = inspection.attributes.get(current);
+                } else {
+                    try {
+                        attributes = Files.readAttributes(current, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                    } catch (NoSuchFileException e) {
+                        attributes = null;
+                    }
+                    if (inspection != null) {
+                        inspection.attributes.put(current, attributes);
+                    }
+                }
+                if (attributes == null) {
                     break;
                 }
                 if (attributes.isSymbolicLink() || attributes.isOther()) {
                     throw new UserError("refusing a filesystem link or alias below the workspace: " + current);
                 }
                 existing = current;
+                deepest = attributes;
                 if (!attributes.isDirectory()) {
                     break; // an ordinary file may be replaced with a directory during apply
                 }
@@ -85,13 +124,23 @@ public final class PathGuard {
             // Resolve the deepest existing path once, rather than resolving every prefix (each
             // of which walks its ancestors again on Windows). Attribute checks above still reject
             // every link, including internal and dangling links; this also catches native aliases.
-            Path expected = realBase.resolve(base.relativize(existing));
-            if (!existing.equals(base) && !existing.toRealPath().equals(expected)) {
-                throw new UserError("refusing a filesystem link or alias below the workspace: " + existing);
+            if (!existing.equals(base) && (inspection == null || !inspection.realPaths.contains(existing))) {
+                Path expected = realBase.resolve(base.relativize(existing));
+                if (!existing.toRealPath().equals(expected)) {
+                    throw new UserError("refusing a filesystem link or alias below the workspace: " + existing);
+                }
+                if (inspection != null) {
+                    inspection.realPaths.add(existing);
+                }
             }
-            return path;
+            return absolute.equals(existing) ? deepest : null;
         } catch (IOException e) {
             throw new UserError("cannot check filesystem path " + path + ": " + e.getMessage(), e);
         }
+    }
+
+    private static final class Inspection {
+        private final Map<Path, BasicFileAttributes> attributes = new HashMap<>();
+        private final Set<Path> realPaths = new HashSet<>();
     }
 }

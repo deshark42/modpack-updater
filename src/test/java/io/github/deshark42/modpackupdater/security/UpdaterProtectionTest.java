@@ -81,7 +81,7 @@ class UpdaterProtectionTest {
     }
 
     @Test
-    void rejectsAFileIdentityAliasToAnExternalUpdater(@TempDir Path root) throws IOException {
+    void rejectsAResizedUpdaterHardLinkEvenWithMisleadingMetadata(@TempDir Path root) throws IOException {
         Path workspace = Files.createDirectory(root.resolve("instance"));
         TestFiles.write(root, "runner.jar", "external updater");
         try {
@@ -89,12 +89,52 @@ class UpdaterProtectionTest {
         } catch (UnsupportedOperationException | IOException e) {
             assumeTrue(false, "hard links require filesystem support: " + e);
         }
+        // NTFS may retain the old size in the alias's directory entry after this write.
+        Files.writeString(root.resolve("runner.jar"), "resized external updater");
         UpdaterProtection protection = new UpdaterProtection(workspace, root.resolve("runner.jar"));
+        assertTrue(Files.size(workspace.resolve("alias.jar")) > manifest("alias.jar").files().get("alias.jar").size(),
+                "manifest size is not the on-disk size and must not filter out this hard link");
 
         UserError error = assertThrows(UserError.class, () -> protection.require(manifest("alias.jar")));
 
         assertTrue(error.getMessage().contains("running updater"), error.getMessage());
-        assertEquals("external updater", Files.readString(root.resolve("runner.jar")));
+        assertEquals("resized external updater", Files.readString(root.resolve("runner.jar")));
+    }
+
+    @ParameterizedTest(name = "unrelated existing content: {0}")
+    @ValueSource(strings = {"", "payload", "a larger payload"})
+    void permitsExistingFilesRegardlessOfTheirSize(String content, @TempDir Path root) throws IOException {
+        TestFiles.write(root, "runner.jar", "updater");
+        TestFiles.write(root, "mods/a.jar", content);
+        UpdaterProtection protection = new UpdaterProtection(root, root.resolve("runner.jar"));
+
+        protection.require(manifest("mods/a.jar"));
+
+        assertEquals(content, Files.readString(root.resolve("mods/a.jar")));
+        assertEquals("updater", Files.readString(root.resolve("runner.jar")));
+    }
+
+    @Test
+    void rechecksPayloadIdentityOnEachManifest(@TempDir Path root) throws IOException {
+        TestFiles.write(root, "runner.jar", "updater");
+        TestFiles.write(root, "mods/a.jar", "ordinary payload");
+        Path updater = root.resolve("runner.jar");
+        Path payload = root.resolve("mods/a.jar");
+        UpdaterProtection protection = new UpdaterProtection(root, updater);
+        protection.require(manifest("mods/a.jar"));
+        Files.writeString(updater, "resized updater");
+        Files.delete(payload);
+        try {
+            Files.createLink(payload, updater);
+        } catch (UnsupportedOperationException | IOException e) {
+            assumeTrue(false, "hard links require filesystem support: " + e);
+        }
+
+        UserError error = assertThrows(UserError.class, () -> protection.require(manifest("mods/a.jar")));
+
+        assertTrue(error.getMessage().contains("running updater"), error.getMessage());
+        assertEquals("resized updater", Files.readString(updater));
+        assertEquals("resized updater", Files.readString(payload));
     }
 
     @Test

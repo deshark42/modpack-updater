@@ -1,6 +1,7 @@
 package io.github.deshark42.modpackupdater.fs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -11,6 +12,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -56,6 +60,8 @@ class PathGuardTest {
         TestFiles.write(root, "mods", "old file");
         Path file = root.resolve("mods/a.jar");
         assertEquals(file, PathGuard.require(root, file));
+        assertTrue(PathGuard.at(root).inspectAll(List.of(file)).isEmpty(),
+                "the blocking file is not the requested terminal path");
     }
 
     @Test
@@ -63,6 +69,9 @@ class PathGuardTest {
         Path workspace = Files.createDirectory(root.resolve("instance"));
         UserError error = assertThrows(UserError.class, () -> PathGuard.require(workspace, root.resolve("outside")));
         assertTrue(error.getMessage().contains("escapes its filesystem root"), error.getMessage());
+        assertTrue(assertThrows(UserError.class,
+                () -> PathGuard.at(workspace).inspectAll(List.of(root.resolve("outside"))))
+                .getMessage().contains("escapes its filesystem root"));
     }
 
     @Test
@@ -77,6 +86,9 @@ class PathGuardTest {
 
         assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
         assertEquals("external", Files.readString(outside.resolve("a.jar")));
+        assertTrue(assertThrows(UserError.class,
+                () -> PathGuard.at(workspace).inspectAll(List.of(workspace.resolve("mods/a.jar"))))
+                .getMessage().contains("filesystem link or alias"));
     }
 
     @Test
@@ -104,6 +116,9 @@ class PathGuardTest {
         assertEquals(selected, PathGuard.require(selected, selected));
         assertEquals(file, PathGuard.require(selected, file));
         assertEquals(file, PathGuard.at(selected).require(file));
+        Map<Path, BasicFileAttributes> checked = PathGuard.at(selected).inspectAll(List.of(selected, file));
+        assertTrue(checked.get(selected).isDirectory(), "the trusted root link is followed");
+        assertEquals(1, checked.get(file).size());
         assertEquals("A", Files.readString(file));
     }
 
@@ -158,20 +173,72 @@ class PathGuardTest {
 
         assertThrows(UserError.class, () -> PathGuard.require(root, target));
         assertThrows(UserError.class, () -> PathGuard.at(root).require(target));
+        assertTrue(assertThrows(UserError.class, () -> PathGuard.at(root).inspectAll(List.of(target)))
+                .getMessage().contains("filesystem link or alias"));
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"existing.jar", "missing/a.jar"})
+    @ValueSource(strings = {"existing.jar", "missing/a.jar", "blocked.jar/child"})
     @EnabledOnOs(OS.WINDOWS)
     void rejectsNativeDirectoryAliasesBeforeExistingAndMissingSuffixes(String suffix, @TempDir Path root)
             throws IOException {
         Path directory = Files.createDirectory(root.resolve("mods"));
         Files.writeString(directory.resolve("existing.jar"), "ordinary file");
+        Files.writeString(directory.resolve("blocked.jar"), "ordinary file blocker");
         // Win32 accepts a trailing dot as an alias for the directory, without a reparse point.
         Path target = root.resolve("mods.").resolve(suffix);
 
         assertThrows(UserError.class, () -> PathGuard.require(root, target));
         assertThrows(UserError.class, () -> PathGuard.at(root).require(target));
+        assertTrue(assertThrows(UserError.class, () -> PathGuard.at(root).inspectAll(List.of(target)))
+                .getMessage().contains("filesystem link or alias"));
+    }
+
+    @Test
+    void inspectsExistingAndMissingSiblingsWithoutReturningTheirParentAttributes(@TempDir Path root)
+            throws IOException {
+        TestFiles.write(root, "config/nested/a.cfg", "one");
+        TestFiles.write(root, "config/nested/b.cfg", "another");
+        TestFiles.write(root, "blocked", "ordinary file");
+        Path first = root.resolve("config/nested/a.cfg");
+        Path second = root.resolve("config/nested/b.cfg");
+        Path missing = root.resolve("config/nested/new/c.cfg");
+        Path blocked = root.resolve("blocked/child.cfg");
+
+        Map<Path, BasicFileAttributes> checked = PathGuard.at(root)
+                .inspectAll(List.of(root, first, second, missing, blocked));
+
+        assertEquals(3, checked.size());
+        assertTrue(checked.get(root).isDirectory());
+        assertTrue(checked.get(first).isRegularFile());
+        assertEquals(3, checked.get(first).size());
+        assertEquals(7, checked.get(second).size());
+        assertFalse(checked.containsKey(missing));
+        assertFalse(checked.containsKey(blocked));
+    }
+
+    @ParameterizedTest(name = "previous parent exists: {0}")
+    @ValueSource(booleans = {false, true})
+    void rechecksDescendantsBetweenBulkInspections(boolean existing, @TempDir Path root) throws Exception {
+        Path workspace = Files.createDirectory(root.resolve("instance"));
+        Path outside = Files.createDirectory(root.resolve("outside"));
+        Path file = workspace.resolve("mods/a.jar");
+        if (existing) {
+            TestFiles.write(workspace, "mods/a.jar", "ordinary file");
+        }
+        PathGuard guard = PathGuard.at(workspace);
+        assertEquals(existing, guard.inspectAll(List.of(file)).containsKey(file));
+        if (existing) {
+            Files.move(workspace.resolve("mods"), workspace.resolve("old-mods"));
+        }
+        directoryLink(workspace.resolve("mods"), outside);
+
+        UserError error = assertThrows(UserError.class, () -> guard.inspectAll(List.of(file)));
+
+        assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
+        try (var files = Files.list(outside)) {
+            assertEquals(0, files.count());
+        }
     }
 
     @Test
@@ -188,5 +255,7 @@ class PathGuardTest {
 
         assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
         assertTrue(Files.isSymbolicLink(link));
+        assertTrue(assertThrows(UserError.class, () -> PathGuard.at(workspace).inspectAll(List.of(link)))
+                .getMessage().contains("filesystem link or alias"));
     }
 }
