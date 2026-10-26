@@ -32,7 +32,7 @@ import org.slf4j.LoggerFactory;
 public final class Logging {
 
     /** Transcripts older than this are removed at the start of the next run. */
-    private static final int KEEP_DAYS = 14;
+    private static final int KEEP_DAYS = 30;
 
     private static final Logger LOG = LoggerFactory.getLogger(Logging.class);
 

@@ -131,23 +131,29 @@ class LoggingTest {
     void prunesTranscriptsOlderThanTheRetentionWindow(@TempDir Path workspace) throws IOException {
         Path logsDir = Layout.logsDir(workspace);
         Files.createDirectories(logsDir);
-        Path old = logsDir.resolve("old-run.log");
-        Path recent = logsDir.resolve("recent-run.log");
+        Path outside = logsDir.resolve("outside.log");
+        Path boundary = logsDir.resolve("boundary.log");
+        Path inside = logsDir.resolve("inside.log");
         Path other = logsDir.resolve("notes.txt");
-        Files.writeString(old, "old", StandardCharsets.UTF_8);
-        Files.writeString(recent, "recent", StandardCharsets.UTF_8);
+        Files.writeString(outside, "outside", StandardCharsets.UTF_8);
+        Files.writeString(boundary, "boundary", StandardCharsets.UTF_8);
+        Files.writeString(inside, "inside", StandardCharsets.UTF_8);
         Files.writeString(other, "kept", StandardCharsets.UTF_8);
-        Files.setLastModifiedTime(old, FileTime.from(CLOCK.instant().minus(Duration.ofDays(15))));
-        Files.setLastModifiedTime(recent, FileTime.from(CLOCK.instant().minus(Duration.ofDays(1))));
-        Files.setLastModifiedTime(other, FileTime.from(CLOCK.instant().minus(Duration.ofDays(15))));
+        Files.setLastModifiedTime(outside,
+                FileTime.from(CLOCK.instant().minus(Duration.ofDays(30)).minus(Duration.ofHours(1))));
+        Files.setLastModifiedTime(boundary, FileTime.from(CLOCK.instant().minus(Duration.ofDays(30))));
+        Files.setLastModifiedTime(inside,
+                FileTime.from(CLOCK.instant().minus(Duration.ofDays(30)).plus(Duration.ofHours(1))));
+        Files.setLastModifiedTime(other, FileTime.from(CLOCK.instant().minus(Duration.ofDays(31))));
 
         try (TestLogs logs = new TestLogs()) {
             logs.begin(workspace, TRANSCRIPT, CLOCK);
             logger().info("a milestone");
         }
 
-        assertFalse(Files.exists(old), "a transcript older than the retention window is removed");
-        assertTrue(Files.exists(recent), "a transcript inside the window stays");
+        assertFalse(Files.exists(outside), "a transcript older than the retention window is removed");
+        assertTrue(Files.exists(boundary), "a transcript exactly at the window boundary stays");
+        assertTrue(Files.exists(inside), "a transcript inside the window stays");
         assertTrue(Files.exists(other), "only transcripts are pruned");
         assertTrue(Files.exists(transcript(workspace)), "the run still keeps its own transcript");
     }
