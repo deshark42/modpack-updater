@@ -69,6 +69,7 @@ Before pushing, follow [pre-push-checks](.agents/skills/pre-push-checks/SKILL.md
 - Match evidence to the surface: the package tests a production change reaches, `npm run verify` for Agent Notes, docs and the gate scripts, and `./gradlew test` when build files or shared test fixtures change.
 - Never default to the full suite or repeat a passing check for commit or push. CI owns exhaustive coverage and the platform matrix; rehearse everything locally only by explicit request, for CI diagnosis, or for an irreducibly repository-wide change.
 - CI is the gate, not just the suite: [ci.yml](.github/workflows/ci.yml) runs `./gradlew build` on Linux and Windows plus the Agent Note gates. A push is not done until its run is green.
+- A release is published only by [release.yml](.github/workflows/release.yml): pushing a `v<version>` tag whose commit is on master builds with `-PappVersion=<version>`, requires the jar manifest `Implementation-Version` to match the tag, and uploads `modpack-updater.jar` as the single release asset. Tags containing `-` become prereleases, the rest become latest. Never upload a locally built jar.
 
 ## Conventions
 
