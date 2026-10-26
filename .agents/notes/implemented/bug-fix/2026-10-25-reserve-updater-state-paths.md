@@ -12,7 +12,7 @@ Status: implemented
 
 `Manifest` 的构造与解析均执行该校验；订阅者读取远端目标清单和本地旧清单时都适用，不能通过旧清单的删除集合绕过。发布者在合并 base、overlay 与 remove 规则后、访问对象存储前校验最终路径集合，因此被 remove 排除的输入不影响发布，有效输入中的保留路径则使整次发布失败。工具通过 `Layout` 管理内部状态，不通过发布清单更新自己的配置。
 
-[发布格式](../architecture/2026-10-14-release-manifest-and-config.md)、[发布者工作区](../architecture/2026-10-13-publisher-workspace.md)和[订阅者流程](../architecture/2026-10-14-subscriber-workspace.md)仍分别持有格式、工作区与差异更新语义，本记录只补充发布内容与工具状态之间的权限边界，没有完全取代这些记录。
+[发布格式](../architecture/2026-10-14-release-manifest-and-config.md)、[发布者工作区](../architecture/2026-10-13-publisher-workspace.md)和[订阅者流程](../architecture/2026-10-14-subscriber-workspace.md)仍分别持有格式、工作区与差异更新语义，本记录只补充发布内容与工具状态之间的权限边界，没有完全取代这些记录。[更新器本体与信任根保护](2026-10-26-protect-running-updater-and-trust-root.md)另外保护实际加载的代码位置并补全缺失密钥的位置校验，不取代本记录的状态命名空间规则。
 
 ## 曾考虑的替代方案
 

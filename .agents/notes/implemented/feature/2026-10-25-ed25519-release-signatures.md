@@ -12,7 +12,7 @@ Status: implemented
 
 签名覆盖清单压缩前的 UTF-8 原始字节。发布只序列化一次，签署成功后才开始上传内容，清单以原字节 gzip 存储，随后上传签名，最后写 latest。签名和清单同样不可变并使用长期缓存头；签名上传失败不推进 latest，已落盘的 release id 不会被重用。订阅者对解压后的原字节先验签、再解析 JSON，并要求签署的 tag 和 release_id 与请求一致，防止跨 tag 或版本的有效签名替换；验证完成才解析路径、请求块表和内容块、拼装与应用。
 
-`Config` 的 `signing_private_key` 与 `trusted_public_key` 分别只由发布端和订阅端使用，默认是 `.modpack-updater/keys/release-private.pem` 与 `release-public.pem`。可指定工作区外的绝对路径；位于工作区内的密钥必须保存在受保护的状态目录，检查也考虑实际路径，不能经别名把可更新文件当作信任根。配置补默认值不会生成密钥。订阅者公钥由操作者通过可信渠道安装，不从服务器发现或自动信任。
+`Config` 的 `signing_private_key` 与 `trusted_public_key` 分别用于发布签署与订阅验签，默认是 `.modpack-updater/keys/release-private.pem` 与 `release-public.pem`。可指定工作区外的绝对路径；位于工作区内的密钥必须保存在受保护的状态目录，检查也考虑实际路径，不能经别名把可更新文件当作信任根。订阅端检查两条配置路径的位置，但只加载公钥，不要求私钥存在；尚不存在的密钥及其父目录别名遵循[更新器本体与信任根保护](../bug-fix/2026-10-26-protect-running-updater-and-trust-root.md)。配置补默认值不会生成密钥。订阅者公钥由操作者通过可信渠道安装，不从服务器发现或自动信任。
 
 `keygen` 命令只在本地生成默认位置的一对密钥，不依赖有效 S3 配置、不覆盖任何既有密钥、不打印密钥内容；公钥指纹是 SPKI DER 的 SHA-256。POSIX 私钥创建权限为 `0600`，Windows 使用继承的 ACL。公钥写入失败时清理本次刚创建的私钥。密钥部署及升级步骤见 [README](../../../../README.md)。
 

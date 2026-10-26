@@ -23,6 +23,7 @@ import io.github.deshark42.modpackupdater.s3.ObjectReader;
 import io.github.deshark42.modpackupdater.s3.S3ReadStore;
 import io.github.deshark42.modpackupdater.s3.S3Store;
 import io.github.deshark42.modpackupdater.security.ReleaseSigning;
+import io.github.deshark42.modpackupdater.security.UpdaterProtection;
 import io.github.deshark42.modpackupdater.util.Parallel;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
@@ -76,13 +77,19 @@ public final class Update {
     }
 
     public static void run(Path workspace, String tag, String releaseId) {
+        run(workspace, tag, releaseId, UpdaterProtection.runningUpdater());
+    }
+
+    static void run(Path workspace, String tag, String releaseId, Path updater) {
         Names.requireTag(tag);
         if (releaseId != null) {
             Names.requireReleaseId(releaseId);
         }
         long startedAt = System.nanoTime();
         Config config = Workspace.load(workspace);
+        config.privateKeyFile(workspace); // Validate its location without requiring a subscriber to hold a private key.
         PublicKey trustedKey = ReleaseSigning.publicKey(config.publicKeyFile(workspace));
+        UpdaterProtection protection = new UpdaterProtection(workspace, updater);
         ObjectReader store = config.readEndpoint() == null ? new S3Store(config) : new S3ReadStore(config);
 
         // an explicit release id bypasses latest.json entirely, so a pinned update works even while
@@ -106,6 +113,7 @@ public final class Update {
                         + " is missing; restore it or delete " + currentFile);
             }
             local = Manifest.read(appliedManifest);
+            protection.require(local);
         }
 
         if (targetId.equals(applied)) {
@@ -122,6 +130,7 @@ public final class Update {
         if (!tag.equals(target.tag()) || !targetId.equals(target.releaseId())) {
             throw new UserError("signed manifest identity does not match requested tag " + tag + " release " + targetId);
         }
+        protection.require(target);
         LOG.info("verified the release signature for tag {} release {}", tag, targetId);
         Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
         Plan plan = Plan.between(local, target);

@@ -7,7 +7,9 @@ import io.github.deshark42.modpackupdater.json.Json;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
+import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -161,10 +163,10 @@ public record Config(String endpoint, String readEndpoint, String region, String
         // An explicitly configured external path may itself be an alias into the instance.
         try {
             Path realRoot = root.toRealPath();
-            Path realFile = file.toRealPath();
+            Path realFile = realKeyPath(file);
             requireProtectedKey(realRoot, realFile);
         } catch (NoSuchFileException e) {
-            // Key loading reports missing files; an absent workspace has no existing payload.
+            // An absent workspace has no existing payload.
         } catch (IOException e) {
             throw new UserError("cannot check local signing key path " + file, e);
         }
@@ -173,6 +175,24 @@ public record Config(String endpoint, String readEndpoint, String region, String
             return PathGuard.require(root, file);
         }
         return PathGuard.require(file.getParent(), file);
+    }
+
+    private static Path realKeyPath(Path file) throws IOException {
+        Path existing = file;
+        while (true) {
+            try {
+                return existing.toRealPath().resolve(existing.relativize(file));
+            } catch (NoSuchFileException | NotDirectoryException e) {
+                if (Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+                    throw new UserError("cannot resolve local signing key path " + file, e);
+                }
+                // A missing key still needs protection against aliases through an existing parent.
+                if (existing.getParent() == null) {
+                    throw e;
+                }
+                existing = existing.getParent();
+            }
+        }
     }
 
     private static void requireProtectedKey(Path root, Path file) {

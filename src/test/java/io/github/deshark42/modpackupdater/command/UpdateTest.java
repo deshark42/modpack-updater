@@ -292,9 +292,11 @@ class UpdateTest {
             assertEquals("2.9.0", applied(player, TAG));
             assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
             assertFalse(Files.exists(Layout.releaseFile(player, TAG, "2.9.1")));
-            assertEquals(List.of("GET " + latestKey(TAG), "GET " + releaseKey(TAG, "2.9.1"),
-                            "GET " + signatureKey(TAG, "2.9.1")),
-                    s3.requests().subList(requests, s3.requests().size()));
+            List<String> expected = action.equals("add")
+                    ? List.of("GET " + latestKey(TAG), "GET " + releaseKey(TAG, "2.9.1"),
+                            "GET " + signatureKey(TAG, "2.9.1"))
+                    : List.of("GET " + latestKey(TAG));
+            assertEquals(expected, s3.requests().subList(requests, s3.requests().size()));
             assertNothingStaged(player);
         }
     }
@@ -454,27 +456,32 @@ class UpdateTest {
         }
     }
 
-    @Test
-    void refusesARemoteManifestThatReplacesItsOwnConfig(@TempDir Path root) throws IOException {
+    @ParameterizedTest(name = "release cannot replace local trust file {0}")
+    @ValueSource(strings = {Layout.CONFIG, "keys/release-public.pem", "keys/release-private.pem"})
+    void refusesARemoteManifestThatReplacesLocalTrustConfiguration(String trustFile, @TempDir Path root)
+            throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             Path publisher = root.resolve("publisher");
             TestWorkspace.configure(publisher, s3);
             publish(publisher, TAG, "2.9.0", Map.of("mods/a.jar", TestFiles.bytes("untrusted config")));
             // Even an authorized signer must not be able to replace the updater's own state.
             byte[] malicious = TestFiles.bytes(s3.text(releaseKey(TAG, "2.9.0"))
-                    .replace("mods/a.jar", Layout.STATE_DIR + "/" + Layout.CONFIG));
+                    .replace("mods/a.jar", Layout.STATE_DIR + "/" + trustFile));
             s3.put(releaseKey(TAG, "2.9.0"), malicious);
             s3.put(signatureKey(TAG, "2.9.0"), TestSigning.sign(malicious));
             Path player = root.resolve("player");
             TestWorkspace.configure(player, s3);
             Config.fillMissing(player);
             String config = Files.readString(Layout.configFile(player));
+            Path protectedFile = Layout.stateDir(player).resolve(trustFile);
+            byte[] trustBytes = Files.readAllBytes(protectedFile);
             int before = s3.requests().size();
 
             UserError error = assertThrows(UserError.class, () -> update(player, TAG, null));
 
             assertTrue(error.getMessage().contains("reserved state directory"), error.getMessage());
             assertEquals(config, Files.readString(Layout.configFile(player)));
+            assertArrayEquals(trustBytes, Files.readAllBytes(protectedFile));
             assertFalse(Files.exists(Layout.currentFile(player, TAG)));
             assertFalse(Files.exists(Layout.releasesDir(player, TAG)));
             assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
@@ -509,6 +516,105 @@ class UpdateTest {
             assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
             assertEquals("2.9.0", applied(player, TAG));
             assertEquals(List.of("GET " + latestKey(TAG)), s3.requests().subList(before, s3.requests().size()));
+            assertNothingStaged(player);
+        }
+    }
+
+    @Test
+    void refusesASignedPayloadClaimingTheUpdaterEvenWhenItsBytesMatch(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            String runner = "tools/custom runner.bin";
+            publish(publisher, TAG, "2.9.0", Map.of("a-first.cfg", TestFiles.bytes("new"),
+                    runner, TestFiles.bytes("updater")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            Config.fillMissing(player);
+            TestFiles.write(player, "a-first.cfg", "local");
+            TestFiles.write(player, runner, "updater");
+            String config = Files.readString(Layout.configFile(player));
+            byte[] publicKey = Files.readAllBytes(Config.load(player).publicKeyFile(player));
+            int before = s3.requests().size();
+
+            UserError error = assertThrows(UserError.class,
+                    () -> Update.run(player, TAG, null, player.resolve(runner)));
+
+            assertTrue(error.getMessage().contains("running updater"), error.getMessage());
+            assertEquals("updater", Files.readString(player.resolve(runner)));
+            assertEquals("local", Files.readString(player.resolve("a-first.cfg")));
+            assertEquals(config, Files.readString(Layout.configFile(player)));
+            assertArrayEquals(publicKey, Files.readAllBytes(Config.load(player).publicKeyFile(player)));
+            assertFalse(Files.exists(Layout.currentFile(player, TAG)));
+            assertFalse(Files.exists(Layout.releasesDir(player, TAG)));
+            assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
+            assertEquals(List.of("GET " + latestKey(TAG), "GET " + releaseKey(TAG, "2.9.0"),
+                            "GET " + signatureKey(TAG, "2.9.0")),
+                    s3.requests().subList(before, s3.requests().size()));
+            assertNothingStaged(player);
+        }
+    }
+
+    @ParameterizedTest(name = "legacy updater ownership is refused for {0}")
+    @ValueSource(strings = {"deleted", "unchanged", "same-release"})
+    void refusesAnOldManifestClaimingTheUpdatersParentBeforeAnyMutation(String scenario, @TempDir Path root)
+            throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("a-first.cfg", TestFiles.bytes("A"),
+                    "tools", TestFiles.bytes("old file")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, TAG, null);
+            // A legacy tracked file has since become the directory containing the locally installed updater.
+            Files.delete(player.resolve("tools"));
+            TestFiles.write(player, "tools/runner.jar", "updater");
+            if (!scenario.equals("same-release")) {
+                Map<String, byte[]> next = new HashMap<>();
+                next.put("a-first.cfg", TestFiles.bytes("new A"));
+                if (scenario.equals("unchanged")) {
+                    next.put("tools", TestFiles.bytes("old file"));
+                }
+                publish(publisher, TAG, "2.9.1", next);
+            }
+            Path oldFile = Layout.releaseFile(player, TAG, "2.9.0");
+            String oldManifest = Files.readString(oldFile);
+            int before = s3.requests().size();
+
+            UserError error = assertThrows(UserError.class,
+                    () -> Update.run(player, TAG, null, player.resolve("tools/runner.jar")));
+
+            assertTrue(error.getMessage().contains("running updater"), error.getMessage());
+            assertEquals("updater", Files.readString(player.resolve("tools/runner.jar")));
+            assertEquals("A", Files.readString(player.resolve("a-first.cfg")));
+            assertEquals(oldManifest, Files.readString(oldFile));
+            assertEquals("2.9.0", applied(player, TAG));
+            assertFalse(Files.exists(Layout.releaseFile(player, TAG, "2.9.1")));
+            assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
+            assertEquals(List.of("GET " + latestKey(TAG)), s3.requests().subList(before, s3.requests().size()));
+            assertNothingStaged(player);
+        }
+    }
+
+    @Test
+    void refusesAnUnprotectedPrivateKeyLocationBeforeFetchingARelease(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            Config.fillMissing(player);
+            Path configFile = Layout.configFile(player);
+            String config = Files.readString(configFile)
+                    .replace(Layout.DEFAULT_PRIVATE_KEY, "mods/future-private.pem");
+            Files.writeString(configFile, config);
+
+            UserError error = assertThrows(UserError.class, () -> update(player, TAG, null));
+
+            assertTrue(error.getMessage().contains("must stay under " + Layout.STATE_DIR), error.getMessage());
+            assertEquals(config, Files.readString(configFile));
+            assertFalse(Files.exists(player.resolve("mods/future-private.pem")));
+            assertFalse(Files.exists(Layout.currentFile(player, TAG)));
+            assertEquals(List.of(), s3.requests());
             assertNothingStaged(player);
         }
     }

@@ -73,6 +73,44 @@ class ConfigTest {
     }
 
     @Test
+    void rejectsAMissingExternalKeyWhoseParentAliasesPublishableContent(@TempDir Path root) throws IOException {
+        Path workspace = Files.createDirectory(root.resolve("instance"));
+        Path alias = root.resolve("outside-keys");
+        try {
+            Files.createSymbolicLink(alias, workspace);
+        } catch (UnsupportedOperationException | IOException e) {
+            assumeTrue(false, "symbolic links need filesystem support and privileges: " + e);
+        }
+        String futureKey = alias.resolve("mods/future-private.pem").toString();
+        Config config = new Config("https://s3.example.com", null, "us-east-1", "pack", "", false,
+                null, null, Config.DEFAULT_CONCURRENCY, futureKey, Layout.DEFAULT_PUBLIC_KEY);
+
+        UserError error = assertThrows(UserError.class, () -> config.privateKeyFile(workspace));
+
+        assertTrue(error.getMessage().contains("must stay under " + Layout.STATE_DIR), error.getMessage());
+        assertFalse(Files.exists(workspace.resolve("mods/future-private.pem")));
+    }
+
+    @Test
+    void rejectsAMissingKeyBelowAnUnresolvedExternalLink(@TempDir Path root) throws IOException {
+        Path workspace = Files.createDirectory(root.resolve("instance"));
+        Path alias = root.resolve("outside-keys");
+        try {
+            Files.createSymbolicLink(alias, workspace.resolve("future-mods"));
+        } catch (UnsupportedOperationException | IOException e) {
+            assumeTrue(false, "symbolic links need filesystem support and privileges: " + e);
+        }
+        String futureKey = alias.resolve("private.pem").toString();
+        Config config = new Config("https://s3.example.com", null, "us-east-1", "pack", "", false,
+                null, null, Config.DEFAULT_CONCURRENCY, futureKey, Layout.DEFAULT_PUBLIC_KEY);
+
+        UserError error = assertThrows(UserError.class, () -> config.privateKeyFile(workspace));
+
+        assertTrue(error.getMessage().contains("cannot resolve local signing key path"), error.getMessage());
+        assertFalse(Files.exists(workspace.resolve("future-mods/private.pem")));
+    }
+
+    @Test
     void resolvesConfiguredKeysRelativeToTheWorkspaceAndPermitsExternalKeys(@TempDir Path root) {
         Path workspace = root.resolve("instance");
         Config config = new Config("https://s3.example.com", null, "us-east-1", "pack", "", false,
