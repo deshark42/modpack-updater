@@ -41,7 +41,7 @@ SigV4 and the HTTP client are implemented in-tree; JSON is read and written thro
 npm run verify   # all Agent Note gates: path/class, header/sections, sealed archive
 npm run install-hooks  # make every push run the checks its files need
 ./gradlew test    # JUnit suite
-./gradlew build   # compile, test, jar (build/libs/modpack-updater-<version>.jar)
+./gradlew build   # compile, test, jar (build/libs/modpack-updater.jar)
 ```
 
 The gates execute TypeScript directly, so Node 22.18 or newer is required. `package.json` owns the script inventory.
@@ -49,14 +49,14 @@ The gates execute TypeScript directly, so Node 22.18 or newer is required. `pack
 Usage:
 
 ```sh
-java -jar build/libs/modpack-updater-<version>.jar init [--tag <tag>]
-java -jar build/libs/modpack-updater-<version>.jar keygen
-java -jar build/libs/modpack-updater-<version>.jar publish --tag <tag> --id <release-id>
-java -jar build/libs/modpack-updater-<version>.jar update --tag <tag> [--id <release-id>]
-java -jar build/libs/modpack-updater-<version>.jar update --tag <tag> --tag <tag> [--tag <tag> ...]
+java -jar build/libs/modpack-updater.jar init [--tag <tag>]
+java -jar build/libs/modpack-updater.jar keygen
+java -jar build/libs/modpack-updater.jar publish --tag <tag> --id <release-id>
+java -jar build/libs/modpack-updater.jar update --tag <tag> [--id <release-id>]
+java -jar build/libs/modpack-updater.jar update --tag <tag> --tag <tag> [--tag <tag> ...]
 ```
 
-All commands take `--workspace`; `--cache-max-age-days` belongs to `publish`.
+All commands take `--workspace`; `--cache-max-age-days` belongs to `publish`. The version is not part of the artifact name: `./gradlew build -PappVersion=<version>` (default `0.1.0`) writes it into the jar manifest as `Implementation-Version`.
 
 For `update`, repeated `--tag` values run sequentially in first-occurrence order, with duplicates skipped. The first failure stops the batch; earlier successful tags are not rolled back. `--id` is only allowed with one distinct tag. This is not a merged subscription or an overlay: tag payload paths must not conflict, including file/directory prefixes.
 

@@ -29,7 +29,7 @@ Status: implemented
 │       └── backup/
 │           ├── <旧版本标识>/     # 本次更新中移走的旧文件，也是切出本地已有块的来源
 │           └── .initial/         # 第一次更新移走的文件：还没有旧版本标识可命名
-└── modpack-updater-<version>.jar
+└── modpack-updater.jar
 ```
 
 - 订阅者需要 config.json 和独立安装的可信发布公钥；config 可用 modpack-updater init（不带 --tag）生成，它只写缺失的部分，不覆盖已有内容。公钥安装与强制验签见[发布清单签名](../feature/2026-10-25-ed25519-release-signatures.md)。

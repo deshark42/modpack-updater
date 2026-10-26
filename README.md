@@ -13,8 +13,8 @@ Java 17 命令行工具，把 Minecraft 整合包的受追踪文件发布到 S3 
 在发布工作区执行：
 
 ```sh
-java -jar modpack-updater-0.1.0.jar init --tag client
-java -jar modpack-updater-0.1.0.jar keygen
+java -jar modpack-updater.jar init --tag client
+java -jar modpack-updater.jar keygen
 ```
 
 `keygen` 不联网、不需要配置对象存储，也不覆盖任何已有密钥。它生成：
@@ -78,7 +78,7 @@ one_path/
 发布一个新版本：
 
 ```sh
-java -jar modpack-updater-0.1.0.jar publish --tag client --id 1.0.0
+java -jar modpack-updater.jar publish --tag client --id 1.0.0
 ```
 
 每个 tag 的版本号不可重复使用。发布自动签署清单，依次上传块、块表、清单、签名，最后更新 `latest.json`。签名上传失败时 latest 保持旧版本；若清单已经写入，重试需使用新的版本号。
@@ -88,8 +88,8 @@ java -jar modpack-updater-0.1.0.jar publish --tag client --id 1.0.0
 在目标实例目录执行 `init`，配置同一个桶与前缀，并通过独立可信渠道安装发布者公钥到 `.modpack-updater/keys/release-public.pem`。**订阅者不运行 keygen，也不需要私钥。** 不要从更新服务器自动下载一个公钥并直接信任它。
 
 ```sh
-java -jar modpack-updater-0.1.0.jar init
-java -jar modpack-updater-0.1.0.jar update --tag client
+java -jar modpack-updater.jar init
+java -jar modpack-updater.jar update --tag client
 ```
 
 所有命令可带 `--workspace <目录>`。配置了 `read_endpoint` 后，订阅者经该 CDN 基址匿名读取，地址直接追加 `prefix` 与对象键，不再插入 bucket；发布始终使用 `endpoint`。CDN 不应重定向请求、改写对象内容或覆盖源站缓存规则。
@@ -99,7 +99,7 @@ java -jar modpack-updater-0.1.0.jar update --tag client
 重复指定 `--tag`，即可在一次运行中依次更新多个 tag，各自读取自己的最新 release：
 
 ```sh
-java -jar modpack-updater-0.1.0.jar update --tag common --tag client
+java -jar modpack-updater.jar update --tag common --tag client
 ```
 
 按参数顺序更新，重复的 tag 只处理第一次。任一 tag 失败就立即停止，不再更新后续 tag，命令返回非零退出码；之前已经成功的 tag 不回滚。修复失败原因后可重新执行同一命令，已经处于目标 release 的 tag 会跳过。
@@ -117,7 +117,7 @@ java -jar modpack-updater-0.1.0.jar update --tag common --tag client
 可以显式选择一个仍由当前可信公钥签署的版本，包括回滚：
 
 ```sh
-java -jar modpack-updater-0.1.0.jar update --tag client --id 1.0.0
+java -jar modpack-updater.jar update --tag client --id 1.0.0
 ```
 
 签名证明发布授权与内容完整性，不证明模组本身安全，也不提供更新的新鲜度保证：`latest.json` 未签名，存储或 CDN 仍可隐藏新版本、重放合法旧版本或拒绝服务。本实现没有防回退序号。更换公钥需要操作者通过可信渠道手工部署；更换后旧密钥签署的历史版本不能再被接受。

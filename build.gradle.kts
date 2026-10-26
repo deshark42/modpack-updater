@@ -3,8 +3,10 @@ plugins {
     id("com.gradleup.shadow") version "9.6.1"
 }
 
+val appVersion = providers.gradleProperty("appVersion").getOrElse("0.1.0")
+
 group = "io.github.deshark42"
-version = "0.1.0"
+version = appVersion
 
 repositories {
     mavenCentral()
@@ -41,10 +43,13 @@ tasks.test {
 }
 
 tasks.shadowJar {
-    archiveClassifier.set("")
+    archiveFileName.set("modpack-updater.jar")
     mergeServiceFiles()
     manifest {
-        attributes("Main-Class" to "io.github.deshark42.modpackupdater.Main")
+        attributes(
+            "Main-Class" to "io.github.deshark42.modpackupdater.Main",
+            "Implementation-Version" to appVersion,
+        )
     }
 }
 tasks.jar { enabled = false }

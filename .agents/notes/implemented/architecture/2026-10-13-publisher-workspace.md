@@ -22,7 +22,7 @@ Status: implemented
 │   ├── base_pack/               # ZIP / 7z 按各包相对父目录展开，与 base 合并
 │   ├── overlay/                 # 发布者自己的文件：对逻辑 base 的新增或覆盖
 │   └── remove.txt               # 从逻辑 base 中剔除的路径，一行一条
-└── modpack-updater-<version>.jar
+└── modpack-updater.jar
 ```
 
 - 工作区骨架由 init 铺出：modpack-updater init --tag <tag> 写出 config.json 模板与 <tag>/base/、<tag>/base_pack/、<tag>/overlay/、<tag>/remove.txt；已经存在的文件只补缺失字段或只创建缺失的输入，不改写已有内容。
