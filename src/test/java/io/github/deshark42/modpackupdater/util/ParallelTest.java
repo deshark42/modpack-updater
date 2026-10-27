@@ -2,16 +2,16 @@ package io.github.deshark42.modpackupdater.util;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.deshark42.modpackupdater.UserError;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class ParallelTest {
@@ -42,15 +42,19 @@ class ParallelTest {
 
         Parallel.forEach(List.of(1, 2, 3), 8, seen::add);
 
-        assertEquals(Set.of(1, 2, 3), new HashSet<>(seen));
+        assertEquals(List.of(1, 2, 3), seen.stream().sorted().toList());
     }
 
     @Test
     void rethrowsTheFailureOfTheAction() {
+        UserError original = new UserError("the action cannot run");
+
         UserError error = assertThrows(UserError.class, () -> Parallel.forEach(List.of("a", "b"), 2, item -> {
-            throw new UserError("no " + item);
+            throw original;
         }));
-        assertTrue(error.getMessage().startsWith("no "), error.getMessage());
+
+        assertSame(original, error);
+        assertEquals("the action cannot run", error.getMessage());
     }
 
     @Test
@@ -59,8 +63,45 @@ class ParallelTest {
             throw new IllegalStateException("worker broke on " + item);
         }));
 
-        assertTrue(error.getMessage().contains("worker broke on"), error.getMessage());
+        assertEquals("java.lang.IllegalStateException: worker broke on a", error.getMessage());
         assertTrue(error.getCause() instanceof IllegalStateException, String.valueOf(error.getCause()));
+        assertEquals("worker broke on a", error.getCause().getMessage());
+    }
+
+    @Test
+    void aFailedActionInterruptsWorkThatHasNotFinished() {
+        CountDownLatch workerStarted = new CountDownLatch(1);
+        CountDownLatch workerStopped = new CountDownLatch(1);
+        CountDownLatch neverReleased = new CountDownLatch(1);
+        AtomicBoolean interrupted = new AtomicBoolean();
+        List<String> completed = Collections.synchronizedList(new ArrayList<>());
+        UserError original = new UserError("the first action failed");
+
+        UserError error = assertThrows(UserError.class, () -> Parallel.forEach(List.of("fails", "waits"), 2, item -> {
+            if (item.equals("fails")) {
+                assertTrue(await(workerStarted), "the waiting action starts before failure is injected");
+                throw original;
+            }
+            workerStarted.countDown();
+            try {
+                if (neverReleased.await(5, TimeUnit.SECONDS)) {
+                    completed.add(item);
+                } else {
+                    throw new AssertionError("the waiting worker was not cancelled");
+                }
+            } catch (InterruptedException expected) {
+                interrupted.set(true);
+                Thread.currentThread().interrupt();
+            } finally {
+                workerStopped.countDown();
+            }
+        }));
+
+        assertSame(original, error);
+        assertEquals("the first action failed", error.getMessage());
+        assertTrue(await(workerStopped), "the cancelled worker terminates");
+        assertTrue(interrupted.get(), "unfinished work receives cancellation, rather than merely timing out");
+        assertEquals(List.of(), completed, "cancelled work does not commit its side effect");
     }
 
     private static boolean await(CountDownLatch latch) {
@@ -68,7 +109,7 @@ class ParallelTest {
             return latch.await(5, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return false;
+            throw new AssertionError("waiting for a worker was interrupted", e);
         }
     }
 }

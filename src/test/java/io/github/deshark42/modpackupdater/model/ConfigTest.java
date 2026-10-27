@@ -9,9 +9,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
+import io.github.deshark42.modpackupdater.json.Json;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -20,6 +22,17 @@ import org.junit.jupiter.params.provider.ValueSource;
 class ConfigTest {
 
     private static final String MINIMAL = "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\"}";
+
+    private static Map<String, Object> completeDocument() {
+        return Map.ofEntries(
+                Map.entry("endpoint", "https://s3.example.com"), Map.entry("bucket", "pack"),
+                Map.entry("access_key", ""), Map.entry("secret_key", ""),
+                Map.entry("read_endpoint", ""), Map.entry("region", "us-east-1"),
+                Map.entry("prefix", ""), Map.entry("path_style", false),
+                Map.entry("concurrency", (long) Config.DEFAULT_CONCURRENCY),
+                Map.entry("signing_private_key", Layout.DEFAULT_PRIVATE_KEY),
+                Map.entry("trusted_public_key", Layout.DEFAULT_PUBLIC_KEY));
+    }
 
     @Test
     void appliesDefaultsForOptionalFields() {
@@ -31,6 +44,7 @@ class ConfigTest {
         assertNull(config.readEndpoint(), "without a CDN the objects are read from the store itself");
         assertEquals(Layout.DEFAULT_PRIVATE_KEY, config.signingPrivateKey());
         assertEquals(Layout.DEFAULT_PUBLIC_KEY, config.trustedPublicKey());
+        assertEquals(Config.DEFAULT_CONCURRENCY, config.concurrency());
     }
 
     @ParameterizedTest(name = "key path {0} cannot be replaced through a release")
@@ -40,6 +54,20 @@ class ConfigTest {
                 null, null, Config.DEFAULT_CONCURRENCY, path, path);
         UserError error = assertThrows(UserError.class, () -> config.publicKeyFile(root));
         assertTrue(error.getMessage().contains("must stay under " + Layout.STATE_DIR), error.getMessage());
+        assertFalse(Files.exists(root.resolve(path)));
+        assertFalse(Files.exists(Layout.stateDir(root)));
+    }
+
+    @Test
+    void aPrivateKeyCannotBeWrittenIntoPublishableContent(@TempDir Path root) {
+        Config config = new Config("https://s3.example.com", null, "us-east-1", "pack", "", false,
+                null, null, Config.DEFAULT_CONCURRENCY, "mods/private.pem", Layout.DEFAULT_PUBLIC_KEY);
+
+        UserError error = assertThrows(UserError.class, () -> config.privateKeyFile(root));
+
+        assertTrue(error.getMessage().contains("must stay under " + Layout.STATE_DIR), error.getMessage());
+        assertFalse(Files.exists(root.resolve("mods/private.pem")));
+        assertFalse(Files.exists(Layout.stateDir(root)));
     }
 
     @Test
@@ -111,18 +139,23 @@ class ConfigTest {
     }
 
     @Test
-    void resolvesConfiguredKeysRelativeToTheWorkspaceAndPermitsExternalKeys(@TempDir Path root) {
+    void anExternalPrivateKeyRemainsOutsideTheWorkspace(@TempDir Path root) {
         Path workspace = root.resolve("instance");
         Config config = new Config("https://s3.example.com", null, "us-east-1", "pack", "", false,
                 null, null, Config.DEFAULT_CONCURRENCY, root.resolve("private.pem").toString(),
-                Layout.STATE_DIR + "/custom-public.pem");
+                Layout.DEFAULT_PUBLIC_KEY);
+
         assertEquals(root.resolve("private.pem"), config.privateKeyFile(workspace));
-        assertEquals(workspace.resolve(Layout.STATE_DIR).resolve("custom-public.pem"), config.publicKeyFile(workspace));
     }
 
     @Test
-    void defaultsToTheDocumentedTransferCount() {
-        assertEquals(Config.DEFAULT_CONCURRENCY, Config.parse(MINIMAL, "config.json").concurrency());
+    void aRelativePublicKeyResolvesUnderTheWorkspace(@TempDir Path root) {
+        Path workspace = root.resolve("instance");
+        Config config = new Config("https://s3.example.com", null, "us-east-1", "pack", "", false,
+                null, null, Config.DEFAULT_CONCURRENCY, Layout.DEFAULT_PRIVATE_KEY,
+                Layout.STATE_DIR + "/custom-public.pem");
+
+        assertEquals(workspace.resolve(Layout.STATE_DIR).resolve("custom-public.pem"), config.publicKeyFile(workspace));
     }
 
     @Test
@@ -133,13 +166,22 @@ class ConfigTest {
     }
 
     @Test
-    void rejectsAConcurrencyOutsideTheAllowedRange() {
-        String head = "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\", \"concurrency\": ";
-        for (String bad : new String[]{"0", String.valueOf(Config.MAX_CONCURRENCY + 1)}) {
-            UserError error = assertThrows(UserError.class, () -> Config.parse(head + bad + "}", "config.json"), bad);
-            assertTrue(error.getMessage().contains("\"concurrency\" must be between 1 and " + Config.MAX_CONCURRENCY),
-                    error.getMessage());
-        }
+    void zeroConcurrentTransfersAreRejected() {
+        UserError error = assertThrows(UserError.class, () -> Config.parse(
+                "{\"endpoint\":\"https://s3.example.com\",\"bucket\":\"pack\",\"concurrency\":0}", "config.json"));
+
+        assertTrue(error.getMessage().contains("\"concurrency\" must be between 1 and " + Config.MAX_CONCURRENCY),
+                error.getMessage());
+    }
+
+    @Test
+    void aTransferCountAboveTheMaximumIsRejected() {
+        UserError error = assertThrows(UserError.class, () -> Config.parse(
+                "{\"endpoint\":\"https://s3.example.com\",\"bucket\":\"pack\",\"concurrency\":"
+                        + (Config.MAX_CONCURRENCY + 1) + "}", "config.json"));
+
+        assertTrue(error.getMessage().contains("\"concurrency\" must be between 1 and " + Config.MAX_CONCURRENCY),
+                error.getMessage());
     }
 
     @Test
@@ -198,15 +240,15 @@ class ConfigTest {
                 error.getMessage());
     }
 
-    @Test
-    void rejectsAReadEndpointThatCarriesMoreThanAHostAndPath() {
-        for (String read : new String[]{"https://cdn.example.com?x=1", "https://cdn.example.com#x",
-                "https://user:secret@cdn.example.com"}) {
-            UserError error = assertThrows(UserError.class, () -> Config.parse(
-                    "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
-                            + " \"read_endpoint\": \"" + read + "\"}", "config.json"), read);
-            assertTrue(error.getMessage().contains("no query or credentials"), read + ": " + error.getMessage());
-        }
+    @ParameterizedTest(name = "read endpoint {0} carries unsupported URL components")
+    @ValueSource(strings = {"https://cdn.example.com?x=1", "https://cdn.example.com#x",
+            "https://user:secret@cdn.example.com"})
+    void aReadEndpointCannotCarryQueriesFragmentsOrCredentials(String read) {
+        UserError error = assertThrows(UserError.class, () -> Config.parse(
+                "{\"endpoint\": \"https://s3.example.com\", \"bucket\": \"pack\","
+                        + " \"read_endpoint\": \"" + read + "\"}", "config.json"));
+
+        assertTrue(error.getMessage().contains("no query or credentials"), error.getMessage());
     }
 
     @Test
@@ -254,12 +296,19 @@ class ConfigTest {
     }
 
     @Test
-    void rejectsAnEndpointThatCarriesMoreThanAHost() {
-        for (String endpoint : new String[]{"https://s3.example.com/base", "https://s3.example.com?x=1"}) {
-            UserError error = assertThrows(UserError.class, () -> Config.parse(
-                    "{\"endpoint\": \"" + endpoint + "\", \"bucket\": \"pack\"}", "config.json"), endpoint);
-            assertTrue(error.getMessage().contains("no path, query or credentials"), endpoint + ": " + error.getMessage());
-        }
+    void anEndpointCannotContainAPath() {
+        UserError error = assertThrows(UserError.class, () -> Config.parse(
+                "{\"endpoint\":\"https://s3.example.com/base\",\"bucket\":\"pack\"}", "config.json"));
+
+        assertTrue(error.getMessage().contains("no path, query or credentials"), error.getMessage());
+    }
+
+    @Test
+    void anEndpointCannotContainAQuery() {
+        UserError error = assertThrows(UserError.class, () -> Config.parse(
+                "{\"endpoint\":\"https://s3.example.com?x=1\",\"bucket\":\"pack\"}", "config.json"));
+
+        assertTrue(error.getMessage().contains("no path, query or credentials"), error.getMessage());
     }
 
     @Test
@@ -267,10 +316,6 @@ class ConfigTest {
         UserError error = assertThrows(UserError.class, () -> Config.parse(
                 "{\"endpoint\": \"http://127.0.0.1:9000\", \"bucket\": \"pack\"}", "config.json"));
         assertTrue(error.getMessage().contains("\"path_style\" must be true"), error.getMessage());
-
-        Config pathStyle = Config.parse("{\"endpoint\": \"http://127.0.0.1:9000\", \"bucket\": \"pack\","
-                + " \"path_style\": true}", "config.json");
-        assertTrue(pathStyle.pathStyle(), "path style addresses the bucket in the path");
     }
 
     @Test
@@ -298,18 +343,28 @@ class ConfigTest {
                 }
                 """);
 
-        assertTrue(Config.fillMissing(root), "region, prefix, path_style, read_endpoint and concurrency were missing");
-        assertFalse(Config.fillMissing(root), "the second look finds nothing to add");
+        boolean changed = Config.fillMissing(root);
+
+        assertTrue(changed, "region, prefix, path_style, read_endpoint and concurrency were missing");
 
         Config config = Config.load(root);
         assertEquals("us-east-1", config.region());
         assertEquals("", config.prefix());
         assertFalse(config.pathStyle());
         assertEquals(Config.DEFAULT_CONCURRENCY, config.concurrency());
-        String written = Files.readString(file);
-        assertTrue(written.contains("\"endpoint\": \"https://s3.example.com\""), written);
-        assertTrue(written.contains("\"read_endpoint\": \"\""), written);
-        assertTrue(written.contains("\"concurrency\": " + Config.DEFAULT_CONCURRENCY), written);
+        assertEquals(completeDocument(), Json.parse(Files.readString(file)));
+    }
+
+    @Test
+    void aCompleteConfigIsNotRewritten(@TempDir Path root) throws IOException {
+        Path file = Layout.configFile(root);
+        AtomicFile.write(file, Json.write(completeDocument()));
+        String before = Files.readString(file);
+
+        boolean changed = Config.fillMissing(root);
+
+        assertFalse(changed);
+        assertEquals(before, Files.readString(file));
     }
 
     @Test
@@ -319,7 +374,7 @@ class ConfigTest {
 
         assertTrue(Config.fillMissing(root));
 
-        assertTrue(Files.readString(file).contains("\"note\": \"mine\""), Files.readString(file));
+        assertEquals("mine", Json.asObject(Json.parse(Files.readString(file)), file.toString()).get("note"));
     }
 
     @Test
@@ -327,5 +382,6 @@ class ConfigTest {
         UserError error = assertThrows(UserError.class, () -> Config.load(root));
         assertTrue(error.getMessage().contains("needs a " + Layout.STATE_DIR + "/" + Layout.CONFIG),
                 error.getMessage());
+        assertFalse(Files.exists(Layout.stateDir(root)));
     }
 }

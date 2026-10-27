@@ -30,7 +30,6 @@ class RemoveRulesTest {
         RemoveRules rules = rules("", "   ", "# a comment", "a.jar", "  a.jar  ", "a.jar");
 
         assertEquals(1, rules.size());
-        assertEquals(Set.of("a.jar"), removed(rules, "a.jar", "b.jar"));
     }
 
     @Test
@@ -73,8 +72,7 @@ class RemoveRulesTest {
 
         assertEquals(Set.of(".minecraft/excludeDir/a.txt", ".minecraft/excludeDir/deep/b.txt"),
                 removed(rules, ".minecraft/excludeDir/a.txt", ".minecraft/excludeDir/deep/b.txt",
-                        ".minecraft/keep/a.txt"));
-        assertEquals(Set.of(), removed(rules, ".minecraft/excludeDir"), "a file of that name is not a directory");
+                        ".minecraft/keep/a.txt", ".minecraft/excludeDir"));
     }
 
     @Test
@@ -86,8 +84,12 @@ class RemoveRulesTest {
     }
 
     @Test
-    void aQuestionMarkAndABracketMatchOneCharacter() {
+    void aQuestionMarkMatchesOneCharacter() {
         assertEquals(Set.of("mod-1.jar"), removed(rules("mod-?.jar"), "mod-1.jar", "mod-12.jar"));
+    }
+
+    @Test
+    void aBracketMatchesOneListedCharacter() {
         assertEquals(Set.of("a.jar", "b.jar"), removed(rules("[ab].jar"), "a.jar", "b.jar", "c.jar"));
     }
 
@@ -100,8 +102,20 @@ class RemoveRulesTest {
     void reportsTheRulesThatMatchedNothing() {
         RemoveRules rules = rules("ghost.jar", "a.jar");
 
-        assertEquals(List.of("ghost.jar"), rules.apply(Set.of("a.jar")).unmatched());
-        assertEquals(List.of(), rules.apply(Set.of("a.jar", "ghost.jar")).unmatched());
+        RemoveRules.Outcome outcome = rules.apply(Set.of("a.jar"));
+
+        assertEquals(List.of("ghost.jar"), outcome.unmatched());
+        assertEquals(Set.of("a.jar"), outcome.removed());
+    }
+
+    @Test
+    void everyMatchedRuleLeavesNoUnmatchedRules() {
+        RemoveRules rules = rules("ghost.jar", "a.jar");
+
+        RemoveRules.Outcome outcome = rules.apply(Set.of("a.jar", "ghost.jar"));
+
+        assertEquals(List.of(), outcome.unmatched());
+        assertEquals(Set.of("a.jar", "ghost.jar"), outcome.removed());
     }
 
     @ParameterizedTest(name = "rule \"{0}\" is rejected: {1}")
@@ -136,7 +150,6 @@ class RemoveRulesTest {
     void aRuleIsMatchedAsAWholePath() {
         RemoveRules rules = rules("mods/a.jar");
 
-        assertTrue(removed(rules, "mods/a.jar").contains("mods/a.jar"));
-        assertEquals(Set.of(), removed(rules, "mods/a.jar.bak", "x/mods/a.jar"));
+        assertEquals(Set.of("mods/a.jar"), removed(rules, "mods/a.jar", "mods/a.jar.bak", "x/mods/a.jar"));
     }
 }

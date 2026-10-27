@@ -1,116 +1,142 @@
 package io.github.deshark42.modpackupdater.log;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 class ProgressTest {
 
-    private final ByteArrayOutputStream output = new ByteArrayOutputStream();
-    private final PrintStream err = new PrintStream(output, true, StandardCharsets.UTF_8);
-    private final AtomicLong nanos = new AtomicLong(1_000_000_000L);
-    private final Progress progress = new Progress(err, true, nanos::get);
+    private static final class TestTerminal implements AutoCloseable {
+        final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        final PrintStream err = new PrintStream(output, true, StandardCharsets.UTF_8);
+        final AtomicLong nanos = new AtomicLong(1_000_000_000L);
+        final Progress progress = new Progress(err, true, nanos::get);
 
-    private String text() {
-        return output.toString(StandardCharsets.UTF_8);
+        String text() {
+            return output.toString(StandardCharsets.UTF_8);
+        }
+
+        String summary() {
+            return text().replace("\r", "").replace("\u001b[K", "")
+                    .replaceAll("[#-]{10,}", "").replace("·", "").strip().replaceAll("\\s+", " ");
+        }
+
+        @Override
+        public void close() {
+            err.close();
+        }
     }
 
     @Test
     void countedWorkShowsObjectRateAndRemainingTime() {
-        progress.update("check", 0, 10, -1, "object");
-        nanos.addAndGet(1_000_000_000L);
+        try (TestTerminal terminal = new TestTerminal()) {
+            terminal.progress.update("check", 0, 10, -1, "object");
+            terminal.nanos.addAndGet(1_000_000_000L);
 
-        progress.update("check", 4, 10, -1, "object");
+            terminal.progress.update("check", 4, 10, -1, "object");
 
-        assertTrue(text().contains("check"), text());
-        assertTrue(text().contains("40% · 4/10 objects · 4 objects/s · ETA 0:02"), text());
-        assertFalse(text().contains("B/s"), text());
+            assertEquals("check 40% 4/10 objects 4 objects/s ETA 0:02", terminal.summary());
+        }
     }
 
     @Test
-    void transferringAfterCheckingStartsANewRateAndTimer() {
-        progress.update("check", 0, 10, -1, "object");
-        nanos.addAndGet(1_000_000_000L);
-        progress.update("check", 4, 10, -1, "object");
-        progress.clear();
-        output.reset();
+    void aNewVerbStartsANewRateAndTimer() {
+        try (TestTerminal terminal = new TestTerminal()) {
+            terminal.progress.update("check", 0, 10, -1, "object");
+            terminal.nanos.addAndGet(1_000_000_000L);
+            terminal.progress.update("check", 4, 10, -1, "object");
+            terminal.progress.clear();
+            terminal.progress.update("upload", 0, 10, 0, "chunk");
+            terminal.output.reset();
+            terminal.nanos.addAndGet(1_000_000_000L);
 
-        progress.update("upload", 0, 10, 0, "chunk");
-        assertEquals("", text());
-        nanos.addAndGet(1_000_000_000L);
-        progress.update("upload", 2, 10, 2048, "chunk");
+            terminal.progress.update("upload", 2, 10, 2048, "chunk");
 
-        assertTrue(text().contains("upload"), text());
-        assertTrue(text().contains("20% · 2/10 chunks · 2.0 KiB/s · ETA 0:04"), text());
-        assertFalse(text().contains("objects/s"), text());
+            assertEquals("upload 20% 2/10 chunks 2.0 KiB/s ETA 0:04", terminal.summary());
+        }
     }
 
     @Test
-    void resettingRestartsTheSettleWindowAndRateForTheSameVerb() {
-        progress.update("download", 100, 1000, 1_048_576, "chunk");
-        nanos.addAndGet(1_000_000_000L);
-        progress.update("download", 200, 1000, 2_097_152, "chunk");
-        output.reset();
+    void aResetStartsANewRateForTheSameVerb() {
+        try (TestTerminal terminal = new TestTerminal()) {
+            terminal.progress.update("download", 100, 1000, 1_048_576, "chunk");
+            terminal.nanos.addAndGet(1_000_000_000L);
+            terminal.progress.update("download", 200, 1000, 2_097_152, "chunk");
+            terminal.progress.reset();
+            terminal.progress.update("download", 1, 10, 1024, "chunk");
+            terminal.output.reset();
+            terminal.nanos.addAndGet(1_000_000_000L);
 
-        progress.reset();
+            terminal.progress.update("download", 3, 10, 3072, "chunk");
 
-        assertEquals("\r\u001b[K", text());
-        output.reset();
-        progress.update("download", 1, 10, 1024, "chunk");
-        assertEquals("", text());
-        nanos.addAndGet(200_000_000L);
-        progress.update("download", 2, 10, 2048, "chunk");
-        assertEquals("", text(), "the new transfer gets its own settle window");
-        nanos.addAndGet(800_000_000L);
-        progress.update("download", 3, 10, 3072, "chunk");
-
-        assertTrue(text().contains("30% · 3/10 chunks · 2.0 KiB/s · ETA 0:04"), text());
-        assertFalse(text().contains("· -"), "the earlier transfer cannot produce a negative rate: " + text());
+            assertEquals("download 30% 3/10 chunks 2.0 KiB/s ETA 0:04", terminal.summary());
+        }
     }
 
     @Test
     void clearingPreservesTheCurrentTransfersRateAndTimer() {
-        progress.update("download", 10, 100, 10_240, "chunk");
-        nanos.addAndGet(1_000_000_000L);
-        progress.update("download", 20, 100, 20_480, "chunk");
+        try (TestTerminal terminal = new TestTerminal()) {
+            terminal.progress.update("download", 10, 100, 10_240, "chunk");
+            terminal.nanos.addAndGet(1_000_000_000L);
+            terminal.progress.update("download", 20, 100, 20_480, "chunk");
+            terminal.progress.clear();
+            terminal.output.reset();
+            terminal.nanos.addAndGet(100_000_000L);
 
-        progress.clear();
+            terminal.progress.update("download", 21, 100, 21_504, "chunk");
 
-        output.reset();
-        nanos.addAndGet(100_000_000L);
-        progress.update("download", 21, 100, 21_504, "chunk");
+            assertEquals("download 21% 21/100 chunks 10.0 KiB/s ETA 0:08", terminal.summary());
+        }
+    }
 
-        assertTrue(text().contains("21% · 21/100 chunks · 10.0 KiB/s · ETA 0:08"), text());
+    @ParameterizedTest(name = "done {0} of {1} after {2}ns leaves no frame")
+    @CsvSource({"0,0,1000000000", "1,2,100000000", "2,2,1000000000"})
+    void emptyQuickOrCompletedWorkDoesNotDrawAFrame(long done, long total, long elapsed) {
+        try (TestTerminal terminal = new TestTerminal()) {
+            terminal.progress.update("check", 0, total, -1, "object");
+            terminal.nanos.addAndGet(elapsed);
+
+            terminal.progress.update("check", done, total, -1, "object");
+
+            assertEquals("", terminal.text());
+        }
     }
 
     @Test
-    void quickChecksAndEmptyWorkDoNotDrawAFrame() {
-        progress.update("check", 0, 0, -1, "object");
-        progress.update("check", 0, 2, -1, "object");
-        nanos.addAndGet(100_000_000L);
-        progress.update("check", 1, 2, -1, "object");
-        progress.update("check", 2, 2, -1, "object");
-        progress.clear();
+    void aResetRestartsTheSettleWindow() {
+        try (TestTerminal terminal = new TestTerminal()) {
+            terminal.progress.update("check", 0, 10, -1, "object");
+            terminal.nanos.addAndGet(1_000_000_000L);
+            terminal.progress.update("check", 4, 10, -1, "object");
+            terminal.progress.reset();
+            terminal.progress.update("check", 0, 10, -1, "object");
+            terminal.output.reset();
+            terminal.nanos.addAndGet(200_000_000L);
 
-        assertEquals("", text());
+            terminal.progress.update("check", 1, 10, -1, "object");
+
+            assertEquals("", terminal.text());
+        }
     }
 
     @Test
-    void clearingRemovesTheCheckBarOnlyOnce() {
-        progress.update("check", 0, 10, -1, "object");
-        nanos.addAndGet(1_000_000_000L);
-        progress.update("check", 4, 10, -1, "object");
-        output.reset();
+    void clearingAnAlreadyClearedBarWritesNothing() {
+        try (TestTerminal terminal = new TestTerminal()) {
+            terminal.progress.update("check", 0, 10, -1, "object");
+            terminal.nanos.addAndGet(1_000_000_000L);
+            terminal.progress.update("check", 4, 10, -1, "object");
+            terminal.progress.clear();
+            terminal.output.reset();
 
-        progress.clear();
-        progress.clear();
+            terminal.progress.clear();
 
-        assertEquals("\r\u001b[K", text());
+            assertEquals("", terminal.text());
+        }
     }
 }

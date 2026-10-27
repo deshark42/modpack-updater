@@ -34,7 +34,7 @@ class Sha256Test {
     }
 
     @Test
-    void ofBytesIsTheHexOfTheJdkDigest() {
+    void hashesBytesToTheJdkDigest() {
         byte[] content = TestFiles.bytes("chunk boundary bytes");
 
         assertEquals(Sha256.hex(digest(content)), Sha256.ofBytes(content));
@@ -42,7 +42,7 @@ class Sha256Test {
 
     @Test
     void hashesAFileLikeItsBytes(@TempDir Path dir) throws IOException {
-        byte[] content = TestFiles.random(200_000, 9);
+        byte[] content = TestFiles.random(65_537, 9);
         Path file = dir.resolve("file.bin");
         Files.write(file, content);
 

@@ -7,16 +7,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.github.deshark42.modpackupdater.UserError;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 class NamesTest {
 
+    @ParameterizedTest(name = "{0} is a portable tag")
+    @ValueSource(strings = {"a", "client-extra", "A0._-"})
+    void portableTagNamesRemainUnchanged(String name) {
+        assertEquals(name, Names.requireTag(name));
+    }
+
     @Test
-    void acceptsPortableNames() {
-        assertEquals("a", Names.requireTag("a"));
-        assertEquals("client-extra", Names.requireTag("client-extra"));
-        assertEquals("A0._-", Names.requireTag("A0._-"));
+    void aPortableReleaseIdRemainsUnchanged() {
         assertEquals("2.9.0-RC1", Names.requireReleaseId("2.9.0-RC1"));
     }
 
@@ -27,10 +29,15 @@ class NamesTest {
         assertEquals(longest, Names.requireTag(longest));
     }
 
-    @ParameterizedTest(name = "name \"{0}\" is rejected")
-    @NullAndEmptySource
-    void rejectsANameThatIsMissing(String name) {
-        UserError error = assertThrows(UserError.class, () -> Names.requireTag(name));
+    @Test
+    void aNullTagIsRejected() {
+        UserError error = assertThrows(UserError.class, () -> Names.requireTag(null));
+        assertTrue(error.getMessage().contains("must not be empty"), error.getMessage());
+    }
+
+    @Test
+    void anEmptyTagIsRejected() {
+        UserError error = assertThrows(UserError.class, () -> Names.requireTag(""));
         assertTrue(error.getMessage().contains("must not be empty"), error.getMessage());
     }
 

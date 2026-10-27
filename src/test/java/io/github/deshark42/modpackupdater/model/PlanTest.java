@@ -50,6 +50,10 @@ class PlanTest {
         Plan plan = Plan.between(local, local);
 
         assertTrue(plan.isEmpty());
+        assertEquals(List.of(), plan.added());
+        assertEquals(List.of(), plan.replaced());
+        assertEquals(List.of(), plan.deleted());
+        assertEquals(List.of(), plan.downloads());
         assertEquals(0, plan.downloadSize());
     }
 
@@ -66,6 +70,15 @@ class PlanTest {
         Plan plan = Plan.between(manifest("mods/old.jar", B), manifest("mods/old.jar", A, "mods/new.jar", B));
 
         assertEquals(List.of("mods/new.jar", "mods/old.jar"), plan.downloads());
-        assertEquals("1 added, 1 replaced, 0 deleted", plan.describe());
+    }
+
+    @Test
+    void describesEachKindOfChangeWithItsOwnCount() {
+        Plan plan = new Plan(List.of("added"), List.of("replaced-a", "replaced-b"),
+                List.of("deleted-a", "deleted-b", "deleted-c"), 0);
+
+        String description = plan.describe();
+
+        assertEquals("1 added, 2 replaced, 3 deleted", description);
     }
 }

@@ -7,37 +7,34 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import io.github.deshark42.modpackupdater.TestArchives;
 import io.github.deshark42.modpackupdater.TestFiles;
+import io.github.deshark42.modpackupdater.TestLogs;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
-import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
-import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
-import org.apache.commons.compress.archivers.sevenz.SevenZMethodConfiguration;
-import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.tukaani.xz.LZMA2Options;
 
+@ResourceLock(TestLogs.RESOURCE)
 class BaseSourceTest {
 
     private static final String TAG = "client";
 
     @ParameterizedTest(name = "base={0}, base_pack={1} permits an empty release")
     @CsvSource({"true,false", "false,true", "true,true"})
-    void acceptsEitherOrBothEmptyInputDirectories(boolean base, boolean packs, @TempDir Path workspace)
+    void eitherOrBothEmptyInputDirectoriesProduceAnEmptySource(boolean base, boolean packs, @TempDir Path workspace)
             throws IOException {
         if (base) {
             Files.createDirectories(Layout.baseDir(workspace, TAG));
@@ -47,30 +44,43 @@ class BaseSourceTest {
         }
 
         try (BaseSource source = BaseSource.open(workspace, TAG)) {
-            assertTrue(source.files().isEmpty());
+            assertEquals(Map.of(), source.files());
         }
 
         assertFalse(Files.exists(Layout.tempDir(workspace)));
     }
 
     @Test
-    void requiresAtLeastOneInputDirectory(@TempDir Path workspace) {
+    void aSourceRequiresAtLeastOneInputDirectory(@TempDir Path workspace) throws IOException {
+        Map<Path, byte[]> originals = inputBytes(workspace);
         UserError error = assertThrows(UserError.class, () -> BaseSource.open(workspace, TAG));
+
+        assertInputsUnchanged(workspace, originals);
 
         assertTrue(error.getMessage().contains("at least one"), error.getMessage());
         assertTrue(error.getMessage().contains("base_pack"), error.getMessage());
         assertFalse(Files.exists(Layout.tempDir(workspace)));
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"base", "base_pack"})
-    void rejectsAnInvalidRootEvenWhenTheOtherDirectoryExists(String name, @TempDir Path workspace)
-            throws IOException {
+    @Test
+    void anInvalidBaseRootFailsEvenWhenThePackDirectoryExists(@TempDir Path workspace) throws IOException {
+        assertInvalidRoot(workspace, "base");
+    }
+
+    @Test
+    void anInvalidPackRootFailsEvenWhenTheBaseDirectoryExists(@TempDir Path workspace) throws IOException {
+        assertInvalidRoot(workspace, "base_pack");
+    }
+
+    private static void assertInvalidRoot(Path workspace, String name) throws IOException {
         Path tagRoot = Layout.tagRoot(workspace, TAG);
         TestFiles.write(tagRoot, name, "not a directory");
         Files.createDirectory(tagRoot.resolve(name.equals("base") ? "base_pack" : "base"));
 
+        Map<Path, byte[]> originals = inputBytes(workspace);
         UserError error = assertThrows(UserError.class, () -> BaseSource.open(workspace, TAG));
+
+        assertInputsUnchanged(workspace, originals);
 
         assertTrue(error.getMessage().contains("not a directory"), error.getMessage());
         assertTrue(error.getMessage().contains(tagRoot.resolve(name).toString()), error.getMessage());
@@ -79,7 +89,7 @@ class BaseSourceTest {
 
     @ParameterizedTest(name = "{0} is a link, dangling={1}")
     @CsvSource({"base,false", "base,true", "base_pack,false", "base_pack,true"})
-    void rejectsLinkedInputRoots(String name, boolean dangling, @TempDir Path workspace) throws IOException {
+    void aSourceRejectsLinkedInputRoots(String name, boolean dangling, @TempDir Path workspace) throws IOException {
         Path tagRoot = Files.createDirectories(Layout.tagRoot(workspace, TAG));
         Path target = workspace.resolve("target");
         if (!dangling) {
@@ -89,7 +99,10 @@ class BaseSourceTest {
         Path candidate = tagRoot.resolve(name);
         link(candidate, target);
 
+        Map<Path, byte[]> originals = inputBytes(workspace);
         UserError error = assertThrows(UserError.class, () -> BaseSource.open(workspace, TAG));
+
+        assertInputsUnchanged(workspace, originals);
 
         assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
         assertTrue(Files.isSymbolicLink(candidate));
@@ -101,7 +114,7 @@ class BaseSourceTest {
             "base,false,false", "base,true,false", "base,false,true",
             "base_pack,false,false", "base_pack,true,false", "base_pack,false,true"
     })
-    void rejectsLinksInsideEitherInput(String name, boolean directory, boolean dangling,
+    void aSourceRejectsLinksInsideEitherInput(String name, boolean directory, boolean dangling,
             @TempDir Path workspace) throws IOException {
         Path root = Files.createDirectories(Layout.tagRoot(workspace, TAG).resolve(name));
         Path target = workspace.resolve("target");
@@ -116,20 +129,26 @@ class BaseSourceTest {
         Files.createDirectories(candidate.getParent());
         link(candidate, target);
 
+        Map<Path, byte[]> originals = inputBytes(workspace);
         UserError error = assertThrows(UserError.class, () -> BaseSource.open(workspace, TAG));
+
+        assertInputsUnchanged(workspace, originals);
 
         assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
         assertTrue(Files.isSymbolicLink(candidate));
         assertFalse(Files.exists(Layout.tempDir(workspace)));
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "legacy root archive {0} requires migration")
     @ValueSource(strings = {"base.zip", "base.7z", "base.ZIP", "base.7Z"})
-    void directsLegacyRootArchivesToBasePack(String name, @TempDir Path workspace) throws IOException {
+    void aLegacyRootArchiveRequiresMigrationToBasePack(String name, @TempDir Path workspace) throws IOException {
         Files.createDirectories(Layout.baseDir(workspace, TAG));
         TestFiles.write(Layout.tagRoot(workspace, TAG), name, "legacy archive");
 
+        Map<Path, byte[]> originals = inputBytes(workspace);
         UserError error = assertThrows(UserError.class, () -> BaseSource.open(workspace, TAG));
+
+        assertInputsUnchanged(workspace, originals);
 
         assertTrue(error.getMessage().contains(name), error.getMessage());
         assertTrue(error.getMessage().contains("move it into"), error.getMessage());
@@ -137,13 +156,16 @@ class BaseSourceTest {
         assertFalse(Files.exists(Layout.tempDir(workspace)));
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "non-archive {0} fails before extraction")
     @ValueSource(strings = {"readme.txt", "nested/mod.jar", "nested/pack.zip.txt"})
-    void rejectsNonArchivesBeforeExtractingAnyPackage(String name, @TempDir Path workspace) throws IOException {
+    void aNonArchiveFailsBeforeAnyPackageIsExtracted(String name, @TempDir Path workspace) throws IOException {
         archive(workspace, "a.zip", Map.of("valid.txt", "valid"));
         TestFiles.write(Layout.basePackDir(workspace, TAG), name, "not a package");
 
+        Map<Path, byte[]> originals = inputBytes(workspace);
         UserError error = assertThrows(UserError.class, () -> BaseSource.open(workspace, TAG));
+
+        assertInputsUnchanged(workspace, originals);
 
         assertTrue(error.getMessage().contains("ZIP or 7z"), error.getMessage());
         assertTrue(error.getMessage().contains(name.substring(name.lastIndexOf('/') + 1)), error.getMessage());
@@ -151,16 +173,18 @@ class BaseSourceTest {
     }
 
     @Test
-    void mergesRawFilesAndNamedArchivesAtTheirRelativeParentDirectories(@TempDir Path workspace)
+    void aSourceMapsNamedArchivesToTheirRelativeParentDirectories(@TempDir Path workspace)
             throws IOException {
         Path base = Layout.baseDir(workspace, TAG);
         TestFiles.write(base, "raw.txt", "raw file");
         Files.createDirectories(base.resolve("one_path/second_path/empty"));
-        Path zip = archive(workspace, "one_path/test.ZIP", Map.of(
+        archive(workspace, "one_path/test.ZIP", Map.of(
                 "root.txt", "root", "second_path/second.txt", "second", "nested.zip", "not recursively unpacked"));
-        Path sevenZ = archive(workspace, "one_path/another.7Z", Map.of("second_path/third.txt", "third"));
-        Path rootZip = archive(workspace, "different-name.zip", Map.of("at-root.txt", "top"));
+        archive(workspace, "one_path/another.7Z", Map.of("second_path/third.txt", "third"));
+        archive(workspace, "different-name.zip", Map.of("at-root.txt", "top"));
         List<Path> extracted = new ArrayList<>();
+
+        Map<Path, byte[]> originals = inputBytes(workspace);
 
         try (BaseSource source = BaseSource.open(workspace, TAG)) {
             assertEquals(Map.of(
@@ -182,20 +206,16 @@ class BaseSourceTest {
                     extracted.add(source.file(path));
                 }
             }
-            assertTrue(extracted.stream().allMatch(path -> path.startsWith(Layout.tempDir(workspace))));
-            assertEquals(3, stages(workspace).size());
         }
 
         assertTrue(extracted.stream().noneMatch(Files::exists));
-        assertTrue(Files.isRegularFile(zip));
-        assertTrue(Files.isRegularFile(sevenZ));
-        assertTrue(Files.isRegularFile(rootZip));
+        assertInputsUnchanged(workspace, originals);
         assertEquals("raw file", Files.readString(base.resolve("raw.txt")));
         assertNoStages(workspace);
     }
 
     @Test
-    void leavesRawBaseFilesInPlaceWithoutCopyingThem(@TempDir Path workspace) throws IOException {
+    void aSourceLeavesRawBaseFilesInPlaceWithoutCopyingThem(@TempDir Path workspace) throws IOException {
         Path base = Layout.baseDir(workspace, TAG);
         TestFiles.write(base, "mods/a.jar", "original");
         Files.createDirectories(Layout.basePackDir(workspace, TAG));
@@ -212,28 +232,25 @@ class BaseSourceTest {
     }
 
     @Test
-    void rejectsAFileThatBecomesALinkAfterTheScan(@TempDir Path workspace) throws IOException {
+    void aSourceRejectsAFileThatBecomesALinkAfterTheScan(@TempDir Path workspace) throws IOException {
         Path base = Layout.baseDir(workspace, TAG);
         TestFiles.write(base, "mods/a.jar", "original");
         Path outside = workspace.resolve("outside.jar");
         Files.writeString(outside, "outside");
-        BaseSource source = BaseSource.open(workspace, TAG);
-        try {
+        try (BaseSource source = BaseSource.open(workspace, TAG)) {
             Files.delete(base.resolve("mods/a.jar"));
             link(base.resolve("mods/a.jar"), outside);
 
             UserError error = assertThrows(UserError.class, () -> source.file("mods/a.jar"));
 
             assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
-        } finally {
-            source.close();
         }
         assertEquals("outside", Files.readString(outside));
     }
 
     @ParameterizedTest(name = "raw {0} collides with packed {1}")
     @CsvSource({"file,file", "file,child", "child,file", "directory,file", "file,directory"})
-    void rejectsRawAndPackedFileOrDirectoryCollisions(String raw, String packed, @TempDir Path workspace)
+    void aSourceRejectsRawAndPackedFileOrDirectoryCollisions(String raw, String packed, @TempDir Path workspace)
             throws IOException {
         rawEntry(workspace, raw);
         archive(workspace, "test.zip", entry(packed));
@@ -242,7 +259,7 @@ class BaseSourceTest {
     }
 
     @Test
-    void rejectsDuplicateFilesEvenWhenTheBytesAreIdentical(@TempDir Path workspace) throws IOException {
+    void aSourceRejectsDuplicateFilesEvenWhenTheirBytesAreIdentical(@TempDir Path workspace) throws IOException {
         TestFiles.write(Layout.baseDir(workspace, TAG), "collision", "identical");
         archive(workspace, "test.zip", Map.of("collision", "identical"));
 
@@ -251,7 +268,7 @@ class BaseSourceTest {
 
     @ParameterizedTest(name = "packed {0} collides with packed {1}")
     @CsvSource({"file,file", "file,child", "child,file", "directory,file", "file,directory"})
-    void rejectsCollisionsBetweenPackagesAndCleansBothStages(String first, String second,
+    void aCollisionBetweenPackagesReleasesBothStages(String first, String second,
             @TempDir Path workspace) throws IOException {
         archive(workspace, "a.zip", entry(first));
         archive(workspace, "b.7z", entry(second));
@@ -274,7 +291,7 @@ class BaseSourceTest {
             "true, Mods, mods/, Mods, mods",
             "false, Mods, mods/, Mods, mods"
     })
-    void usesNativePathIdentityWithoutChangingLogicalSpelling(boolean rawFirst, String first, String second,
+    void aSourceUsesNativePathIdentityWithoutChangingLogicalSpelling(boolean rawFirst, String first, String second,
             String firstIdentity, String secondIdentity, @TempDir Path workspace) throws IOException {
         Path firstInput;
         if (rawFirst) {
@@ -294,7 +311,10 @@ class BaseSourceTest {
                 .equals(workspace.getFileSystem().getPath(secondIdentity));
 
         if (aliases) {
+            Map<Path, byte[]> originals = inputBytes(workspace);
             UserError error = assertThrows(UserError.class, () -> BaseSource.open(workspace, TAG));
+
+            assertInputsUnchanged(workspace, originals);
             assertTrue(error.getMessage().contains("base input collision"), error.getMessage());
             assertTrue(error.getMessage().contains("conflicts with"), error.getMessage());
         } else {
@@ -329,10 +349,17 @@ class BaseSourceTest {
         assertNoStages(workspace);
     }
 
-    @ParameterizedTest(name = "native directory merging, raw first={0}")
-    @ValueSource(booleans = {true, false})
-    void permitsNativeEquivalentDirectoriesWithDistinctFiles(boolean rawFirst, @TempDir Path workspace)
-            throws IOException {
+    @Test
+    void rawAndPackedNativeEquivalentDirectoriesMergeTheirDistinctFiles(@TempDir Path workspace) throws IOException {
+        assertEquivalentDirectories(workspace, true);
+    }
+
+    @Test
+    void twoPackedNativeEquivalentDirectoriesMergeTheirDistinctFiles(@TempDir Path workspace) throws IOException {
+        assertEquivalentDirectories(workspace, false);
+    }
+
+    private static void assertEquivalentDirectories(Path workspace, boolean rawFirst) throws IOException {
         if (rawFirst) {
             Files.createDirectories(Layout.baseDir(workspace, TAG).resolve("Mods/empty"));
             TestFiles.write(Layout.baseDir(workspace, TAG), "Mods/first.jar", "first");
@@ -350,9 +377,17 @@ class BaseSourceTest {
         assertNoStages(workspace);
     }
 
-    @ParameterizedTest(name = "native mapped-parent collision, raw first={0}")
-    @ValueSource(booleans = {true, false})
-    void usesNativeIdentityForMappedArchiveParents(boolean rawFirst, @TempDir Path workspace) throws IOException {
+    @Test
+    void aRawFileUsesNativeIdentityForMappedParentConflicts(@TempDir Path workspace) throws IOException {
+        assertMappedParent(workspace, true);
+    }
+
+    @Test
+    void aPackedFileUsesNativeIdentityForMappedParentConflicts(@TempDir Path workspace) throws IOException {
+        assertMappedParent(workspace, false);
+    }
+
+    private static void assertMappedParent(Path workspace, boolean rawFirst) throws IOException {
         if (rawFirst) {
             TestFiles.write(Layout.baseDir(workspace, TAG), "Mods", "first");
         } else {
@@ -363,7 +398,10 @@ class BaseSourceTest {
                 .equals(workspace.getFileSystem().getPath("mods"));
 
         if (aliases) {
+            Map<Path, byte[]> originals = inputBytes(workspace);
             UserError error = assertThrows(UserError.class, () -> BaseSource.open(workspace, TAG));
+
+            assertInputsUnchanged(workspace, originals);
             assertTrue(error.getMessage().contains("base input collision"), error.getMessage());
             assertTrue(error.getMessage().contains("conflicts with"), error.getMessage());
         } else {
@@ -377,10 +415,17 @@ class BaseSourceTest {
         assertNoStages(workspace);
     }
 
-    @ParameterizedTest(name = "file parent first={0} with an intervening sibling name")
-    @ValueSource(booleans = {true, false})
-    void detectsPrefixCollisionsBeyondAdjacentSortedPaths(boolean fileFirst, @TempDir Path workspace)
-            throws IOException {
+    @Test
+    void aRawParentConflictsWithAPackedChildBeyondAdjacentSortedPaths(@TempDir Path workspace) throws IOException {
+        assertNonAdjacentCollision(workspace, true);
+    }
+
+    @Test
+    void aPackedParentConflictsWithARawChildBeyondAdjacentSortedPaths(@TempDir Path workspace) throws IOException {
+        assertNonAdjacentCollision(workspace, false);
+    }
+
+    private static void assertNonAdjacentCollision(Path workspace, boolean fileFirst) throws IOException {
         TestFiles.write(Layout.baseDir(workspace, TAG), "collision.txt", "sibling");
         if (fileFirst) {
             TestFiles.write(Layout.baseDir(workspace, TAG), "collision", "parent");
@@ -394,7 +439,7 @@ class BaseSourceTest {
     }
 
     @Test
-    void mergesMatchingDirectoriesIncludingExplicitEmptyDirectories(@TempDir Path workspace) throws IOException {
+    void matchingDirectoriesMergeIncludingExplicitEmptyDirectories(@TempDir Path workspace) throws IOException {
         Files.createDirectories(Layout.baseDir(workspace, TAG).resolve("shared/empty"));
         TestFiles.write(Layout.baseDir(workspace, TAG), "shared/raw.txt", "raw");
         archive(workspace, "a.zip", Map.of("shared/empty/", "", "shared/a.txt", "a"));
@@ -408,7 +453,7 @@ class BaseSourceTest {
     }
 
     @Test
-    void ignoresEmptyContainerDirectoriesAndPackagesWhenMerging(@TempDir Path workspace) throws IOException {
+    void emptyContainerDirectoriesAndPackagesDoNotCreateCollisions(@TempDir Path workspace) throws IOException {
         TestFiles.write(Layout.baseDir(workspace, TAG), "collision", "raw");
         Files.createDirectories(Layout.basePackDir(workspace, TAG).resolve("collision/empty-container"));
         archive(workspace, "collision/empty.zip", Map.of());
@@ -422,9 +467,17 @@ class BaseSourceTest {
         assertNoStages(workspace);
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"file", "directory"})
-    void registersParentsRequiredByRealPackageEntries(String kind, @TempDir Path workspace) throws IOException {
+    @Test
+    void aPackedFileRegistersItsMappedParentForCollisionDetection(@TempDir Path workspace) throws IOException {
+        assertRequiredParent(workspace, "file");
+    }
+
+    @Test
+    void aPackedDirectoryRegistersItsMappedParentForCollisionDetection(@TempDir Path workspace) throws IOException {
+        assertRequiredParent(workspace, "directory");
+    }
+
+    private static void assertRequiredParent(Path workspace, String kind) throws IOException {
         TestFiles.write(Layout.baseDir(workspace, TAG), "collision", "raw");
         archive(workspace, "collision/deeper/test.zip", kind.equals("file")
                 ? Map.of("entry.txt", "content") : Map.of("empty/", ""));
@@ -433,23 +486,29 @@ class BaseSourceTest {
     }
 
     @Test
-    void cleansEveryEarlierPackageWhenALaterArchiveIsMalformed(@TempDir Path workspace) throws IOException {
+    void aMalformedArchiveReleasesEveryEarlierPackage(@TempDir Path workspace) throws IOException {
         archive(workspace, "a.zip", Map.of("first.txt", "first"));
         archive(workspace, "b.7z", Map.of("second.txt", "second"));
         TestFiles.write(Layout.basePackDir(workspace, TAG), "z.zip", "malformed");
 
+        Map<Path, byte[]> originals = inputBytes(workspace);
         UserError error = assertThrows(UserError.class, () -> BaseSource.open(workspace, TAG));
+
+        assertInputsUnchanged(workspace, originals);
 
         assertTrue(error.getMessage().contains("z.zip"), error.getMessage());
         assertNoStages(workspace);
     }
 
     @Test
-    void keepsArchiveSafetyChecksAndCleansEarlierPackages(@TempDir Path workspace) throws IOException {
+    void anUnsafeArchiveReleasesEveryEarlierPackage(@TempDir Path workspace) throws IOException {
         archive(workspace, "a.zip", Map.of("first.txt", "first"));
         archive(workspace, "z.zip", Map.of("../escape.txt", "unsafe"));
 
+        Map<Path, byte[]> originals = inputBytes(workspace);
         UserError error = assertThrows(UserError.class, () -> BaseSource.open(workspace, TAG));
+
+        assertInputsUnchanged(workspace, originals);
 
         assertTrue(error.getMessage().contains("unsafe entry path"), error.getMessage());
         assertFalse(Files.exists(Layout.tempDir(workspace).resolve("escape.txt")));
@@ -457,9 +516,10 @@ class BaseSourceTest {
     }
 
     @Test
-    void cleansAllStagesWhenThePublicationBodyFails(@TempDir Path workspace) throws IOException {
-        Path first = archive(workspace, "a.zip", Map.of("first.txt", "first"));
-        Path second = archive(workspace, "b.7z", Map.of("second.txt", "second"));
+    void aFailingCallerStillReleasesEveryArchiveStage(@TempDir Path workspace) throws IOException {
+        archive(workspace, "a.zip", Map.of("first.txt", "first"));
+        archive(workspace, "b.7z", Map.of("second.txt", "second"));
+        Map<Path, byte[]> originals = inputBytes(workspace);
 
         IOException error = assertThrows(IOException.class, () -> {
             try (BaseSource source = BaseSource.open(workspace, TAG)) {
@@ -470,16 +530,40 @@ class BaseSourceTest {
         });
 
         assertEquals("publication failed", error.getMessage());
-        assertTrue(Files.isRegularFile(first));
-        assertTrue(Files.isRegularFile(second));
+        assertInputsUnchanged(workspace, originals);
         assertNoStages(workspace);
     }
 
     private static void assertCollision(Path workspace) throws IOException {
+        Map<Path, byte[]> originals = inputBytes(workspace);
         UserError error = assertThrows(UserError.class, () -> BaseSource.open(workspace, TAG));
+
+        assertInputsUnchanged(workspace, originals);
         assertTrue(error.getMessage().contains("base input collision at collision:"), error.getMessage());
         assertTrue(error.getMessage().contains("conflicts with"), error.getMessage());
         assertNoStages(workspace);
+    }
+
+    private static Map<Path, byte[]> inputBytes(Path workspace) throws IOException {
+        Path root = Layout.tagRoot(workspace, TAG);
+        if (!Files.exists(root)) {
+            return Map.of();
+        }
+        Map<Path, byte[]> inputs = new TreeMap<>();
+        try (var files = Files.walk(root)) {
+            for (Path file : files.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).toList()) {
+                inputs.put(root.relativize(file), Files.readAllBytes(file));
+            }
+        }
+        return inputs;
+    }
+
+    private static void assertInputsUnchanged(Path workspace, Map<Path, byte[]> originals) throws IOException {
+        Map<Path, byte[]> after = inputBytes(workspace);
+        assertEquals(originals.keySet(), after.keySet(), "source input paths remain unchanged");
+        for (Map.Entry<Path, byte[]> input : originals.entrySet()) {
+            assertArrayEquals(input.getValue(), after.get(input.getKey()), input.getKey().toString());
+        }
     }
 
     private static void rawEntry(Path workspace, String kind) throws IOException {
@@ -501,30 +585,9 @@ class BaseSourceTest {
     }
 
     private static Path archive(Path workspace, String name, Map<String, String> entries) throws IOException {
-        Path archive = Layout.basePackDir(workspace, TAG).resolve(name);
-        Files.createDirectories(archive.getParent());
-        if (name.toLowerCase(Locale.ROOT).endsWith(".zip")) {
-            try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(archive))) {
-                for (var entry : new TreeMap<>(entries).entrySet()) {
-                    out.putNextEntry(new ZipEntry(entry.getKey()));
-                    out.write(TestFiles.bytes(entry.getValue()));
-                    out.closeEntry();
-                }
-            }
-        } else {
-            try (SevenZOutputFile out = new SevenZOutputFile(archive.toFile())) {
-                out.setContentMethods(List.of(new SevenZMethodConfiguration(SevenZMethod.LZMA2, new LZMA2Options(0))));
-                for (var entry : new TreeMap<>(entries).entrySet()) {
-                    SevenZArchiveEntry item = new SevenZArchiveEntry();
-                    item.setName(entry.getKey());
-                    item.setDirectory(entry.getKey().endsWith("/"));
-                    out.putArchiveEntry(item);
-                    out.write(TestFiles.bytes(entry.getValue()));
-                    out.closeArchiveEntry();
-                }
-            }
-        }
-        return archive;
+        Map<String, byte[]> bytes = new TreeMap<>();
+        entries.forEach((path, content) -> bytes.put(path, TestFiles.bytes(content)));
+        return TestArchives.write(Layout.basePackDir(workspace, TAG).resolve(name), bytes);
     }
 
     private static void link(Path link, Path target) throws IOException {
@@ -541,7 +604,7 @@ class BaseSourceTest {
             return List.of();
         }
         try (var entries = Files.list(temp)) {
-            return entries.filter(path -> path.getFileName().toString().startsWith("base-archive-")).toList();
+            return entries.toList();
         }
     }
 

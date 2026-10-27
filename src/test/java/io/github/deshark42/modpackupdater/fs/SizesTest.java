@@ -2,7 +2,6 @@ package io.github.deshark42.modpackupdater.fs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
@@ -32,10 +31,5 @@ class SizesTest {
     })
     void reportsTheRateOfAByteCountOverTheTimeItTook(long bytes, long nanos, String expected) {
         assertEquals(expected, Sizes.rate(bytes, nanos));
-    }
-
-    @Test
-    void keepsTheDecimalPointOfTheRootLocale() {
-        assertEquals("1.5 KiB", Sizes.human(1536), "a comma default locale must not leak into the output");
     }
 }

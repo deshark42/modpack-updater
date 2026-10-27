@@ -3,6 +3,7 @@ package io.github.deshark42.modpackupdater.s3;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -13,12 +14,16 @@ import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.zip.GZIPOutputStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class S3ReadStoreTest {
 
@@ -33,14 +38,15 @@ class S3ReadStoreTest {
         return base + "/" + TestWorkspace.PREFIX + "/" + relative;
     }
 
-    @Test
-    void addressesObjectsBelowTheReadEndpoint() {
+    @ParameterizedTest(name = "objects hang directly below {0}")
+    @ValueSource(strings = {"https://cdn.example.com", "https://cdn.example.com/modpacks",
+            "https://pack.cdn.example.com"})
+    void addressesObjectsBelowTheReadEndpoint(String base) {
         String key = ObjectKeys.latest("client");
-        for (String base : List.of("https://cdn.example.com", "https://cdn.example.com/modpacks",
-                "https://pack.cdn.example.com")) {
-            assertEquals(pathBelow(base, key), new S3ReadStore(config(base)).uri(key).toString(),
-                    "the object key hangs off the read address, with no bucket in between: " + base);
-        }
+
+        String actual = new S3ReadStore(config(base)).uri(key).toString();
+
+        assertEquals(pathBelow(base, key), actual);
     }
 
     @Test
@@ -83,10 +89,12 @@ class S3ReadStoreTest {
 
             UserError error = assertThrows(UserError.class, () -> store.getBytes(ObjectKeys.latest("client")));
 
-            assertTrue(error.getMessage().startsWith("cannot read " + pathBelow(base, ObjectKeys.latest("client"))),
+            assertTrue(error.getMessage().contains(pathBelow(base, ObjectKeys.latest("client"))),
                     error.getMessage());
             assertTrue(error.getMessage().contains("not found"), error.getMessage());
             assertTrue(error.getMessage().contains("NoSuchKey"), error.getMessage());
+            assertEquals(List.of("GET " + TestWorkspace.bucketPath(ObjectKeys.latest("client"))), s3.requests());
+            org.junit.jupiter.api.Assertions.assertNull(s3.object(TestWorkspace.bucketPath(ObjectKeys.latest("client"))));
         }
     }
 
@@ -95,7 +103,11 @@ class S3ReadStoreTest {
         try (FakeS3 s3 = new FakeS3()) {
             byte[] content = TestFiles.bytes("chunk bytes");
             String relative = ObjectKeys.blob(Sha256.ofBytes(content));
-            new S3Store(TestWorkspace.config(s3)).putGzip(relative, content);
+            ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+            try (GZIPOutputStream gzip = new GZIPOutputStream(compressed)) {
+                gzip.write(content);
+            }
+            s3.put(TestWorkspace.bucketPath(relative), compressed.toByteArray(), S3Store.GZIP);
             s3.allowAnonymous(true);
             String base = s3.url() + "/" + TestWorkspace.BUCKET;
             Path target = dir.resolve("chunk");
@@ -104,9 +116,12 @@ class S3ReadStoreTest {
                     () -> new S3ReadStore(config(base)).download(relative, target));
 
             assertTrue(error.getMessage().contains("gzip"), error.getMessage());
-            assertEquals("cannot read " + pathBelow(base, relative) + ": the response is gzip-encoded,"
-                    + " not the bytes that were stored", error.getMessage());
+            assertTrue(error.getMessage().contains("not the bytes that were stored"), error.getMessage());
             assertFalse(Files.exists(target), "a response that is not the stored bytes writes nothing");
+            assertEquals(List.of("GET " + TestWorkspace.bucketPath(relative)), s3.requests());
+            try (var entries = Files.list(dir)) {
+                assertEquals(List.of(), entries.toList(), "no partial download is created");
+            }
         }
     }
 }

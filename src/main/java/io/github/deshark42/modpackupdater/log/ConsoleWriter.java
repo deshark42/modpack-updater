@@ -1,7 +1,7 @@
 package io.github.deshark42.modpackupdater.log;
 
 import java.io.PrintStream;
-import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
 import java.util.EnumSet;
@@ -20,7 +20,7 @@ import org.tinylog.writers.Writer;
 public final class ConsoleWriter implements Writer {
 
     private static final DateTimeFormatter STAMP =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS", Locale.ROOT);
 
     public ConsoleWriter(Map<String, String> properties) {
         // configured by Logging; a run's streams live in Run, because they change between runs
@@ -28,7 +28,7 @@ public final class ConsoleWriter implements Writer {
 
     @Override
     public Collection<LogEntryValue> getRequiredLogEntryValues() {
-        return EnumSet.of(LogEntryValue.DATE, LogEntryValue.LEVEL, LogEntryValue.MESSAGE,
+        return EnumSet.of(LogEntryValue.LEVEL, LogEntryValue.MESSAGE,
                 LogEntryValue.EXCEPTION);
     }
 
@@ -41,7 +41,7 @@ public final class ConsoleWriter implements Writer {
         run.progress().clear();
         PrintStream sink = entry.getLevel().ordinal() >= Level.WARN.ordinal() ? run.err() : run.out();
         String message = entry.getMessage() == null ? "" : entry.getMessage();
-        sink.println(STAMP.format(entry.getTimestamp().toInstant().atZone(ZoneId.systemDefault()))
+        sink.println(STAMP.format(ZonedDateTime.now(run.clock()))
                 + " " + String.format(Locale.ROOT, "%5s", entry.getLevel()) + " " + message);
         Throwable error = entry.getException();
         if (error != null) {

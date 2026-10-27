@@ -2,7 +2,7 @@ package io.github.deshark42.modpackupdater.log;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
 import java.util.EnumSet;
@@ -21,7 +21,7 @@ import org.tinylog.writers.Writer;
 public final class TranscriptWriter implements Writer {
 
     private static final DateTimeFormatter STAMP =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS", Locale.ROOT);
 
     public TranscriptWriter(Map<String, String> properties) {
         // configured by Logging; a run's transcript lives in Run, because it changes between runs
@@ -29,7 +29,7 @@ public final class TranscriptWriter implements Writer {
 
     @Override
     public Collection<LogEntryValue> getRequiredLogEntryValues() {
-        return EnumSet.of(LogEntryValue.DATE, LogEntryValue.LEVEL, LogEntryValue.MESSAGE,
+        return EnumSet.of(LogEntryValue.LEVEL, LogEntryValue.MESSAGE,
                 LogEntryValue.EXCEPTION);
     }
 
@@ -41,7 +41,7 @@ public final class TranscriptWriter implements Writer {
             return;
         }
         StringBuilder text = new StringBuilder();
-        text.append(STAMP.format(entry.getTimestamp().toInstant().atZone(ZoneId.systemDefault())))
+        text.append(STAMP.format(ZonedDateTime.now(run.clock())))
                 .append(' ')
                 .append(String.format(Locale.ROOT, "%5s", entry.getLevel()))
                 .append(' ')

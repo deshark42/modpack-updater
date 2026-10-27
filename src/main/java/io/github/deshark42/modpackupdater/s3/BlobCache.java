@@ -81,7 +81,7 @@ public final class BlobCache {
         return open(workspace, config, maxAge, Clock.systemUTC());
     }
 
-    static BlobCache open(Path workspace, Config config, Duration maxAge, Clock clock) {
+    public static BlobCache open(Path workspace, Config config, Duration maxAge, Clock clock) {
         Path file = Layout.knownBlobsFile(workspace);
         String fingerprint = fingerprint(config);
         Read read = read(file);

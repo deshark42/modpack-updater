@@ -6,12 +6,17 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 
 /**
  * Captures one run's console output: the two streams a command writes to, plus the logging run that
  * has to be started and finished around it. Close it after the run so the next run starts clean.
  */
 public final class TestLogs implements AutoCloseable {
+
+    public static final String RESOURCE = "logging";
+    private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-10-20T00:00:00Z"), ZoneOffset.UTC);
 
     private final ByteArrayOutputStream out = new ByteArrayOutputStream();
     private final ByteArrayOutputStream err = new ByteArrayOutputStream();
@@ -20,12 +25,12 @@ public final class TestLogs implements AutoCloseable {
 
     /** Starts the run a command logs to; no transcript is kept. */
     public void begin(Path workspace) {
-        Logging.begin(workspace, null, outStream, errStream);
+        begin(workspace, null, CLOCK);
     }
 
     /** Starts the run a command logs to, keeping a transcript in the workspace's log directory. */
     public void begin(Path workspace, String transcriptName) {
-        Logging.begin(workspace, transcriptName, outStream, errStream);
+        begin(workspace, transcriptName, CLOCK);
     }
 
     /** Starts a run whose transcript is dated by {@code clock}, so a test can control the date. */
@@ -56,8 +61,11 @@ public final class TestLogs implements AutoCloseable {
     /** Ends the run if it is still open and releases the streams. */
     @Override
     public void close() {
-        Logging.finish();
-        outStream.close();
-        errStream.close();
+        try {
+            Logging.finish();
+        } finally {
+            outStream.close();
+            errStream.close();
+        }
     }
 }

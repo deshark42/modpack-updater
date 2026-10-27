@@ -33,7 +33,7 @@ class AtomicFileTest {
     void replacesTheWholeContentOnEveryWrite(@TempDir Path root) throws IOException {
         Path file = root.resolve("state/current.json");
 
-        AtomicFile.write(file, "a much longer first content");
+        TestFiles.write(root, "state/current.json", "a much longer first content");
         AtomicFile.write(file, "second");
 
         assertEquals("second", AtomicFile.read(file));
@@ -66,11 +66,15 @@ class AtomicFileTest {
     void refusesToWriteOverADirectory(@TempDir Path root) throws IOException {
         Path directory = root.resolve("state");
         Files.createDirectories(directory);
+        TestFiles.write(directory, "keep.txt", "untouched");
 
         UserError error = assertThrows(UserError.class, () -> AtomicFile.write(directory, "{}"));
 
         assertTrue(error.getMessage().contains("is a directory"), error.getMessage());
-        assertTrue(Files.isDirectory(directory), "the directory is left alone");
+        assertEquals("untouched", Files.readString(directory.resolve("keep.txt")));
+        try (Stream<Path> listing = Files.list(root)) {
+            assertEquals(List.of(directory), listing.toList(), "no staged write remains");
+        }
     }
 
     @Test
@@ -80,6 +84,7 @@ class AtomicFileTest {
         UserError error = assertThrows(UserError.class, () -> AtomicFile.read(missing));
 
         assertTrue(error.getMessage().startsWith("cannot read " + missing), error.getMessage());
+        assertFalse(Files.exists(missing.getParent()));
     }
 
     @Test

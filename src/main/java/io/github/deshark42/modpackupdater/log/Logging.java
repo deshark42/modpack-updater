@@ -50,7 +50,7 @@ public final class Logging {
         begin(workspace, transcriptName, out, err, Clock.systemDefaultZone());
     }
 
-    /** Starts the run being logged; {@code clock} dates the transcript and ages out old ones. */
+    /** Starts the run being logged; {@code clock} dates entries and transcripts and ages out old ones. */
     public static void begin(Path workspace, String transcriptName, PrintStream out, PrintStream err,
             Clock clock) {
         begin(workspace, transcriptName, out, err, clock, new Progress(err, bar(err)));
@@ -59,7 +59,7 @@ public final class Logging {
     static void begin(Path workspace, String transcriptName, PrintStream out, PrintStream err,
             Clock clock, Progress progress) {
         Run next = new Run(out, err, progress,
-                transcriptName == null ? null : open(workspace, transcriptName, clock));
+                transcriptName == null ? null : open(workspace, transcriptName, clock), clock);
         run = next;
         if (next.transcript() != null) {
             LOG.info("logging this run to {}", Text.relativeTo(workspace, next.transcript()));

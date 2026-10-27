@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.github.deshark42.modpackupdater.UserError;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 class ChunkingTest {
 
@@ -23,36 +25,30 @@ class ChunkingTest {
     }
 
     @Test
-    void roundTripsThroughJson() {
+    void theWriterIncludesEveryChunkingParameter() {
         Map<String, Object> json = Chunking.DEFAULT.toJson();
-        assertEquals(8192L, json.get("min"));
-        assertEquals(32768L, json.get("avg"));
-        assertEquals(131072L, json.get("max"));
+        assertEquals(Map.of("min", (long) Chunking.DEFAULT.min(), "avg", (long) Chunking.DEFAULT.avg(),
+                "max", (long) Chunking.DEFAULT.max()), json);
+    }
+
+    @Test
+    void theParserReadsTheWrittenChunkingParameters() {
+        Map<String, Object> json = Chunking.DEFAULT.toJson();
+
         assertEquals(Chunking.DEFAULT, Chunking.parse(json, "chunking"));
     }
 
-    @Test
-    void rejectsAnAverageThatIsNotAPowerOfTwo() {
-        UserError error = assertThrows(UserError.class, () -> new Chunking(8192, 40000, 131072));
-        assertTrue(error.getMessage().contains("must be a power of two"), error.getMessage());
-    }
+    @ParameterizedTest(name = "chunking min={0}, avg={1}, max={2} rejects {3}")
+    @CsvSource({
+            "8192, 40000, 131072, must be a power of two",
+            "0, 32768, 131072, min must be positive",
+            "32768, 32768, 131072, avg must be larger than min",
+            "8192, 32768, 16384, max must not be smaller than avg"
+    })
+    void invalidChunkingParametersReportTheirCause(int min, int avg, int max, String message) {
+        UserError error = assertThrows(UserError.class, () -> new Chunking(min, avg, max));
 
-    @Test
-    void rejectsANonPositiveMinimum() {
-        UserError error = assertThrows(UserError.class, () -> new Chunking(0, 32768, 131072));
-        assertTrue(error.getMessage().contains("min must be positive"), error.getMessage());
-    }
-
-    @Test
-    void rejectsAMinimumThatIsNotBelowTheAverage() {
-        UserError error = assertThrows(UserError.class, () -> new Chunking(32768, 32768, 131072));
-        assertTrue(error.getMessage().contains("avg must be larger than min"), error.getMessage());
-    }
-
-    @Test
-    void rejectsAMaximumBelowTheAverage() {
-        UserError error = assertThrows(UserError.class, () -> new Chunking(8192, 32768, 16384));
-        assertTrue(error.getMessage().contains("max must not be smaller than avg"), error.getMessage());
+        assertTrue(error.getMessage().contains(message), error.getMessage());
     }
 
     @Test

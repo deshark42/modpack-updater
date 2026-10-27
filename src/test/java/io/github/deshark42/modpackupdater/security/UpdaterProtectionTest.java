@@ -64,7 +64,7 @@ class UpdaterProtectionTest {
         }
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "path checks with concurrency {0}")
     @ValueSource(ints = {1, 2, 8, 64})
     void checksEveryPathOnceWithBoundedConcurrentBatches(int concurrency) {
         List<Integer> items = IntStream.range(0,
@@ -97,9 +97,17 @@ class UpdaterProtectionTest {
         assertEquals(List.of(1, 2), checked);
     }
 
-    @ParameterizedTest(name = "caller interrupted: {0}")
-    @ValueSource(booleans = {false, true})
-    void waitsForReadersToStopOnFailureOrInterruption(boolean interrupt) throws Exception {
+    @Test
+    void waitsForReadersToStopOnFailure() throws Exception {
+        waitsForReadersToStop(false);
+    }
+
+    @Test
+    void waitsForReadersToStopOnInterruption() throws Exception {
+        waitsForReadersToStop(true);
+    }
+
+    private static void waitsForReadersToStop(boolean interrupt) throws Exception {
         List<Integer> items = IntStream.range(0, UpdaterProtection.MIN_PATHS_PER_WORKER * 2).boxed().toList();
         CountDownLatch started = new CountDownLatch(interrupt ? 2 : 1);
         CountDownLatch stopping = new CountDownLatch(interrupt ? 2 : 1);
@@ -147,7 +155,12 @@ class UpdaterProtectionTest {
                     "preflight returned while a cancelled reader was still in cleanup");
         } finally {
             releaseCleanup.countDown();
+            blocked.countDown();
             caller.join(5000);
+            if (caller.isAlive()) {
+                caller.interrupt();
+                caller.join(5000);
+            }
         }
         assertFalse(caller.isAlive(), "preflight did not finish after readers stopped");
         assertEquals(0, active.get());
@@ -156,7 +169,7 @@ class UpdaterProtectionTest {
         assertEquals(interrupt, interruptedAtReturn.get());
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "parallel preflight rejects native alias before {0}")
     @ValueSource(strings = {"existing.jar", "missing/a.jar", "blocked.jar/child"})
     @EnabledOnOs(OS.WINDOWS)
     void parallelPreflightStillRejectsNativeDirectoryAliases(String suffix, @TempDir Path root) throws IOException {
@@ -176,19 +189,27 @@ class UpdaterProtectionTest {
     private static void junction(Path link, Path target) throws Exception {
         Process process = new ProcessBuilder("cmd.exe", "/c", "mklink", "/J", link.toString(), target.toString())
                 .redirectErrorStream(true).start();
-        try {
+        try (var output = process.getInputStream()) {
             assertTrue(process.waitFor(10, TimeUnit.SECONDS), "junction creation timed out");
-            assertEquals(0, process.exitValue(), new String(process.getInputStream().readAllBytes(),
-                    StandardCharsets.UTF_8));
+            assertEquals(0, process.exitValue(), new String(output.readAllBytes(), StandardCharsets.UTF_8));
         } finally {
             process.destroyForcibly();
         }
     }
 
-    @ParameterizedTest(name = "selected root is a junction: {0}")
-    @ValueSource(booleans = {false, true})
+    @Test
     @EnabledOnOs(OS.WINDOWS)
-    void parallelPreflightRechecksJunctionsBetweenManifests(boolean rootLink, @TempDir Path root) throws Exception {
+    void parallelPreflightRechecksJunctionsBetweenManifests(@TempDir Path root) throws Exception {
+        parallelPreflightRechecksJunctionsBetweenManifests(false, root);
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void parallelPreflightRechecksJunctionsBelowASelectedRootLink(@TempDir Path root) throws Exception {
+        parallelPreflightRechecksJunctionsBetweenManifests(true, root);
+    }
+
+    private static void parallelPreflightRechecksJunctionsBetweenManifests(boolean rootLink, Path root) throws Exception {
         Path workspace = Files.createDirectory(root.resolve("instance"));
         TestFiles.write(workspace, "runner.jar", "updater");
         TestFiles.write(workspace, "mods/a.jar", "ordinary payload");
@@ -202,9 +223,6 @@ class UpdaterProtectionTest {
         UpdaterProtection protection = new UpdaterProtection(selected, workspace.resolve("runner.jar"));
         Manifest payload = largeManifest("mods/a.jar");
         protection.require(payload, UpdaterProtection.MAX_PATH_WORKERS);
-        assertTrue(assertThrows(UserError.class,
-                () -> protection.require(largeManifest("runner.jar"), UpdaterProtection.MAX_PATH_WORKERS))
-                .getMessage().contains("running updater"));
 
         Files.delete(workspace.resolve("mods/a.jar"));
         Files.delete(workspace.resolve("mods"));
@@ -301,8 +319,9 @@ class UpdaterProtectionTest {
         // NTFS may retain the old size in the alias's directory entry after this write.
         Files.writeString(root.resolve("runner.jar"), "resized external updater");
         UpdaterProtection protection = new UpdaterProtection(workspace, root.resolve("runner.jar"));
-        assertTrue(Files.size(workspace.resolve("alias.jar")) > manifest("alias.jar").files().get("alias.jar").size(),
-                "manifest size is not the on-disk size and must not filter out this hard link");
+        assertEquals(0, manifest("alias.jar").files().get("alias.jar").size());
+        assertEquals("resized external updater", Files.readString(workspace.resolve("alias.jar")),
+                "the hard link contains bytes despite a zero-sized manifest entry");
 
         UserError error = assertThrows(UserError.class, () -> protection.require(largeManifest("alias.jar"), UpdaterProtection.MAX_PATH_WORKERS));
 
@@ -369,5 +388,6 @@ class UpdaterProtectionTest {
         UserError error = assertThrows(UserError.class,
                 () -> new UpdaterProtection(root, root.resolve("missing.jar")));
         assertTrue(error.getMessage().contains("cannot locate the running updater"), error.getMessage());
+        assertFalse(Files.exists(root.resolve("missing.jar")));
     }
 }

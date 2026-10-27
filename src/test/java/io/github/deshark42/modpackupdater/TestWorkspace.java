@@ -1,9 +1,12 @@
 package io.github.deshark42.modpackupdater;
 
+import io.github.deshark42.modpackupdater.json.Json;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /** Fixture workspace: the config that points a command at a FakeS3, and the tag layout it reads. */
 public final class TestWorkspace {
@@ -41,13 +44,17 @@ public final class TestWorkspace {
      * {@code readEndpoint} is given, are the URLs of a CDN in front of the same bucket.
      */
     public static void configure(Path workspace, String endpoint, String readEndpoint) throws IOException {
-        String json = "{\"endpoint\": \"" + endpoint + "\", \"bucket\": \"" + BUCKET + "\", \"prefix\": \""
-                + PREFIX + "\", \"path_style\": true, \"access_key\": \"" + ACCESS_KEY
-                + "\", \"secret_key\": \"" + SECRET_KEY + "\"";
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("endpoint", endpoint);
+        fields.put("bucket", BUCKET);
+        fields.put("prefix", PREFIX);
+        fields.put("path_style", true);
+        fields.put("access_key", ACCESS_KEY);
+        fields.put("secret_key", SECRET_KEY);
         if (readEndpoint != null) {
-            json += ", \"read_endpoint\": \"" + readEndpoint + "\"";
+            fields.put("read_endpoint", readEndpoint);
         }
-        TestFiles.write(workspace, Layout.STATE_DIR + "/" + Layout.CONFIG, json + "}");
+        TestFiles.write(workspace, Layout.STATE_DIR + "/" + Layout.CONFIG, Json.write(fields));
         TestSigning.writeKeys(workspace);
     }
 

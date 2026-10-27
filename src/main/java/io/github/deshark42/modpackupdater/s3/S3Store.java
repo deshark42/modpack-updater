@@ -33,6 +33,10 @@ public final class S3Store extends S3Connection {
         this(config, Clock.systemUTC(), Duration.ofMinutes(30));
     }
 
+    public S3Store(Config config, Clock clock) {
+        this(config, clock, Duration.ofMinutes(30));
+    }
+
     S3Store(Config config, Clock clock, Duration timeout) {
         super(config, timeout);
         this.clock = clock;

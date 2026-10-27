@@ -1,12 +1,13 @@
 package io.github.deshark42.modpackupdater.s3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.TreeMap;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 class SigV4Test {
 
@@ -48,13 +49,19 @@ class SigV4Test {
                 "header names are sorted and their values trimmed before signing");
     }
 
-    @Test
-    void signsTheQueryStringAsPartOfTheRequest() {
+    // Generated independently with Node's crypto SHA-256/HMAC, using the AWS example credentials.
+    @ParameterizedTest(name = "query {0} produces signature {1}")
+    @CsvSource({"'',df548e2ce037944d03f3e68682813b093763996d597cf890ca3d9037fd231eb4",
+            "a=1&b=2,efd6d2cf9c730d3ce43d07dca0873f77f5694cf13c929641a214067a32aac198",
+            "b=2&a=1,973901501b0ac0a0e9222c4177f691e3256644ff753bebf7a504940f1d5eae1c"})
+    void theGivenQueryOrderIsPartOfTheSignature(String query, String signature) {
         Map<String, String> headers = documentedHeaders();
         headers.remove("range");
 
-        assertNotEquals(sign("a=1&b=2", headers), sign("b=2&a=1", headers),
-                "the query string is signed in the order it is given");
-        assertNotEquals(sign("a=1&b=2", headers), sign("", headers), "a query changes the signature");
+        String actual = sign(query, headers);
+
+        assertEquals(SigV4.ALGORITHM
+                + " Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request,"
+                + " SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=" + signature, actual);
     }
 }

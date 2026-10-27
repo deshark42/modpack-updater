@@ -2,6 +2,7 @@ package io.github.deshark42.modpackupdater.fs;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -9,14 +10,15 @@ import io.github.deshark42.modpackupdater.TestFiles;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.model.Chunking;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 class ChunkerTest {
 
@@ -64,32 +66,17 @@ class ChunkerTest {
         assertEquals(PARAMETERS.min(), result.table().size());
     }
 
-    @Test
-    void theCutsCoverTheFileInOrderWithinTheBounds(@TempDir Path root) throws IOException {
-        byte[] content = TestFiles.random(300_000, 1);
+    @ParameterizedTest(name = "a cut at {0} reads {1} bytes")
+    @CsvSource({"0, 1", "1, 31", "31, 1", "0, 32"})
+    void readsExactlyTheSelectedCut(int offset, int length, @TempDir Path root) throws IOException {
+        byte[] content = TestFiles.random(32, 1);
         TestFiles.write(root, "content.bin", content);
-        Path file = root.resolve("content.bin");
+        byte[] expected = Arrays.copyOfRange(content, offset, offset + length);
+        Chunker.Cut cut = new Chunker.Cut(Sha256.ofBytes(expected), offset, length);
 
-        Chunker.Result result = Chunker.split(file, PARAMETERS, null);
-        List<Chunker.Cut> cuts = cuts(file);
+        byte[] actual = Chunker.read(root.resolve("content.bin"), cut);
 
-        assertEquals(result.table().chunks(), cuts.stream().map(Chunker.Cut::hash).toList());
-        assertEquals(content.length, result.table().size());
-        long next = 0;
-        for (int i = 0; i < cuts.size(); i++) {
-            Chunker.Cut cut = cuts.get(i);
-            assertEquals(next, cut.offset(), "the cuts are contiguous");
-            assertTrue(cut.length() <= PARAMETERS.max(), "no cut is longer than max: " + cut.length());
-            if (i < cuts.size() - 1) {
-                assertTrue(cut.length() >= PARAMETERS.min(), "only the tail may be shorter than min: " + cut.length());
-            }
-            assertArrayEquals(Arrays.copyOfRange(content, (int) cut.offset(), (int) cut.offset() + cut.length()),
-                    Chunker.read(file, cut), "a cut reads back as the bytes it was found in");
-            assertEquals(cut.hash(), Sha256.ofBytes(Chunker.read(file, cut)));
-            next += cut.length();
-        }
-        assertEquals(content.length, next);
-        assertEquals(Sha256.ofBytes(content), result.hash());
+        assertArrayEquals(expected, actual);
     }
 
     @Test
@@ -105,24 +92,21 @@ class ChunkerTest {
     }
 
     @Test
-    void contentThatDefeatsTheRollingHashStillRespectsTheBounds(@TempDir Path root) throws IOException {
-        TestFiles.write(root, "zeros.bin", new byte[500_000]);
+    void contentThatDefeatsTheRollingHashCutsAtTheMaximum(@TempDir Path root) throws IOException {
+        TestFiles.write(root, "zeros.bin", new byte[PARAMETERS.max() * 2 + 1]);
 
         List<Chunker.Cut> cuts = cuts(root.resolve("zeros.bin"));
 
-        assertTrue(cuts.size() > 1, "a long file is split even when its bytes repeat");
-        for (int i = 0; i < cuts.size(); i++) {
-            assertTrue(cuts.get(i).length() <= PARAMETERS.max(), "no cut is longer than max");
-            if (i < cuts.size() - 1) {
-                assertTrue(cuts.get(i).length() >= PARAMETERS.min(), "only the tail may be shorter than min");
-            }
-        }
+        assertEquals(List.of(PARAMETERS.max(), PARAMETERS.max(), 1),
+                cuts.stream().map(Chunker.Cut::length).toList());
+        assertEquals(List.of(0L, (long) PARAMETERS.max(), PARAMETERS.max() * 2L),
+                cuts.stream().map(Chunker.Cut::offset).toList());
     }
 
     @Test
     void anInsertionOnlyMovesTheChunksAroundIt(@TempDir Path root) throws IOException {
-        byte[] original = TestFiles.random(400_000, 3);
-        int insertAt = 200_000;
+        byte[] original = TestFiles.random(200_000, 42);
+        int insertAt = 20_000;
         byte[] insertion = TestFiles.random(5_000, 4);
         byte[] modified = new byte[original.length + insertion.length];
         System.arraycopy(original, 0, modified, 0, insertAt);
@@ -130,8 +114,8 @@ class ChunkerTest {
         System.arraycopy(original, insertAt, modified, insertAt + insertion.length, original.length - insertAt);
         TestFiles.write(root, "before.bin", original);
         TestFiles.write(root, "after.bin", modified);
-
         List<Chunker.Cut> before = cuts(root.resolve("before.bin"));
+
         List<Chunker.Cut> after = cuts(root.resolve("after.bin"));
 
         List<Chunker.Cut> beforePrefix = before.stream()
@@ -140,12 +124,13 @@ class ChunkerTest {
                 .filter(cut -> cut.offset() + cut.length() <= insertAt).toList();
         assertEquals(beforePrefix, afterPrefix, "every chunk before the insertion is unchanged");
 
-        Set<String> shared = new HashSet<>(before.stream().map(Chunker.Cut::hash).toList());
-        shared.retainAll(after.stream().map(Chunker.Cut::hash).toList());
-        assertTrue(shared.size() >= before.size() / 2,
-                "at least half the chunks survive: only the chunk the insertion lands in moves its boundary,"
-                        + " so a 2x tolerance keeps this from depending on where the cut fell: "
-                        + shared.size() + " of " + before.size());
+        long stableSuffix = insertAt + PARAMETERS.max();
+        List<Chunker.Cut> beforeSuffix = before.stream().filter(cut -> cut.offset() >= stableSuffix).toList();
+        List<Chunker.Cut> afterSuffix = after.stream()
+                .filter(cut -> cut.offset() - insertion.length >= stableSuffix)
+                .map(cut -> new Chunker.Cut(cut.hash(), cut.offset() - insertion.length, cut.length())).toList();
+        assertFalse(beforeSuffix.isEmpty(), "the fixture includes chunks beyond the insertion's boundary region");
+        assertEquals(beforeSuffix, afterSuffix, "the distant suffix retains exact bytes, lengths and shifted offsets");
     }
 
     @Test
@@ -167,17 +152,20 @@ class ChunkerTest {
                 new Chunker.Cut("ac2c57b527982fd0adca019082d3d81d16d769dd43d340b4b2d7388a090431e8", 135879L, 27468),
                 new Chunker.Cut("8c80a2f092d21ca53146b6b99b4b4f570f0154e2ada5840bc2022aa07668efe7", 163347L, 36653)),
                 cuts);
+        assertEquals(content.length, result.table().size());
         assertEquals(cuts.stream().map(Chunker.Cut::hash).toList(), result.table().chunks());
         assertEquals("dda435b9042083a15068a87593acabb147a259f695472827c4d48a79fd115297", result.hash());
     }
 
     @Test
     void readingACutBeyondTheEndFails(@TempDir Path root) throws IOException {
-        TestFiles.write(root, "content.bin", TestFiles.random(1_000, 5));
+        byte[] content = TestFiles.random(1_000, 5);
+        TestFiles.write(root, "content.bin", content);
         Chunker.Cut cut = new Chunker.Cut(HASH, 900, 200);
 
         UserError error = assertThrows(UserError.class, () -> Chunker.read(root.resolve("content.bin"), cut));
 
         assertTrue(error.getMessage().contains("ends before the chunk"), error.getMessage());
+        assertArrayEquals(content, Files.readAllBytes(root.resolve("content.bin")));
     }
 }

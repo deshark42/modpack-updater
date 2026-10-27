@@ -1,6 +1,7 @@
 package io.github.deshark42.modpackupdater.fs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -26,22 +27,21 @@ class TreeTest {
         Map<String, Long> files = Tree.list(root);
 
         assertEquals(List.of("mmc-pack.json", "mods/a.jar", "mods/b.jar"), List.copyOf(files.keySet()));
-        assertEquals(1L, files.get("mods/a.jar"));
-        assertEquals(2L, files.get("mods/b.jar"));
+        assertEquals(Map.of("mmc-pack.json", 2L, "mods/a.jar", 1L, "mods/b.jar", 2L), files);
     }
 
     @Test
     void recordsTheEmptyFile(@TempDir Path root) throws IOException {
         TestFiles.write(root, "options.txt", "");
 
-        assertEquals(0L, Tree.list(root).get("options.txt"));
+        assertEquals(Map.of("options.txt", 0L), Tree.list(root));
     }
 
     @Test
     void ignoresEmptyDirectories(@TempDir Path root) throws IOException {
         Files.createDirectories(root.resolve("config/vendingmachine"));
 
-        assertTrue(Tree.list(root).isEmpty());
+        assertEquals(Map.of(), Tree.list(root));
     }
 
     @Test
@@ -54,7 +54,7 @@ class TreeTest {
             assumeTrue(false, "this filesystem cannot create symbolic links, so the rule cannot be checked: " + e);
         }
 
-        assertEquals(List.of("real.txt"), List.copyOf(Tree.list(root).keySet()));
+        assertEquals(Map.of("real.txt", 1L), Tree.list(root));
     }
 
     @Test
@@ -64,5 +64,6 @@ class TreeTest {
         UserError error = assertThrows(UserError.class, () -> Tree.list(missing));
 
         assertTrue(error.getMessage().contains("no such directory: " + missing), error.getMessage());
+        assertFalse(Files.exists(missing));
     }
 }

@@ -1,5 +1,6 @@
 package io.github.deshark42.modpackupdater.s3;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -22,11 +23,13 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
+@ResourceLock(TestLogs.RESOURCE)
 class BlobCacheTest {
 
     private static final Instant NOW = Instant.parse("2026-10-20T00:00:00Z");
@@ -35,21 +38,9 @@ class BlobCacheTest {
     private static final String HASH_B = Sha256.ofBytes(TestFiles.bytes("cached blob b"));
     private static final String HASH_C = Sha256.ofBytes(TestFiles.bytes("cached blob c"));
 
-    private final TestLogs logs = new TestLogs();
-
     private static Config config(String bucket) {
         return new Config("https://s3.example.com", null, "us-east-1", bucket, "gtnh/", true, null, null,
                 Config.DEFAULT_CONCURRENCY);
-    }
-
-    @BeforeEach
-    void beginLogging(@TempDir Path workspace) {
-        logs.begin(workspace);
-    }
-
-    @AfterEach
-    void endLogging() {
-        logs.close();
     }
 
     private BlobCache open(Path workspace) {
@@ -80,17 +71,17 @@ class BlobCacheTest {
     }
 
     @Test
-    void writesOneJsonObjectPerLine(@TempDir Path workspace) throws IOException {
+    void appendingABlobKeepsExistingEntriesInOrder(@TempDir Path workspace) throws IOException {
         BlobCache cache = open(workspace);
         cache.remember(HASH_A);
+
         cache.remember(HASH_B);
 
         List<String> lines = Files.readAllLines(Layout.knownBlobsFile(workspace), StandardCharsets.UTF_8);
         assertEquals(3, lines.size());
 
         Map<String, Object> header = Json.asObject(Json.parse(lines.get(0)), "header");
-        assertEquals("v1", header.get("version"));
-        assertTrue(header.get("fingerprint") instanceof String);
+        assertEquals(BlobCache.fingerprint(config("pack")), header.get("fingerprint"));
         assertEquals(NOW.getEpochSecond(), header.get("createdAt"));
         assertEquals(Map.of("hash", HASH_A), Json.asObject(Json.parse(lines.get(1)), "entry"));
         assertEquals(Map.of("hash", HASH_B), Json.asObject(Json.parse(lines.get(2)), "entry"));
@@ -110,48 +101,64 @@ class BlobCacheTest {
     void doesNotWriteAnEntryTwice(@TempDir Path workspace) throws IOException {
         BlobCache cache = open(workspace);
         cache.remember(HASH_A);
+
         cache.remember(HASH_A);
 
-        assertEquals(1L, entries(workspace).stream()
-                .filter(entry -> HASH_A.equals(entry.get("hash")))
-                .count());
+        assertEquals(List.of(Map.of("hash", HASH_A)), entries(workspace));
     }
 
     @Test
-    void usesTheMaximumAgeItIsGiven(@TempDir Path workspace) {
-        Duration maxAge = Duration.ofDays(30);
+    void aCacheAtTheMaximumAgeRemainsUsable(@TempDir Path workspace) {
         open(workspace).remember(HASH_A);
+        Clock atTheLimit = Clock.fixed(NOW.plus(Duration.ofDays(30)), ZoneOffset.UTC);
 
-        Clock atTheLimit = Clock.fixed(NOW.plus(maxAge), ZoneOffset.UTC);
-        Clock justPastIt = Clock.fixed(NOW.plus(maxAge).plusSeconds(1), ZoneOffset.UTC);
+        BlobCache reopened = open(workspace, config("pack"), Duration.ofDays(30), atTheLimit);
 
-        assertTrue(open(workspace, config("pack"), maxAge, atTheLimit).known(HASH_A));
-        assertFalse(open(workspace, config("pack"), maxAge, justPastIt).known(HASH_A));
+        assertTrue(reopened.known(HASH_A));
     }
 
     @Test
-    void dropsTheCacheOfAnotherBucketLocation(@TempDir Path workspace) {
+    void aCachePastTheMaximumAgeIsDiscardedWithoutChangingTheFile(@TempDir Path workspace) throws IOException {
         open(workspace).remember(HASH_A);
+        byte[] original = Files.readAllBytes(Layout.knownBlobsFile(workspace));
+        Clock pastTheLimit = Clock.fixed(NOW.plus(Duration.ofDays(30)).plusSeconds(1), ZoneOffset.UTC);
 
-        assertFalse(open(workspace, config("other"), Duration.ofDays(30), CLOCK).known(HASH_A));
+        BlobCache reopened = open(workspace, config("pack"), Duration.ofDays(30), pastTheLimit);
+
+        assertFalse(reopened.known(HASH_A));
+        assertArrayEquals(original, Files.readAllBytes(Layout.knownBlobsFile(workspace)));
+    }
+
+    @ParameterizedTest(name = "cache identity changes to {0} / {1} / {2}")
+    @CsvSource({"https://other.example.com,pack,gtnh/", "https://s3.example.com,other,gtnh/",
+            "https://s3.example.com,pack,other/"})
+    void aDifferentBucketLocationDiscardsTheCacheWithoutChangingItsFile(String endpoint, String bucket,
+            String prefix, @TempDir Path workspace) throws IOException {
+        open(workspace).remember(HASH_A);
+        byte[] original = Files.readAllBytes(Layout.knownBlobsFile(workspace));
+        Config different = new Config(endpoint, null, "us-east-1", bucket, prefix, true, null, null,
+                Config.DEFAULT_CONCURRENCY);
+
+        BlobCache reopened = open(workspace, different, Duration.ofDays(30), CLOCK);
+
+        assertFalse(reopened.known(HASH_A));
+        assertArrayEquals(original, Files.readAllBytes(Layout.knownBlobsFile(workspace)));
     }
 
     @Test
-    void dropsACorruptedCacheAndBuildsANewOne(@TempDir Path workspace) throws IOException {
+    void aCorruptCacheIsDiscardedWithoutChangingItsFile(@TempDir Path workspace) throws IOException {
         open(workspace).remember(HASH_A);
         Files.writeString(Layout.knownBlobsFile(workspace), "not a cache\n", StandardCharsets.UTF_8);
 
         BlobCache corrupted = open(workspace);
         assertFalse(corrupted.known(HASH_A));
-
-        corrupted.remember(HASH_A);
-        assertTrue(open(workspace).known(HASH_A));
+        assertEquals("not a cache\n", Files.readString(Layout.knownBlobsFile(workspace), StandardCharsets.UTF_8));
     }
 
     @Test
     void dropsACacheWithAMalformedEntry(@TempDir Path workspace) throws IOException {
         open(workspace).remember(HASH_A);
-        Files.writeString(Layout.knownBlobsFile(workspace), "{\"hash\": \"not-a-hash\"}\n",
+        Files.writeString(Layout.knownBlobsFile(workspace), Json.write(Map.of("hash", "not-a-hash")),
                 StandardCharsets.UTF_8, StandardOpenOption.APPEND);
 
         assertFalse(open(workspace).known(HASH_A));
@@ -187,28 +194,37 @@ class BlobCacheTest {
     }
 
     @Test
-    void keepsTheRunGoingWhenTheCacheCannotBeWritten(@TempDir Path workspace) throws IOException {
+    void aCacheWriteFailureKeepsTheRunGoingWithoutInventingAnEntry(@TempDir Path workspace) throws IOException {
         Files.createDirectories(Layout.knownBlobsFile(workspace));
         BlobCache cache = open(workspace);
+        try (TestLogs logs = new TestLogs()) {
+            logs.begin(workspace);
 
-        cache.remember(HASH_A);
+            cache.remember(HASH_A);
 
-        assertFalse(cache.known(HASH_A));
-        assertTrue(logs.errText().contains("WARN cannot write the blob cache " + label(workspace)),
-                logs.errText());
-        assertTrue(label(workspace).contains(Layout.KNOWN_BLOBS), label(workspace));
+            assertFalse(cache.known(HASH_A));
+            assertTrue(logs.errText().contains("cannot write the blob cache " + label(workspace)), logs.errText());
+            try (var entries = Files.list(Layout.knownBlobsFile(workspace))) {
+                assertEquals(List.of(), entries.toList(), "the obstructing directory is not changed");
+            }
+        }
     }
 
     @Test
-    void warnsAboutAnUnwritableCacheOnlyOnce(@TempDir Path workspace) throws IOException {
+    void aCacheWriteFailureWarnsOnlyOnce(@TempDir Path workspace) throws IOException {
         Files.createDirectories(Layout.knownBlobsFile(workspace));
         BlobCache cache = open(workspace);
-
         cache.remember(HASH_A);
-        cache.remember(HASH_B);
+        try (TestLogs logs = new TestLogs()) {
+            logs.begin(workspace);
 
-        String printed = logs.errText();
-        assertEquals(1, printed.split("cannot write", -1).length - 1, printed);
-        assertFalse(logs.outText().contains("cannot write"), logs.outText());
+            cache.remember(HASH_B);
+
+            assertEquals("", logs.errText());
+            assertEquals("", logs.outText());
+            try (var entries = Files.list(Layout.knownBlobsFile(workspace))) {
+                assertEquals(List.of(), entries.toList());
+            }
+        }
     }
 }

@@ -1,15 +1,17 @@
 package io.github.deshark42.modpackupdater.command;
 
 import io.github.deshark42.modpackupdater.UserError;
+import io.github.deshark42.modpackupdater.fs.AppliedRelease;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
-import io.github.deshark42.modpackupdater.fs.Chunker;
+import io.github.deshark42.modpackupdater.fs.LocalContent;
+import io.github.deshark42.modpackupdater.fs.LocalContent.Local;
+import io.github.deshark42.modpackupdater.fs.LocalContent.Reuse;
 import io.github.deshark42.modpackupdater.fs.PathGuard;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.fs.Sizes;
 import io.github.deshark42.modpackupdater.log.Logging;
 import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.ChunkTable;
-import io.github.deshark42.modpackupdater.model.Chunking;
 import io.github.deshark42.modpackupdater.model.Config;
 import io.github.deshark42.modpackupdater.model.FileEntry;
 import io.github.deshark42.modpackupdater.model.Layout;
@@ -18,6 +20,7 @@ import io.github.deshark42.modpackupdater.model.Names;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import io.github.deshark42.modpackupdater.model.Plan;
 import io.github.deshark42.modpackupdater.model.Pointer;
+import io.github.deshark42.modpackupdater.model.ReleaseIdentity;
 import io.github.deshark42.modpackupdater.model.SafePath;
 import io.github.deshark42.modpackupdater.s3.ObjectReader;
 import io.github.deshark42.modpackupdater.s3.S3ReadStore;
@@ -33,16 +36,15 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
-import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PublicKey;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -79,10 +81,18 @@ public final class Update {
     }
 
     public static void run(Path workspace, String tag, String releaseId) {
-        run(workspace, tag, releaseId, UpdaterProtection.runningUpdater());
+        run(workspace, tag, releaseId, Clock.systemUTC());
+    }
+
+    public static void run(Path workspace, String tag, String releaseId, Clock clock) {
+        run(workspace, tag, releaseId, UpdaterProtection.runningUpdater(), clock);
     }
 
     static void run(Path workspace, String tag, String releaseId, Path updater) {
+        run(workspace, tag, releaseId, updater, Clock.systemUTC());
+    }
+
+    private static void run(Path workspace, String tag, String releaseId, Path updater, Clock clock) {
         Names.requireTag(tag);
         if (releaseId != null) {
             Names.requireReleaseId(releaseId);
@@ -98,7 +108,7 @@ public final class Update {
         LOG.debug("tag {}: locating updater and workspace", tag);
         UpdaterProtection protection = new UpdaterProtection(workspace, updater);
         LOG.debug("tag {}: initializing object store", tag);
-        ObjectReader store = config.readEndpoint() == null ? new S3Store(config) : new S3ReadStore(config);
+        ObjectReader store = config.readEndpoint() == null ? new S3Store(config, clock) : new S3ReadStore(config);
 
         // an explicit release id bypasses latest.json entirely, so a pinned update works even while
         // the pointer is missing or names a release the caller does not want
@@ -111,31 +121,17 @@ public final class Update {
             targetId = latest.releaseId();
         }
 
-        String applied = null;
-        Manifest local = null;
-        // Both manifest preflights are read-only and network fetches alone separate them, so the
-        // target one starts from the metadata the local one already gathered. Once the payload phase
-        // writes anything, the cache is finished.
+        // Both manifest preflights share read-only metadata until payload writes begin.
         PathGuard.Preflight preflight = PathGuard.preflight();
-        LOG.debug("tag {}: reading local release pointer", tag);
+        AppliedRelease state = AppliedRelease.read(workspace, tag, targetId);
+        String applied = state.releaseId();
+        Manifest local = state.manifest();
         Path currentFile = Layout.currentFile(workspace, tag);
-        if (Files.exists(currentFile)) {
-            applied = Pointer.read(currentFile).releaseId();
-            Path appliedManifest = Layout.releaseFile(workspace, tag, applied);
-            if (!Files.isRegularFile(appliedManifest)) {
-                throw new UserError("cannot tell which files are already applied: " + appliedManifest
-                        + " is missing; restore it or delete " + currentFile);
-            }
-            if (targetId.equals(applied)) {
-                // The preflight exists to make a run that can mutate payload paths fail before it
-                // touches one. A run with nothing to apply mutates nothing, so reading the local
-                // manifest and walking its paths is pure cost: on a real instance the walk is the
-                // bulk of a no-op update.
-                LOG.info("tag {} is already at release {}", tag, applied);
-                return;
-            }
-            LOG.debug("tag {}: reading local manifest for release {}", tag, applied);
-            local = Manifest.read(appliedManifest);
+        if (targetId.equals(applied)) {
+            LOG.info("tag {} is already at release {}", tag, applied);
+            return;
+        }
+        if (local != null) {
             LOG.debug("tag {}: checking {} local manifest paths for release {}", tag, local.files().size(), applied);
             protection.require(local, config.concurrency(), preflight);
         }
@@ -150,9 +146,7 @@ public final class Update {
         ReleaseSigning.verify(manifestBytes, signature, trustedKey);
         LOG.debug("tag {}: parsing and validating target manifest for release {}", tag, targetId);
         Manifest target = Manifest.parse(new String(manifestBytes, StandardCharsets.UTF_8), store.key(targetKey));
-        if (!tag.equals(target.tag()) || !targetId.equals(target.releaseId())) {
-            throw new UserError("signed manifest identity does not match requested tag " + tag + " release " + targetId);
-        }
+        ReleaseIdentity.require(target, tag, targetId);
         LOG.debug("tag {}: checking {} target manifest paths for release {}", tag, target.files().size(), targetId);
         protection.require(target, config.concurrency(), preflight);
         LOG.info("verified the release signature for tag {} release {}", tag, targetId);
@@ -205,13 +199,13 @@ public final class Update {
             // happens before any chunk table is fetched, so a file that already matches the target
             // costs no request beyond the two manifests. It is also the longest stretch with no
             // other output, so it gets the same bar the transfers use.
-            Set<Path> deletions = downloads.isEmpty() ? Set.of() : deletionPaths(workspace, plan.deleted());
+            Set<Path> deletions = downloads.isEmpty() ? Set.of() : LocalContent.deletionPaths(workspace, plan.deleted());
             Set<String> skipped = ConcurrentHashMap.newKeySet();
             int toCheck = downloads.size();
             AtomicInteger checked = new AtomicInteger();
             Logging.progress("check", 0, toCheck, "file");
             Parallel.forEach(downloads, config.concurrency(), path -> {
-                if (matchesTarget(workspace, path, target.files().get(path), deletions)) {
+                if (LocalContent.matchesTarget(workspace, path, target.files().get(path), deletions)) {
                     skipped.add(path);
                 }
                 Logging.progress("check", checked.incrementAndGet(), toCheck, "file");
@@ -242,7 +236,7 @@ public final class Update {
                     LOG.debug("tag {}: fetching chunk tables", tag);
                     Map<String, ChunkTable> tables = chunkTables(store, target, toFetch, config.concurrency());
                     LOG.debug("tag {}: finding reusable local chunks", tag);
-                    Reuse reuse = localChunks(workspace, backup, plan, toFetch, tag, targetId, target, tables,
+                    Reuse reuse = LocalContent.localChunks(workspace, backup, plan, toFetch, tag, targetId, target, tables,
                             config.concurrency());
                     LOG.debug("tag {}: planning missing chunks", tag);
                     Map<String, Local> existing = reuse.chunks();
@@ -339,57 +333,6 @@ public final class Update {
         return text.toString();
     }
 
-    private static Set<Path> deletionPaths(Path workspace, List<String> deleted) {
-        Set<Path> paths = new HashSet<>();
-        for (String path : deleted) {
-            // These paths already passed manifest preflight. Resolve the leaf only for this mutating plan:
-            // two permitted spellings can name the same directory entry even though Plan keys differ.
-            Path source = workspace.resolve(SafePath.require(path));
-            if (!exists(source)) {
-                continue;
-            }
-            try {
-                paths.add(source.toRealPath());
-            } catch (NoSuchFileException e) {
-                // A missing deletion will not move any target content.
-            } catch (IOException e) {
-                throw new UserError("cannot resolve planned deletion " + path + ": " + e.getMessage(), e);
-            }
-        }
-        return Set.copyOf(paths);
-    }
-
-    /** Whether matching content will remain at the target after planned deletions. */
-    private static boolean matchesTarget(Path workspace, String path, FileEntry entry, Set<Path> deletions) {
-        Path target = SafePath.resolve(workspace, path);
-        try {
-            if (!Files.isRegularFile(target) || Files.size(target) != entry.size()) {
-                return false;
-            }
-            if (!Sha256.ofFile(target).equals(entry.hash())) {
-                return false;
-            }
-            if (!deletions.isEmpty()) {
-                // Moving a directory also moves matching targets below it. A threatened file must go
-                // through staging before any deletion, even when no payload chunks need downloading.
-                for (Path current = target.toRealPath(); current != null; current = current.getParent()) {
-                    if (deletions.contains(current)) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        } catch (IOException | UserError e) {
-            // a path that cannot be read is treated as different, so it is fetched whole
-            return false;
-        }
-    }
-
-    /** Whether something is at this path, including a symbolic link whose target does not exist. */
-    private static boolean exists(Path path) {
-        return Files.exists(path, LinkOption.NOFOLLOW_LINKS);
-    }
-
     /**
      * The chunk table of every file that has to be assembled, asked for once per distinct table and
      * checked against the manifest so a misaddressed object cannot be split into a wrong file.
@@ -421,92 +364,8 @@ public final class Update {
         return tables;
     }
 
-    /** A chunk already on disk, and the file its bytes can be read back from. */
-    private record Local(Path file, Chunker.Cut cut) {
-    }
-
-    /** The chunks the workspace's own files still hold, and how many of those files were read. */
-    private record Reuse(Map<String, Local> chunks, int files) {
-    }
-
     /** What the wire part of the run cost: the bytes fetched and how long fetching them took. */
     private record Download(long bytes, long nanos) {
-    }
-
-    /**
-     * Splits the local files this run is about to change or delete, plus the copies an earlier run
-     * kept under the target release, with the parameters the target chunk tables record, collecting
-     * every chunk the new release could reuse. The target path's current file is the first source; a
-     * missing or unreadable one falls back to the copy an interrupted earlier run may have left in
-     * {@code backup/}. A path without a target table of its own - a deleted one, or a kept copy
-     * addressed by its old path - is split with every chunking the run's target tables use. A copy
-     * that is missing or cannot be read contributes nothing.
-     */
-    private static Reuse localChunks(Path workspace, Path backup, Plan plan, List<String> toFetch, String tag,
-            String targetId, Manifest target, Map<String, ChunkTable> tables, int concurrency) {
-        Map<String, Local> existing = new ConcurrentHashMap<>();
-        Set<Chunking> targetChunkings = new LinkedHashSet<>();
-        for (ChunkTable table : tables.values()) {
-            targetChunkings.add(table.chunking());
-        }
-        if (targetChunkings.isEmpty()) {
-            return new Reuse(existing, 0);
-        }
-        AtomicInteger read = new AtomicInteger();
-        List<String> changing = new ArrayList<>(toFetch);
-        changing.addAll(plan.deleted());
-        Parallel.forEach(changing, concurrency, path -> {
-            List<Chunking> chunkings = chunkingsFor(path, target, tables, targetChunkings);
-            if (cutInto(SafePath.resolve(workspace, path), chunkings, existing)) {
-                read.incrementAndGet();
-                return;
-            }
-            if (cutInto(SafePath.resolve(backup, path), chunkings, existing)) {
-                read.incrementAndGet();
-            }
-        });
-        Path kept = Layout.backupDir(workspace, tag, targetId);
-        List<Path> keptCopies;
-        try (var walk = Files.walk(kept)) {
-            keptCopies = walk.peek(path -> PathGuard.require(workspace, path))
-                    .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).toList();
-        } catch (IOException e) {
-            return new Reuse(existing, read.get()); // a kept directory that cannot be listed only costs reuse
-        }
-        Parallel.forEach(keptCopies, concurrency, copy -> {
-            String path = kept.relativize(copy).toString().replace('\\', '/');
-            if (cutInto(copy, chunkingsFor(path, target, tables, targetChunkings), existing)) {
-                read.incrementAndGet();
-            }
-        });
-        return new Reuse(existing, read.get());
-    }
-
-    /** Splits one local file with every parameter given, adding the chunks found to {@code into}. */
-    private static boolean cutInto(Path file, List<Chunking> chunkings, Map<String, Local> into) {
-        if (!Files.isRegularFile(file)) {
-            return false;
-        }
-        Map<String, Local> found = new HashMap<>();
-        try {
-            for (Chunking chunking : chunkings) {
-                Chunker.split(file, chunking, cut -> found.putIfAbsent(cut.hash(), new Local(file, cut)));
-            }
-        } catch (UserError e) {
-            return false; // a copy that cannot be read is as good as no copy at all
-        }
-        for (Map.Entry<String, Local> chunk : found.entrySet()) {
-            into.putIfAbsent(chunk.getKey(), chunk.getValue());
-        }
-        return true;
-    }
-
-    /** The parameters the target table of one path records, or every one the run's target tables use. */
-    private static List<Chunking> chunkingsFor(String path, Manifest target, Map<String, ChunkTable> tables,
-            Set<Chunking> all) {
-        FileEntry entry = target.files().get(path);
-        ChunkTable table = entry == null ? null : tables.get(entry.indexId());
-        return table == null ? List.copyOf(all) : List.of(table.chunking());
     }
 
     /** Fetches the missing chunks into the run's blob directory, one file per chunk. */
@@ -611,6 +470,10 @@ public final class Update {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is not available", e);
         }
+    }
+
+    private static boolean exists(Path path) {
+        return Files.exists(path, LinkOption.NOFOLLOW_LINKS);
     }
 
     private static boolean moveAside(Path workspace, Path backup, String path) {

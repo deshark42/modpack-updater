@@ -18,6 +18,7 @@ import io.github.deshark42.modpackupdater.model.Pointer;
 import io.github.deshark42.modpackupdater.model.RemoveRules;
 import io.github.deshark42.modpackupdater.model.SafePath;
 import io.github.deshark42.modpackupdater.s3.BlobCache;
+import io.github.deshark42.modpackupdater.s3.PublishStore;
 import io.github.deshark42.modpackupdater.s3.S3Store;
 import io.github.deshark42.modpackupdater.security.ReleaseSigning;
 import io.github.deshark42.modpackupdater.util.Parallel;
@@ -25,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.PrivateKey;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -63,6 +65,10 @@ public final class Publish {
     }
 
     public static void run(Path workspace, String tag, String releaseId, int cacheMaxAgeDays) {
+        run(workspace, tag, releaseId, cacheMaxAgeDays, Clock.systemUTC());
+    }
+
+    public static void run(Path workspace, String tag, String releaseId, int cacheMaxAgeDays, Clock clock) {
         Names.requireTag(tag);
         Names.requireReleaseId(releaseId);
         if (cacheMaxAgeDays < 1) {
@@ -71,12 +77,12 @@ public final class Publish {
         long startedAt = System.nanoTime();
         LOG.info("publishing release {} of tag {}", releaseId, tag);
         try (BaseSource source = BaseSource.open(workspace, tag)) {
-            publish(workspace, tag, releaseId, cacheMaxAgeDays, source, startedAt);
+            publish(workspace, tag, releaseId, cacheMaxAgeDays, source, startedAt, clock);
         }
     }
 
     private static void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
-            BaseSource source, long startedAt) {
+            BaseSource source, long startedAt, Clock clock) {
         Path overlay = Layout.overlayDir(workspace, tag);
         String baseName = source.inputs().stream().map(input -> Text.relativeTo(workspace, input))
                 .collect(Collectors.joining(" + "));
@@ -134,12 +140,10 @@ public final class Publish {
 
         Config config = Workspace.load(workspace);
         PrivateKey signingKey = ReleaseSigning.privateKey(config.privateKeyFile(workspace));
-        S3Store store = new S3Store(config);
-        if (store.exists(releaseKey)) {
-            throw new UserError("release " + releaseId + " of tag " + tag
-                    + " already exists; a published release is never rewritten");
-        }
-        BlobCache cache = BlobCache.open(workspace, config, Duration.ofDays(cacheMaxAgeDays));
+        S3Store store = new S3Store(config, clock);
+        PublishStore.requireNewRelease(store, tag, releaseId);
+        BlobCache cache = BlobCache.open(workspace, config, Duration.ofDays(cacheMaxAgeDays), clock);
+        PublishStore uploads = new PublishStore(store, cache);
 
         // Splitting every file also hashes it, so the manifest is complete before anything moves.
         Map<String, FileEntry> entries = new ConcurrentHashMap<>();
@@ -155,7 +159,7 @@ public final class Publish {
         LOG.info("split {} into {}", Text.count(entries.size(), "file"),
                 Text.count(placements.size(), "chunk"));
 
-        Manifest manifest = new Manifest(tag, releaseId, Instant.now().truncatedTo(ChronoUnit.SECONDS),
+        Manifest manifest = new Manifest(tag, releaseId, Instant.now(clock).truncatedTo(ChronoUnit.SECONDS),
                 Manifest.SHA256, new TreeMap<>(entries));
         byte[] manifestBytes = manifest.toJson().getBytes(StandardCharsets.UTF_8);
         byte[] signature = ReleaseSigning.sign(manifestBytes, signingKey);
@@ -207,8 +211,7 @@ public final class Publish {
             if (!Sha256.ofBytes(bytes).equals(chunk.getKey())) {
                 throw new UserError(placement.path() + " changed while it was being published");
             }
-            store.putBytes(ObjectKeys.blob(chunk.getKey()), bytes);
-            cache.remember(chunk.getKey());
+            uploads.putChunk(chunk.getKey(), bytes);
             int done = uploaded.incrementAndGet();
             Logging.progress("upload", done, toUpload, uploadedBytes.addAndGet(bytes.length), "chunk");
         });
@@ -225,8 +228,7 @@ public final class Publish {
             }
             long tableStartedAt = System.nanoTime();
             Parallel.forEach(pendingTables.entrySet(), config.concurrency(), table -> {
-                store.putBytes(ObjectKeys.index(table.getKey()), table.getValue());
-                cache.remember(table.getKey());
+                uploads.putIndex(table.getKey(), table.getValue());
             });
             long tableNanos = System.nanoTime() - tableStartedAt;
             LOG.debug("uploaded {} ({}) in {} ({})", Text.count(pendingTables.size(), "chunk table"),

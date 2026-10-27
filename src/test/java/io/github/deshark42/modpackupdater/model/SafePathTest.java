@@ -14,14 +14,17 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 class SafePathTest {
 
-    @Test
-    void acceptsAndNormalizesPlainRelativePaths() {
-        assertEquals("mods/x.jar", SafePath.require("mods/x.jar"));
-        assertEquals("mods/x.jar", SafePath.require("mods/./x.jar"));
-        assertEquals("a/b", SafePath.require("a/b/"));
-        assertEquals("a/b", SafePath.require("a//b"));
-        assertEquals("config/.modpack-updater/file", SafePath.require("config/.modpack-updater/file"));
-        assertEquals(".modpack-updater-extra/file", SafePath.require(".modpack-updater-extra/file"));
+    @ParameterizedTest(name = "{0} normalizes to {1}")
+    @CsvSource({
+            "mods/x.jar, mods/x.jar",
+            "mods/./x.jar, mods/x.jar",
+            "a/b/, a/b",
+            "a//b, a/b",
+            "config/.modpack-updater/file, config/.modpack-updater/file",
+            ".modpack-updater-extra/file, .modpack-updater-extra/file"
+    })
+    void plainRelativePathsNormalizeInsideTheWorkspace(String input, String expected) {
+        assertEquals(expected, SafePath.require(input));
     }
 
     @ParameterizedTest(name = "\"{0}\" is reserved for the updater")

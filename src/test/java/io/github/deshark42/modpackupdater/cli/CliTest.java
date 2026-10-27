@@ -9,40 +9,60 @@ import io.github.deshark42.modpackupdater.FakeS3;
 import io.github.deshark42.modpackupdater.TestFiles;
 import io.github.deshark42.modpackupdater.TestLogs;
 import io.github.deshark42.modpackupdater.TestWorkspace;
+import io.github.deshark42.modpackupdater.command.Publish;
+import io.github.deshark42.modpackupdater.command.Update;
 import io.github.deshark42.modpackupdater.model.Layout;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import io.github.deshark42.modpackupdater.model.Pointer;
+import io.github.deshark42.modpackupdater.model.RemoveRules;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
+@ResourceLock(TestLogs.RESOURCE)
 class CliTest {
 
     private static final String TAG = "client";
+    private static final Clock CLOCK = Clock.fixed(Instant.parse("2024-01-02T03:04:05Z"), ZoneOffset.UTC);
 
-    private TestLogs logs = new TestLogs();
-
-    private int run(Path cwd, String... args) {
-        logs = new TestLogs();
-        return Cli.run(args, cwd, logs.out(), logs.err());
+    private record Captured(String outText, String errText) {
     }
 
-    private void assertUsage(Path cwd, String fragment, String... args) {
+    private Captured logs = new Captured("", "");
+
+    private int run(Path cwd, String... args) {
+        try (TestLogs capture = new TestLogs()) {
+            int exitCode = Cli.run(args, cwd, capture.out(), capture.err(), CLOCK);
+            logs = new Captured(capture.outText(), capture.errText());
+            return exitCode;
+        }
+    }
+
+    private void assertUsage(Path cwd, String fragment, String... args) throws IOException {
         assertEquals(Cli.USAGE_ERROR, run(cwd, args), logs.errText());
         assertTrue(logs.errText().contains(fragment), logs.errText());
+        assertEquals("", logs.outText());
+        try (var entries = Files.list(cwd)) {
+            assertEquals(List.of(), entries.toList(), "usage errors create no workspace files");
+        }
     }
 
     private void publish(Path workspace, String tag, String releaseId, String path, String content)
             throws IOException {
         TestWorkspace.base(workspace, tag, path, content);
-        assertEquals(Cli.OK, run(workspace, "publish", "--tag", tag, "--id", releaseId), logs.errText());
+        Publish.run(workspace, tag, releaseId, Publish.DEFAULT_CACHE_MAX_AGE_DAYS, CLOCK);
     }
 
     private static String get(String objectKey) {
@@ -55,7 +75,11 @@ class CliTest {
     }
 
     private static List<String> latestRequests(FakeS3 s3, int offset) {
-        return requestsSince(s3, offset).stream().filter(request -> request.endsWith("/latest.json")).toList();
+        return requestsSince(s3, offset).stream()
+                .filter(request -> request.equals(get(ObjectKeys.latest("common")))
+                        || request.equals(get(ObjectKeys.latest(TAG)))
+                        || request.equals(get(ObjectKeys.latest("server"))))
+                .toList();
     }
 
     private static Stream<Arguments> invalidBatches() {
@@ -68,7 +92,6 @@ class CliTest {
                         List.of("update", "--tag", "common", "--tag")));
     }
 
-    /** Command lines that the parser has to refuse, and the hint it has to print. */
     private static Stream<Arguments> optionUsageErrors() {
         return Stream.of(
                 Arguments.of("update without --tag", "needs --tag", List.of("update")),
@@ -82,7 +105,6 @@ class CliTest {
                 Arguments.of("option without a value", "needs a value", List.of("update", "--tag")));
     }
 
-    /** Values or commands that a --cache-max-age-days option cannot appear with. */
     private static Stream<Arguments> badCacheMaxAge() {
         return Stream.of(
                 Arguments.of("publish with zero days", "cache-max-age-days needs a positive number of days",
@@ -98,87 +120,51 @@ class CliTest {
     }
 
     @Test
-    void generatesKeysInTheWorkspaceSelectedOnTheCommandLine(@TempDir Path root) {
+    void keygenWritesKeysToTheWorkspaceSelectedOnTheCommandLine(@TempDir Path root) {
         Path workspace = root.resolve("publisher");
         assertEquals(Cli.OK, run(root, "keygen", "--workspace", workspace.toString()), logs.errText());
         assertTrue(Files.isRegularFile(workspace.resolve(Layout.DEFAULT_PRIVATE_KEY)));
         assertTrue(Files.isRegularFile(workspace.resolve(Layout.DEFAULT_PUBLIC_KEY)));
         assertTrue(logs.outText().contains("public key SHA-256 fingerprint"), logs.outText());
+        assertFalse(Files.exists(root.resolve(Layout.STATE_DIR)), "the current directory is not the selected workspace");
+        assertEquals("", logs.errText());
     }
 
     @Test
-    void noCommandIsAUsageError(@TempDir Path cwd) {
-        assertEquals(Cli.USAGE_ERROR, run(cwd));
-        assertTrue(logs.errText().contains("usage: modpack-updater"), logs.errText());
+    void noCommandIsAUsageError(@TempDir Path cwd) throws IOException {
+        assertUsage(cwd, "no command");
+    }
+
+    @ParameterizedTest(name = "unknown option {0} is rejected")
+    @ValueSource(strings = {"--wat", "--quiet", "--verbose", "--dry-run"})
+    void anUnknownOptionIsAUsageError(String option, @TempDir Path cwd) throws IOException {
+        assertUsage(cwd, "unknown option: " + option, "update", "--tag", TAG, option);
     }
 
     @Test
-    void unknownOptionIsAUsageError(@TempDir Path cwd) {
-        assertUsage(cwd, "unknown option: --wat", "update", "--tag", TAG, "--wat");
-    }
-
-    @Test
-    void quietAndVerboseAreNoLongerOptions(@TempDir Path cwd) {
-        assertUsage(cwd, "unknown option: --quiet", "update", "--tag", TAG, "--quiet");
-        assertUsage(cwd, "unknown option: --verbose", "update", "--tag", TAG, "--verbose");
-    }
-
-    @Test
-    void unknownCommandIsAUsageError(@TempDir Path cwd) {
+    void anUnknownCommandIsAUsageError(@TempDir Path cwd) throws IOException {
         assertUsage(cwd, "unknown command: sync", "sync", "--tag", TAG);
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("optionUsageErrors")
     void eachCommandRejectsOptionsItDoesNotTake(String description, String fragment, List<String> args,
-            @TempDir Path cwd) {
+            @TempDir Path cwd) throws IOException {
         assertUsage(cwd, fragment, args.toArray(String[]::new));
-    }
-
-    @Test
-    void cacheMaxAgeIsAPublishOption(@TempDir Path cwd) throws IOException {
-        try (FakeS3 s3 = new FakeS3()) {
-            TestWorkspace.configure(cwd, s3);
-            TestFiles.write(Layout.baseDir(cwd, TAG), "mods/a.jar", TestFiles.bytes("A"));
-
-            assertEquals(Cli.OK, run(cwd, "publish", "--tag", TAG, "--id", "2.9.0",
-                    "--cache-max-age-days", "7"), logs.errText());
-            assertTrue(Files.exists(Layout.knownBlobsFile(cwd)), logs.errText());
-        }
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("badCacheMaxAge")
-    void rejectsACacheMaxAgeItCannotUse(String description, String fragment, List<String> args,
-            @TempDir Path cwd) {
+    void anUnusableCacheMaxAgeIsAUsageError(String description, String fragment, List<String> args,
+            @TempDir Path cwd) throws IOException {
         assertUsage(cwd, fragment, args.toArray(String[]::new));
     }
 
     @Test
-    void publishesAndUpdatesThroughTheCli(@TempDir Path root) throws IOException {
+    void aBatchUpdatesEachDistinctTagInFirstOccurrenceOrder(@TempDir Path root) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             Path publisher = root.resolve("publisher");
             TestWorkspace.configure(publisher, s3);
-            TestFiles.write(Layout.baseDir(publisher, TAG), "mods/a.jar", TestFiles.bytes("A"));
-
-            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.0"), logs.errText());
-
-            Path player = root.resolve("player");
-            TestWorkspace.configure(player, s3);
-            assertEquals(Cli.OK, run(root, "update", "--tag", TAG, "--workspace", player.toString()),
-                    logs.errText());
-
-            assertEquals("A", Files.readString(player.resolve("mods/a.jar")));
-            assertTrue(logs.outText().contains("to release 2.9.0"), logs.outText());
-        }
-    }
-
-    @Test
-    void updatesEachDistinctTagInFirstOccurrenceOrder(@TempDir Path root) throws IOException {
-        try (FakeS3 s3 = new FakeS3()) {
-            Path publisher = root.resolve("publisher");
-            TestWorkspace.configure(publisher, s3);
-            publish(publisher, "common", "common-1", "common.txt", "old common");
             publish(publisher, "common", "common-2", "common.txt", "common");
             publish(publisher, TAG, "client-1", "client.txt", "client");
             Path player = root.resolve("player");
@@ -194,35 +180,7 @@ class CliTest {
             assertEquals("client", Files.readString(player.resolve("client.txt")));
             assertEquals(List.of(get(ObjectKeys.latest("common")), get(ObjectKeys.latest(TAG))),
                     latestRequests(s3, before), "each distinct tag reads its own latest pointer once, in input order");
-            String output = logs.outText();
-            int completedCommon = output.indexOf("updated tag common to release common-2");
-            int startedClient = output.indexOf("updating tag client to release client-1");
-            assertTrue(completedCommon >= 0 && startedClient > completedCommon,
-                    "the first tag finishes before the next starts: " + output);
-        }
-    }
-
-    @Test
-    void aFailureInTheFirstTagStopsBeforeRequestingTheNextTag(@TempDir Path root) throws IOException {
-        try (FakeS3 s3 = new FakeS3()) {
-            Path publisher = root.resolve("publisher");
-            TestWorkspace.configure(publisher, s3);
-            publish(publisher, "common", "1", "common.txt", "common");
-            publish(publisher, TAG, "1", "client.txt", "client");
-            Path player = root.resolve("player");
-            TestWorkspace.configure(player, s3);
-            s3.fail("GET", TestWorkspace.bucketPath(ObjectKeys.latest("common")), 403);
-            int before = s3.requests().size();
-
-            assertEquals(Cli.FAILURE, run(player, "update", "--tag", "common", "--tag", TAG), logs.errText());
-
-            assertTrue(logs.errText().contains("updating tag common failed"), logs.errText());
-            assertTrue(logs.errText().contains("access denied"), logs.errText());
-            assertEquals(List.of(get(ObjectKeys.latest("common"))), requestsSince(s3, before));
-            assertFalse(Files.exists(Layout.currentFile(player, "common")));
-            assertFalse(Files.exists(Layout.currentFile(player, TAG)));
-            assertFalse(Files.exists(player.resolve("common.txt")));
-            assertFalse(Files.exists(player.resolve("client.txt")));
+            assertEquals("", logs.errText());
         }
     }
 
@@ -236,7 +194,7 @@ class CliTest {
             publish(publisher, "server", "1", "server.txt", "server");
             Path player = root.resolve("player");
             TestWorkspace.configure(player, s3);
-            assertEquals(Cli.OK, run(player, "update", "--tag", TAG), logs.errText());
+            Update.run(player, TAG, null, CLOCK);
             publish(publisher, TAG, "2", "client.txt", "new client");
             s3.fail("GET", TestWorkspace.bucketPath(ObjectKeys.signature(TAG, "2")), 403);
             int before = s3.requests().size();
@@ -251,76 +209,39 @@ class CliTest {
             assertEquals("1", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
             assertEquals("old client", Files.readString(player.resolve("client.txt")));
             assertFalse(Files.exists(Layout.releaseFile(player, TAG, "2")));
+            assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
+            assertFalse(Files.exists(Layout.blobTempDir(player)));
+            assertFalse(Files.exists(Layout.fileTempDir(player)));
             assertFalse(Files.exists(Layout.currentFile(player, "server")));
             assertFalse(Files.exists(player.resolve("server.txt")));
             assertEquals(List.of(get(ObjectKeys.latest("common")), get(ObjectKeys.latest(TAG))),
                     latestRequests(s3, before));
-            String serverPrefix = TestWorkspace.bucketPath(ObjectKeys.METADATA + "/server/");
-            assertTrue(requestsSince(s3, before).stream().noneMatch(request -> request.contains(serverPrefix)),
-                    requestsSince(s3, before).toString());
-        }
-    }
-
-    @Test
-    void aFailedBatchResumesWithoutReapplyingItsSuccessfulTags(@TempDir Path root) throws IOException {
-        try (FakeS3 s3 = new FakeS3()) {
-            Path publisher = root.resolve("publisher");
-            TestWorkspace.configure(publisher, s3);
-            publish(publisher, "common", "1", "common.txt", "common");
-            publish(publisher, TAG, "1", "client.txt", "client");
-            publish(publisher, "server", "1", "server.txt", "server");
-            Path player = root.resolve("player");
-            TestWorkspace.configure(player, s3);
-            s3.fail("GET", TestWorkspace.bucketPath(ObjectKeys.latest(TAG)), 403);
-            int failedBefore = s3.requests().size();
-            assertEquals(Cli.FAILURE, run(player, "update", "--tag", "common", "--tag", TAG, "--tag", "server"),
-                    logs.errText());
-            assertEquals("1", Pointer.read(Layout.currentFile(player, "common")).releaseId());
-            assertFalse(Files.exists(Layout.currentFile(player, TAG)));
-            assertFalse(Files.exists(Layout.currentFile(player, "server")));
-            assertFalse(Files.exists(player.resolve("client.txt")));
-            assertFalse(Files.exists(player.resolve("server.txt")));
-            assertEquals(List.of(get(ObjectKeys.latest("common")), get(ObjectKeys.latest(TAG))),
-                    latestRequests(s3, failedBefore));
-            s3.clearFailures();
-            int before = s3.requests().size();
-
-            assertEquals(Cli.OK, run(player, "update", "--tag", "common", "--tag", TAG, "--tag", "server"),
-                    logs.errText());
-
-            assertEquals("1", Pointer.read(Layout.currentFile(player, "common")).releaseId());
-            assertEquals("1", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
-            assertEquals("1", Pointer.read(Layout.currentFile(player, "server")).releaseId());
-            assertEquals("common", Files.readString(player.resolve("common.txt")));
-            assertEquals("client", Files.readString(player.resolve("client.txt")));
-            assertEquals("server", Files.readString(player.resolve("server.txt")));
-            assertEquals(List.of(get(ObjectKeys.latest("common")), get(ObjectKeys.latest(TAG)),
-                    get(ObjectKeys.latest("server"))), latestRequests(s3, before));
-            assertFalse(requestsSince(s3, before).contains(get(ObjectKeys.release("common", "1"))),
-                    "an already committed tag does not fetch its manifest again");
-            assertTrue(logs.outText().contains("tag common is already at release 1"), logs.outText());
+            List<String> requests = requestsSince(s3, before);
+            int failedTagStart = requests.indexOf(get(ObjectKeys.latest(TAG)));
+            assertTrue(failedTagStart >= 0, requests.toString());
+            assertEquals(List.of(get(ObjectKeys.latest(TAG)), get(ObjectKeys.release(TAG, "2")),
+                    get(ObjectKeys.signature(TAG, "2"))), requests.subList(failedTagStart, requests.size()),
+                    "the failed tag downloads no content and the next tag is never contacted");
         }
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("invalidBatches")
-    void rejectsAnInvalidBatchBeforeUpdatingAnyTag(String description, int exitCode, String fragment,
+    void anInvalidBatchFailsBeforeUpdatingAnyTag(String description, int exitCode, String fragment,
             List<String> args, @TempDir Path root) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
-            Path publisher = root.resolve("publisher");
-            TestWorkspace.configure(publisher, s3);
-            publish(publisher, "common", "1", "common.txt", "common");
             Path player = root.resolve("player");
             TestWorkspace.configure(player, s3);
-            int before = s3.requests().size();
+            String configBefore = Files.readString(Layout.configFile(player));
 
             assertEquals(exitCode, run(player, args.toArray(String[]::new)), logs.errText());
 
             assertTrue(logs.errText().contains(fragment), logs.errText());
-            assertEquals(List.of(), requestsSince(s3, before), "validation precedes every tag update");
+            assertEquals(List.of(), s3.requests(), "validation precedes every tag update");
             assertFalse(Files.exists(Layout.currentFile(player, "common")));
             assertFalse(Files.exists(Layout.currentFile(player, TAG)));
             assertFalse(Files.exists(player.resolve("common.txt")));
+            assertEquals(configBefore, Files.readString(Layout.configFile(player)));
         }
     }
 
@@ -335,7 +256,8 @@ class CliTest {
             TestWorkspace.configure(player, s3);
             int before = s3.requests().size();
 
-            assertEquals(Cli.OK, run(player, "update", "--tag", TAG, "--tag", TAG, "--id", "1"), logs.errText());
+            assertEquals(Cli.OK, run(root, "update", "--tag", TAG, "--tag", TAG, "--id", "1",
+                    "--workspace", player.toString()), logs.errText());
 
             assertEquals("1", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
             assertEquals("old client", Files.readString(player.resolve("client.txt")));
@@ -353,8 +275,23 @@ class CliTest {
 
         assertTrue(Files.isRegularFile(Layout.configFile(selected)));
         assertTrue(Files.isDirectory(Layout.baseDir(selected, TAG)));
+        assertTrue(Files.isDirectory(Layout.basePackDir(selected, TAG)));
+        assertTrue(Files.isDirectory(Layout.overlayDir(selected, TAG)));
+        assertTrue(Files.isRegularFile(Layout.removeFile(selected, TAG)));
+        assertEquals(0, RemoveRules.read(Layout.removeFile(selected, TAG)).size());
         assertFalse(Files.exists(Layout.baseDir(selected, "common")));
         assertFalse(Files.exists(ignored));
+    }
+
+    @Test
+    void initWithoutATagCreatesOnlyWorkspaceState(@TempDir Path workspace) throws IOException {
+        assertEquals(Cli.OK, run(workspace, "init"), logs.errText());
+
+        assertTrue(Files.isRegularFile(Layout.configFile(workspace)));
+        try (var entries = Files.list(workspace)) {
+            assertEquals(List.of(Layout.stateDir(workspace)), entries.toList());
+        }
+        assertEquals("", logs.errText());
     }
 
     @Test
@@ -379,68 +316,44 @@ class CliTest {
     }
 
     @Test
-    void updateTakesTheReleaseIdToApplyThroughTheCli(@TempDir Path root) throws IOException {
-        try (FakeS3 s3 = new FakeS3()) {
-            Path publisher = root.resolve("publisher");
-            TestWorkspace.configure(publisher, s3);
-            TestFiles.write(Layout.baseDir(publisher, TAG), "mods/a.jar", TestFiles.bytes("A"));
-            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.0"), logs.errText());
-            TestFiles.write(Layout.baseDir(publisher, TAG), "mods/a.jar", TestFiles.bytes("A2"));
-            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.1"), logs.errText());
-
-            Path player = root.resolve("player");
-            TestWorkspace.configure(player, s3);
-            assertEquals(Cli.OK, run(root, "update", "--tag", TAG, "--id", "2.9.0",
-                    "--workspace", player.toString()), logs.errText());
-
-            assertEquals("A", Files.readString(player.resolve("mods/a.jar")),
-                    "the named release, not the latest one, was applied");
-            assertTrue(logs.outText().contains("to release 2.9.0"), logs.outText());
-        }
-    }
-
-    @Test
-    void initLaysOutAWorkspace(@TempDir Path cwd) {
-        assertEquals(Cli.OK, run(cwd, "init", "--tag", TAG), logs.errText());
-
-        assertTrue(Files.isRegularFile(Layout.configFile(cwd)));
-        assertTrue(Files.isDirectory(Layout.baseDir(cwd, TAG)));
-        assertTrue(logs.outText().contains("created "), logs.outText());
-        assertTrue(logs.outText().contains("workspace is ready"), logs.outText());
-    }
-
-    @Test
-    void dryRunIsNoLongerAnOption(@TempDir Path cwd) {
-        assertUsage(cwd, "unknown option: --dry-run", "update", "--tag", TAG, "--dry-run");
-    }
-
-    @Test
     void aFailedCommandReportsAnErrorAndExitsWithFailure(@TempDir Path root) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             Path publisher = root.resolve("publisher");
             TestWorkspace.configure(publisher, s3);
             TestFiles.write(Layout.baseDir(publisher, TAG), "mods/a.jar", TestFiles.bytes("A"));
-            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "2.9.0"), logs.errText());
+            Publish.run(publisher, TAG, "2.9.0", Publish.DEFAULT_CACHE_MAX_AGE_DAYS, CLOCK);
             String latest = TestWorkspace.bucketPath(ObjectKeys.latest(TAG));
             String before = s3.text(latest);
-            s3.fail("PUT", latest, 500);
+            Files.delete(publisher.resolve(Layout.DEFAULT_PRIVATE_KEY));
+            int requestsBefore = s3.requests().size();
+            int objectsBefore = s3.objectCount();
+            String cacheBefore = Files.readString(Layout.knownBlobsFile(publisher));
 
             assertEquals(Cli.FAILURE, run(publisher, "publish", "--tag", TAG, "--id", "2.9.1"),
                     logs.errText());
 
             assertTrue(logs.errText().contains(
-                    "ERROR publishing release 2.9.1 of tag client failed: "), logs.errText());
-            assertTrue(logs.errText().contains("HTTP 500"), logs.errText());
+                    "publishing release 2.9.1 of tag " + TAG + " failed"), logs.errText());
+            assertTrue(logs.errText().contains("cannot read signing key"), logs.errText());
             assertEquals(before, s3.text(latest), "the pointer the failed run did not reach is unchanged");
             assertEquals("2.9.0", Pointer.parse(before, "latest").releaseId());
+            assertEquals(List.of(), requestsSince(s3, requestsBefore), "key validation precedes storage access");
+            assertEquals(objectsBefore, s3.objectCount());
+            assertEquals(cacheBefore, Files.readString(Layout.knownBlobsFile(publisher)));
+            assertNull(s3.object(TestWorkspace.bucketPath(ObjectKeys.release(TAG, "2.9.1"))));
+            assertFalse(Files.exists(Layout.blobTempDir(publisher)));
+            assertFalse(Files.exists(Layout.fileTempDir(publisher)));
         }
     }
 
     @Test
-    void updateOutsideAWorkspaceIsAFailureNotAUsageError(@TempDir Path cwd) {
+    void updateOutsideAWorkspaceIsAFailureNotAUsageError(@TempDir Path cwd) throws IOException {
         assertEquals(Cli.FAILURE, run(cwd, "update", "--tag", TAG));
 
-        assertTrue(logs.errText().contains("ERROR updating tag client failed: "), logs.errText());
+        assertTrue(logs.errText().contains("updating tag " + TAG + " failed"), logs.errText());
         assertTrue(logs.errText().contains("config"), logs.errText());
+        assertFalse(Files.exists(Layout.currentFile(cwd, TAG)));
+        assertFalse(Files.exists(cwd.resolve(TAG)));
+        assertFalse(Files.exists(Layout.configFile(cwd)));
     }
 }

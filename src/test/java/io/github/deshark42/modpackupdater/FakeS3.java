@@ -2,12 +2,10 @@ package io.github.deshark42.modpackupdater;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-import io.github.deshark42.modpackupdater.s3.SigV4Verifier;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -31,8 +29,8 @@ import java.util.zip.GZIPInputStream;
  * fail on purpose: the signature must recompute from the request's own bytes, path, query and
  * signed headers, and x-amz-content-sha256 must match the body, so a wrong signature or a corrupted
  * upload cannot quietly pass. Errors come back as S3's XML bodies, and an unsupported method fails
- * loudly instead of looking like a missing object. A bucket can be opened to anonymous access, in
- * which case nothing is checked.
+ * loudly instead of looking like a missing object. Public reads can omit credentials; signed
+ * requests and uploads are always checked.
  *
  * <p>The store records every request with the headers it carried, counts the bytes it moved and the
  * requests it had in flight at once, and can be told to fail selected requests, persistently or
@@ -66,7 +64,7 @@ public final class FakeS3 implements AutoCloseable {
     }
 
     public FakeS3() throws IOException {
-        server = bind();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", this::handle);
         executor = Executors.newFixedThreadPool(THREADS, runnable -> {
             Thread thread = new Thread(runnable, "fake-s3");
@@ -77,23 +75,6 @@ public final class FakeS3 implements AutoCloseable {
         server.start();
     }
 
-    /**
-     * Binds the loopback port the OS picks. A port the OS picks can still be one a connection of an
-     * earlier test left in {@code TIME_WAIT}, which is not bindable without {@code SO_REUSEADDR}, so a
-     * refused bind is retried; nothing else about the server depends on the port number.
-     */
-    private static HttpServer bind() throws IOException {
-        BindException last = null;
-        for (int attempt = 0; attempt < 100; attempt++) {
-            try {
-                return HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-            } catch (BindException e) {
-                last = e;
-            }
-        }
-        throw last;
-    }
-
     /** The endpoint a workspace points at, e.g. "http://127.0.0.1:34567". */
     public String url() {
         return "http://127.0.0.1:" + server.getAddress().getPort();
@@ -101,8 +82,8 @@ public final class FakeS3 implements AutoCloseable {
 
     /**
      * Whether requests without credentials are served: a public bucket. When off, a request without
-     * an Authorization header is refused. When on, the signature and payload checks are skipped,
-     * since there is no identity to check a request against.
+     * an Authorization header is refused. When on, only unsigned GET and HEAD requests skip signature
+     * checking; uploads still require valid credentials.
      */
     public void allowAnonymous(boolean allow) {
         anonymous = allow;
@@ -173,8 +154,13 @@ public final class FakeS3 implements AutoCloseable {
 
     /** Seeds a plain object without a request, the way another writer would have left it. */
     public void put(String path, byte[] content) {
+        put(path, content, null);
+    }
+
+    /** Seeds an object with the content encoding another writer would have stored. */
+    public void put(String path, byte[] content, String encoding) {
         objects.put(path, content.clone());
-        objectHeaders.remove(path);
+        storeHeaders(path, encoding == null ? Map.of() : Map.of("content-encoding", encoding));
     }
 
     /** Fails every PUT to {@code path} with a 500 until {@link #clearFailures()} is called. */
@@ -214,7 +200,10 @@ public final class FakeS3 implements AutoCloseable {
         String path = exchange.getRequestURI().getRawPath();
         String query = exchange.getRequestURI().getRawQuery();
         Map<String, String> headers = headers(exchange);
-        byte[] body = exchange.getRequestBody().readAllBytes();
+        byte[] body;
+        try (InputStream in = exchange.getRequestBody()) {
+            body = in.readAllBytes();
+        }
         requests.add(new Request(method, path, headers));
         String key = method + " " + path;
         int injected = injectedStatus(key);
@@ -226,8 +215,8 @@ public final class FakeS3 implements AutoCloseable {
             sendError(exchange, 400, "UnknownMethod", "the store does not serve " + method);
             return;
         }
-        if (!anonymous) {
-            SigV4Verifier.Verdict verdict = SigV4Verifier.verify(method, path, query, headers, body,
+        if (!anonymous || headers.containsKey("authorization") || "PUT".equals(method)) {
+            TestSigV4Verifier.Verdict verdict = TestSigV4Verifier.verify(method, path, query, headers, body,
                     TestWorkspace.ACCESS_KEY, TestWorkspace.SECRET_KEY, TestWorkspace.REGION);
             if (!verdict.isValid()) {
                 sendError(exchange, 403, verdict.errorCode(), verdict.message());
@@ -326,9 +315,12 @@ public final class FakeS3 implements AutoCloseable {
         server.stop(0);
         executor.shutdownNow();
         try {
-            executor.awaitTermination(5, TimeUnit.SECONDS);
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                throw new AssertionError("the fake S3 executor did not terminate within five seconds");
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while closing the fake S3 executor", e);
         }
     }
 }

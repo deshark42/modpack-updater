@@ -9,6 +9,7 @@ import io.github.deshark42.modpackupdater.log.Logging;
 import io.github.deshark42.modpackupdater.model.Names;
 import java.io.PrintStream;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -41,6 +42,10 @@ public final class Cli {
     }
 
     public static int run(String[] args, Path cwd, PrintStream out, PrintStream err) {
+        return run(args, cwd, out, err, Clock.systemDefaultZone());
+    }
+
+    public static int run(String[] args, Path cwd, PrintStream out, PrintStream err, Clock clock) {
         if (args.length == 0) {
             return usage(err, "no command");
         }
@@ -75,7 +80,7 @@ public final class Cli {
                         return usage(err, "keygen only takes --workspace");
                     }
                     action = "generating release signing keys";
-                    Logging.begin(workspace, null, out, err);
+                    Logging.begin(workspace, null, out, err, clock);
                     Keygen.run(workspace);
                     return OK;
                 }
@@ -100,8 +105,8 @@ public final class Cli {
                         }
                     }
                     action = "publishing release " + releaseId + " of tag " + tag;
-                    Logging.begin(workspace, "publish-" + tag, out, err);
-                    Publish.run(workspace, tag, releaseId, cacheMaxAgeDays);
+                    Logging.begin(workspace, "publish-" + tag, out, err, clock);
+                    Publish.run(workspace, tag, releaseId, cacheMaxAgeDays, clock);
                     return OK;
                 }
                 case "update" -> {
@@ -116,7 +121,7 @@ public final class Cli {
                         return usage(err, "update with multiple tags does not take --id");
                     }
                     action = "updating tag " + updateTags.iterator().next();
-                    Logging.begin(workspace, updateTags.size() == 1 ? "update-" + tag : "update", out, err);
+                    Logging.begin(workspace, updateTags.size() == 1 ? "update-" + tag : "update", out, err, clock);
                     for (String updateTag : updateTags) {
                         action = "updating tag " + updateTag;
                         Names.requireTag(updateTag);
@@ -127,7 +132,7 @@ public final class Cli {
                     for (String updateTag : updateTags) {
                         action = "updating tag " + updateTag;
                         Logging.resetProgress();
-                        Update.run(workspace, updateTag, releaseId);
+                        Update.run(workspace, updateTag, releaseId, clock);
                     }
                     return OK;
                 }
@@ -139,7 +144,7 @@ public final class Cli {
                         return usage(err, "init does not take --cache-max-age-days");
                     }
                     action = "initializing a workspace in " + workspace;
-                    Logging.begin(workspace, null, out, err);
+                    Logging.begin(workspace, null, out, err, clock);
                     Init.run(workspace, tag);
                     return OK;
                 }

@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import io.github.deshark42.modpackupdater.TestArchives;
+import io.github.deshark42.modpackupdater.TestArchives.Entry;
 import io.github.deshark42.modpackupdater.TestFiles;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.model.Layout;
@@ -27,10 +29,9 @@ import java.util.function.Consumer;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
-import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
-import org.apache.commons.compress.archivers.sevenz.SevenZMethodConfiguration;
 import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
 import org.apache.commons.compress.archivers.zip.UnicodePathExtraField;
 import org.apache.commons.compress.archivers.zip.UnixStat;
@@ -45,15 +46,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.tukaani.xz.LZMA2Options;
 
 class BaseArchiveTest {
-
-    private record Entry(String name, byte[] content) {
-        boolean directory() {
-            return name.endsWith("/");
-        }
-    }
 
     private static Entry file(String name, String content) {
         return new Entry(name, TestFiles.bytes(content));
@@ -64,27 +58,24 @@ class BaseArchiveTest {
     }
 
     private static Path archive(Path workspace, String format, Entry... entries) throws IOException {
-        Path archive = workspace.resolve("base." + format);
-        if (format.equals("zip")) {
-            try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(archive))) {
-                for (Entry entry : entries) {
-                    out.putNextEntry(new ZipEntry(entry.name()));
-                    out.write(entry.content());
-                    out.closeEntry();
-                }
+        return TestArchives.write(workspace.resolve("base." + format), List.of(entries));
+    }
+
+    private static Path unsafeNameZip(Path workspace, String name) throws IOException {
+        Path archive = workspace.resolve("base.zip");
+        // Commons ZIP entries normalize backslashes before writing; these fixtures must retain the raw name.
+        try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(archive), StandardCharsets.UTF_8)) {
+            for (Entry entry : List.of(file("good", "already extracted"), file(name, "bad"))) {
+                ZipEntry item = new ZipEntry(entry.name());
+                item.setTimeLocal(java.time.LocalDateTime.of(2000, 1, 1, 0, 0));
+                out.putNextEntry(item);
+                out.write(entry.content());
+                out.closeEntry();
             }
-        } else {
-            try (SevenZOutputFile out = new SevenZOutputFile(archive.toFile())) {
-                out.setContentMethods(List.of(new SevenZMethodConfiguration(SevenZMethod.LZMA2, new LZMA2Options(0))));
-                for (Entry entry : entries) {
-                    SevenZArchiveEntry item = new SevenZArchiveEntry();
-                    item.setName(entry.name());
-                    item.setDirectory(entry.directory());
-                    out.putArchiveEntry(item);
-                    out.write(entry.content());
-                    out.closeArchiveEntry();
-                }
-            }
+        }
+        try (ZipFile zip = new ZipFile(archive.toFile(), StandardCharsets.UTF_8);
+                var entries = zip.stream()) {
+            assertEquals(List.of("good", name), entries.map(ZipEntry::getName).toList());
         }
         return archive;
     }
@@ -93,6 +84,7 @@ class BaseArchiveTest {
         Path archive = workspace.resolve("base.zip");
         try (ZipArchiveOutputStream out = new ZipArchiveOutputStream(archive.toFile())) {
             for (ZipArchiveEntry entry : entries) {
+                entry.setTimeLocal(java.time.LocalDateTime.of(2000, 1, 1, 0, 0));
                 out.putArchiveEntry(entry);
                 out.closeArchiveEntry();
             }
@@ -119,7 +111,9 @@ class BaseArchiveTest {
     private static Path legacyNameZip(Path workspace) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         try (ZipOutputStream out = new ZipOutputStream(buffer)) {
-            out.putNextEntry(new ZipEntry("AB/mods.txt"));
+            ZipEntry entry = new ZipEntry("AB/mods.txt");
+            entry.setTimeLocal(java.time.LocalDateTime.of(2000, 1, 1, 0, 0));
+            out.putNextEntry(entry);
             out.write(TestFiles.bytes("content"));
             out.closeEntry();
         }
@@ -150,12 +144,21 @@ class BaseArchiveTest {
         TestFiles.write(workspace, "base/keep", "base");
         TestFiles.write(workspace, "overlay/keep", "overlay");
         Map<String, Long> before = Tree.list(workspace);
+        byte[] original = Files.readAllBytes(archive);
 
-        UserError error = assertThrows(UserError.class, () -> BaseArchive.open(workspace, archive));
+        UserError error = assertThrows(UserError.class, () -> {
+            try (BaseArchive ignored = BaseArchive.open(workspace, archive)) {
+                // A mistakenly accepted archive must still release its staging resources.
+            }
+        });
 
         assertTrue(error.getMessage().contains(archive.toString()), error.getMessage());
         assertTrue(error.getMessage().toLowerCase(Locale.ROOT).contains(reason.toLowerCase(Locale.ROOT)), error.getMessage());
         assertEquals(before, Tree.list(workspace));
+        assertArrayEquals(original, Files.readAllBytes(archive));
+        assertEquals("blob", Files.readString(temp.resolve("blob/keep")));
+        assertEquals("file", Files.readString(temp.resolve("file/keep")));
+        assertEquals("previous", Files.readString(temp.resolve("previous/keep")));
         assertEquals("base", Files.readString(workspace.resolve("base/keep")));
         assertEquals("overlay", Files.readString(workspace.resolve("overlay/keep")));
         try (var remaining = Files.list(temp)) {
@@ -163,9 +166,17 @@ class BaseArchiveTest {
         }
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"zip", "7z"})
-    void preservesTheArchiveRootAndStreamsOrdinaryFiles(String format, @TempDir Path workspace) throws IOException {
+    @Test
+    void preservesTheArchiveRootAndStreamsOrdinaryFilesForZip(@TempDir Path workspace) throws IOException {
+        preservesTheArchiveRootAndStreamsOrdinaryFiles("zip", workspace);
+    }
+
+    @Test
+    void preservesTheArchiveRootAndStreamsOrdinaryFilesForSevenZ(@TempDir Path workspace) throws IOException {
+        preservesTheArchiveRootAndStreamsOrdinaryFiles("7z", workspace);
+    }
+
+    private static void preservesTheArchiveRootAndStreamsOrdinaryFiles(String format, Path workspace) throws IOException {
         byte[] content = TestFiles.random(131_073, 81);
         Path archive = archive(workspace, format, new Entry("wrapper/mods/a.jar", content),
                 file("wrapper/empty", ""), file("wrapper/embedded.zip", "not recursively expanded"),
@@ -188,18 +199,34 @@ class BaseArchiveTest {
         assertFalse(Files.exists(workspace.resolve("overlay")));
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"zip", "7z"})
-    void leavesReservedRootStateForThePublishRemovalRules(String format, @TempDir Path workspace) throws IOException {
+    @Test
+    void leavesReservedRootStateForThePublishRemovalRulesForZip(@TempDir Path workspace) throws IOException {
+        leavesReservedRootStateForThePublishRemovalRules("zip", workspace);
+    }
+
+    @Test
+    void leavesReservedRootStateForThePublishRemovalRulesForSevenZ(@TempDir Path workspace) throws IOException {
+        leavesReservedRootStateForThePublishRemovalRules("7z", workspace);
+    }
+
+    private static void leavesReservedRootStateForThePublishRemovalRules(String format, Path workspace) throws IOException {
         Path archive = archive(workspace, format, file(Layout.STATE_DIR + "/config.json", "downloaded state"));
         try (BaseArchive base = BaseArchive.open(workspace, archive)) {
             assertEquals("downloaded state", Files.readString(base.root().resolve(Layout.STATE_DIR).resolve("config.json")));
         }
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"zip", "7z"})
-    void materializesAnEmptyArchive(String format, @TempDir Path workspace) throws IOException {
+    @Test
+    void materializesAnEmptyArchiveForZip(@TempDir Path workspace) throws IOException {
+        materializesAnEmptyArchive("zip", workspace);
+    }
+
+    @Test
+    void materializesAnEmptyArchiveForSevenZ(@TempDir Path workspace) throws IOException {
+        materializesAnEmptyArchive("7z", workspace);
+    }
+
+    private static void materializesAnEmptyArchive(String format, Path workspace) throws IOException {
         Path archive = archive(workspace, format);
         try (BaseArchive base = BaseArchive.open(workspace, archive)) {
             assertEquals(Map.of(), Tree.list(base.root()));
@@ -207,19 +234,33 @@ class BaseArchiveTest {
     }
 
     @Test
-    void closesOnlyItsOwnStagingDirectoryAndCanCloseAgain(@TempDir Path workspace) throws IOException {
+    void closesOnlyItsOwnStagingDirectory(@TempDir Path workspace) throws IOException {
         Path archive = archive(workspace, "zip", file("a", "content"));
         TestFiles.write(Layout.tempDir(workspace), "blob/keep", "unrelated update");
         try (BaseArchive first = BaseArchive.open(workspace, archive);
                 BaseArchive second = BaseArchive.open(workspace, archive)) {
             assertNotEquals(first.root(), second.root());
             first.close();
-            first.close();
             assertFalse(Files.exists(first.root()));
             assertEquals("content", Files.readString(second.root().resolve("a")));
             assertEquals("unrelated update", Files.readString(Layout.blobTempDir(workspace).resolve("keep")));
         }
         assertEquals(Map.of("blob/keep", 16L), Tree.list(Layout.tempDir(workspace)));
+    }
+
+    @Test
+    void closingAnAlreadyClosedArchiveLeavesOtherStagingUntouched(@TempDir Path workspace) throws IOException {
+        Path archive = archive(workspace, "zip", file("a", "content"));
+        TestFiles.write(Layout.tempDir(workspace), "blob/keep", "unrelated update");
+        try (BaseArchive base = BaseArchive.open(workspace, archive)) {
+            base.close();
+
+            base.close();
+
+            assertFalse(Files.exists(base.root()));
+            assertEquals(Map.of("blob/keep", 16L), Tree.list(Layout.tempDir(workspace)));
+            assertEquals("unrelated update", Files.readString(Layout.blobTempDir(workspace).resolve("keep")));
+        }
     }
 
     private static Stream<Arguments> unsafeNames() {
@@ -232,7 +273,8 @@ class BaseArchiveTest {
     @MethodSource("unsafeNames")
     void rejectsNonStructuralRelativeNamesWithoutLeavingExtractedFiles(String format, String name,
             @TempDir Path workspace) throws IOException {
-        Path archive = archive(workspace, format, file("good", "already extracted"), file(name, "bad"));
+        Path archive = format.equals("zip") ? unsafeNameZip(workspace, name)
+                : archive(workspace, format, file("good", "already extracted"), file(name, "bad"));
         rejectsAndCleans(workspace, archive, "unsafe entry path");
     }
 
@@ -254,10 +296,17 @@ class BaseArchiveTest {
         rejectsAndCleans(workspace, archive, "unsafe entry path");
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"zip", "7z"})
-    void preservesOrdinaryNamesThatResembleWindowsDevicesOrShortNames(String format, @TempDir Path workspace)
-            throws IOException {
+    @Test
+    void preservesOrdinaryNamesThatResembleWindowsDevicesOrShortNamesForZip(@TempDir Path workspace) throws IOException {
+        preservesOrdinaryNamesThatResembleWindowsDevicesOrShortNames("zip", workspace);
+    }
+
+    @Test
+    void preservesOrdinaryNamesThatResembleWindowsDevicesOrShortNamesForSevenZ(@TempDir Path workspace) throws IOException {
+        preservesOrdinaryNamesThatResembleWindowsDevicesOrShortNames("7z", workspace);
+    }
+
+    private static void preservesOrdinaryNamesThatResembleWindowsDevicesOrShortNames(String format, Path workspace) throws IOException {
         Path archive = archive(workspace, format, file("COM0.txt", "zero"), file("COM10.txt", "ten"),
                 file("NUL-data.txt", "ordinary"), file("nested~1/keep.txt", "tilde"));
 
@@ -268,11 +317,19 @@ class BaseArchiveTest {
         }
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"zip", "7z"})
+    @Test
     @DisabledOnOs(OS.WINDOWS)
-    void preservesNamesThatOnlyHaveSpecialMeaningOnWindows(String format, @TempDir Path workspace)
-            throws IOException {
+    void preservesNamesThatOnlyHaveSpecialMeaningOnWindowsForZip(@TempDir Path workspace) throws IOException {
+        preservesNamesThatOnlyHaveSpecialMeaningOnWindows("zip", workspace);
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void preservesNamesThatOnlyHaveSpecialMeaningOnWindowsForSevenZ(@TempDir Path workspace) throws IOException {
+        preservesNamesThatOnlyHaveSpecialMeaningOnWindows("7z", workspace);
+    }
+
+    private static void preservesNamesThatOnlyHaveSpecialMeaningOnWindows(String format, Path workspace) throws IOException {
         Path archive = archive(workspace, format, file("NUL.txt", "ordinary"), file("folder./keep.txt", "dot"));
 
         try (BaseArchive base = BaseArchive.open(workspace, archive)) {
@@ -280,11 +337,19 @@ class BaseArchiveTest {
         }
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"zip", "7z"})
+    @Test
     @EnabledOnOs(OS.WINDOWS)
-    void rejectsShortDirectoryAliasesIntoEarlierArchiveEntries(String format, @TempDir Path workspace)
-            throws IOException {
+    void rejectsShortDirectoryAliasesIntoEarlierArchiveEntriesForZip(@TempDir Path workspace) throws IOException {
+        rejectsShortDirectoryAliasesIntoEarlierArchiveEntries("zip", workspace);
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void rejectsShortDirectoryAliasesIntoEarlierArchiveEntriesForSevenZ(@TempDir Path workspace) throws IOException {
+        rejectsShortDirectoryAliasesIntoEarlierArchiveEntries("7z", workspace);
+    }
+
+    private static void rejectsShortDirectoryAliasesIntoEarlierArchiveEntries(String format, Path workspace) throws IOException {
         Path longName = Files.createDirectory(workspace.resolve("LongDirectoryName"));
         Path shortName = workspace.resolve("LONGDI~1");
         assumeTrue(Files.isDirectory(shortName) && Files.isSameFile(longName, shortName),
@@ -335,6 +400,7 @@ class BaseArchiveTest {
         try (ZipArchiveOutputStream out = new ZipArchiveOutputStream(archive.toFile())) {
             out.setUseLanguageEncodingFlag(false);
             ZipArchiveEntry entry = new ZipArchiveEntry("AB/mods.txt");
+            entry.setTimeLocal(java.time.LocalDateTime.of(2000, 1, 1, 0, 0));
             entry.addExtraField(unicodePath("AB/mods.txt", new byte[] {(byte) 0xD6, (byte) 0xD0}));
             out.putArchiveEntry(entry);
             out.write(TestFiles.bytes("content"));
@@ -346,12 +412,12 @@ class BaseArchiveTest {
 
     @Test
     void acceptsALegacyRawNameWhenTheUnicodePathFieldDecodes(@TempDir Path workspace) throws IOException {
-        assumeTrue(Charset.isSupported("GBK"), "GBK is required to write a legacy-encoded name");
         String name = "配置/模组.txt";
         Path archive = workspace.resolve("base.zip");
         try (ZipArchiveOutputStream out = new ZipArchiveOutputStream(archive.toFile())) {
             out.setEncoding("GBK");
             ZipArchiveEntry entry = new ZipArchiveEntry(name);
+            entry.setTimeLocal(java.time.LocalDateTime.of(2000, 1, 1, 0, 0));
             entry.addExtraField(unicodePath(name.getBytes(Charset.forName("GBK")),
                     name.getBytes(StandardCharsets.UTF_8)));
             out.putArchiveEntry(entry);
@@ -377,21 +443,37 @@ class BaseArchiveTest {
         return unicodePath(rawName.getBytes(StandardCharsets.US_ASCII), unicodeName);
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"a", "a/"})
-    void rejectsDuplicateZipNames(String name, @TempDir Path workspace) throws IOException {
-        Path archive = zip(workspace, new ZipArchiveEntry(name), new ZipArchiveEntry(name));
+    @Test
+    void rejectsDuplicateZipNamesForFileEntries(@TempDir Path workspace) throws IOException {
+        rejectsDuplicateZipNames("a", workspace);
+    }
+
+    @Test
+    void rejectsDuplicateZipNamesForDirectoryEntries(@TempDir Path workspace) throws IOException {
+        rejectsDuplicateZipNames("a/", workspace);
+    }
+
+    private static void rejectsDuplicateZipNames(String name, Path workspace) throws IOException {
+        Path archive = archive(workspace, "zip", file(name, ""), file(name, ""));
         rejectsAndCleans(workspace, archive, "duplicate archive entry");
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"a", "a/"})
-    void rejectsDuplicateSevenZNames(String name, @TempDir Path workspace) throws IOException {
+    @Test
+    void rejectsDuplicateSevenZNamesForFileEntries(@TempDir Path workspace) throws IOException {
+        rejectsDuplicateSevenZNames("a", workspace);
+    }
+
+    @Test
+    void rejectsDuplicateSevenZNamesForDirectoryEntries(@TempDir Path workspace) throws IOException {
+        rejectsDuplicateSevenZNames("a/", workspace);
+    }
+
+    private static void rejectsDuplicateSevenZNames(String name, Path workspace) throws IOException {
         Path archive = archive(workspace, "7z", file(name, ""), file(name, ""));
         rejectsAndCleans(workspace, archive, "duplicate archive entry");
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "[{index}] {0}")
     @ValueSource(ints = {UnixStat.LINK_FLAG, 0010000, 0020000, 0060000, 0140000})
     void rejectsZipLinksAndSpecialFileModes(int mode, @TempDir Path workspace) throws IOException {
         ZipArchiveEntry entry = new ZipArchiveEntry("special");
@@ -399,7 +481,7 @@ class BaseArchiveTest {
         rejectsAndCleans(workspace, zip(workspace, entry), "link or special");
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "[{index}] {0}")
     @ValueSource(ints = {0x400, 0x40, 0xA0008000, 0x10008000, 0x20008000})
     void rejectsSevenZLinksAndSpecialFileAttributes(int attributes, @TempDir Path workspace) throws IOException {
         Path archive = sevenZ(workspace, entry -> {
@@ -415,9 +497,17 @@ class BaseArchiveTest {
         rejectsAndCleans(workspace, archive, "anti-item");
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"zip", "7z"})
-    void rejectsCorruptArchivesAndRemovesTheirStaging(String format, @TempDir Path workspace) throws IOException {
+    @Test
+    void rejectsCorruptArchivesAndRemovesTheirStagingForZip(@TempDir Path workspace) throws IOException {
+        rejectsCorruptArchivesAndRemovesTheirStaging("zip", workspace);
+    }
+
+    @Test
+    void rejectsCorruptArchivesAndRemovesTheirStagingForSevenZ(@TempDir Path workspace) throws IOException {
+        rejectsCorruptArchivesAndRemovesTheirStaging("7z", workspace);
+    }
+
+    private static void rejectsCorruptArchivesAndRemovesTheirStaging(String format, Path workspace) throws IOException {
         Path archive = workspace.resolve("base." + format);
         Files.writeString(archive, "not an archive");
         rejectsAndCleans(workspace, archive, "cannot extract base archive");
@@ -429,6 +519,7 @@ class BaseArchiveTest {
         byte[] content = TestFiles.bytes("original");
         try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(archive))) {
             ZipEntry entry = new ZipEntry("a");
+            entry.setTimeLocal(java.time.LocalDateTime.of(2000, 1, 1, 0, 0));
             entry.setMethod(ZipEntry.STORED);
             entry.setSize(content.length);
             CRC32 crc = new CRC32();
@@ -539,7 +630,11 @@ class BaseArchiveTest {
         } catch (IOException | UnsupportedOperationException | SecurityException e) {
             assumeTrue(false, "symbolic links unavailable on this platform: " + e.getMessage());
         }
-        UserError error = assertThrows(UserError.class, () -> BaseArchive.open(workspace, archive));
+        UserError error = assertThrows(UserError.class, () -> {
+            try (BaseArchive ignored = BaseArchive.open(workspace, archive)) {
+                // Release resources even if the redirection is mistakenly accepted.
+            }
+        });
         assertTrue(error.getMessage().contains(archive.toString()), error.getMessage());
         assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
         try (var remaining = Files.list(outside)) {

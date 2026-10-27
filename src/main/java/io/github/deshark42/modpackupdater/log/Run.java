@@ -4,6 +4,7 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Path;
+import java.time.Clock;
 
 /** What the run being logged is writing to; the writers read this on every entry. */
 final class Run {
@@ -15,12 +16,14 @@ final class Run {
     private final PrintStream out;
     private final PrintStream err;
     private final Progress progress;
+    private final Clock clock;
     private Transcript transcript;
 
-    Run(PrintStream out, PrintStream err, Progress progress, Transcript transcript) {
+    Run(PrintStream out, PrintStream err, Progress progress, Transcript transcript, Clock clock) {
         this.out = out;
         this.err = err;
         this.progress = progress;
+        this.clock = clock;
         this.transcript = transcript;
     }
 
@@ -30,6 +33,10 @@ final class Run {
 
     PrintStream err() {
         return err;
+    }
+
+    Clock clock() {
+        return clock;
     }
 
     Progress progress() {
