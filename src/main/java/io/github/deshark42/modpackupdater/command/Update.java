@@ -33,6 +33,7 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
@@ -41,6 +42,7 @@ import java.security.PublicKey;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -203,12 +205,13 @@ public final class Update {
             // happens before any chunk table is fetched, so a file that already matches the target
             // costs no request beyond the two manifests. It is also the longest stretch with no
             // other output, so it gets the same bar the transfers use.
+            Set<Path> deletions = downloads.isEmpty() ? Set.of() : deletionPaths(workspace, plan.deleted());
             Set<String> skipped = ConcurrentHashMap.newKeySet();
             int toCheck = downloads.size();
             AtomicInteger checked = new AtomicInteger();
             Logging.progress("check", 0, toCheck, "file");
             Parallel.forEach(downloads, config.concurrency(), path -> {
-                if (matchesTarget(workspace, path, target.files().get(path))) {
+                if (matchesTarget(workspace, path, target.files().get(path), deletions)) {
                     skipped.add(path);
                 }
                 Logging.progress("check", checked.incrementAndGet(), toCheck, "file");
@@ -336,14 +339,46 @@ public final class Update {
         return text.toString();
     }
 
-    /** Whether the target path already holds exactly the content the manifest records. */
-    private static boolean matchesTarget(Path workspace, String path, FileEntry entry) {
+    private static Set<Path> deletionPaths(Path workspace, List<String> deleted) {
+        Set<Path> paths = new HashSet<>();
+        for (String path : deleted) {
+            // These paths already passed manifest preflight. Resolve the leaf only for this mutating plan:
+            // two permitted spellings can name the same directory entry even though Plan keys differ.
+            Path source = workspace.resolve(SafePath.require(path));
+            if (!exists(source)) {
+                continue;
+            }
+            try {
+                paths.add(source.toRealPath());
+            } catch (NoSuchFileException e) {
+                // A missing deletion will not move any target content.
+            } catch (IOException e) {
+                throw new UserError("cannot resolve planned deletion " + path + ": " + e.getMessage(), e);
+            }
+        }
+        return Set.copyOf(paths);
+    }
+
+    /** Whether matching content will remain at the target after planned deletions. */
+    private static boolean matchesTarget(Path workspace, String path, FileEntry entry, Set<Path> deletions) {
         Path target = SafePath.resolve(workspace, path);
         try {
             if (!Files.isRegularFile(target) || Files.size(target) != entry.size()) {
                 return false;
             }
-            return Sha256.ofFile(target).equals(entry.hash());
+            if (!Sha256.ofFile(target).equals(entry.hash())) {
+                return false;
+            }
+            if (!deletions.isEmpty()) {
+                // Moving a directory also moves matching targets below it. A threatened file must go
+                // through staging before any deletion, even when no payload chunks need downloading.
+                for (Path current = target.toRealPath(); current != null; current = current.getParent()) {
+                    if (deletions.contains(current)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
         } catch (IOException | UserError e) {
             // a path that cannot be read is treated as different, so it is fetched whole
             return false;

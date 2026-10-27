@@ -42,6 +42,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -774,6 +776,156 @@ class UpdateTest {
             assertEquals(0, reportedReuse(player));
             assertFalse(Files.exists(Layout.initialBackupDir(player, TAG)),
                     "nothing was in the way, so no first-update backup was made");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"mods/a.jar.", "mods/A.jar", "mods/a.jar.."})
+    @EnabledOnOs(OS.WINDOWS)
+    void reinstallsMatchingContentWhoseOldSpellingIsDeleted(String alias, @TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            byte[] content = TestFiles.bytes("unchanged payload");
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods/a.jar", content));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, TAG, "2.9.0");
+            Manifest prior = manifest(s3, TAG, "2.9.0");
+            // Another publisher on a case-sensitive filesystem can sign these distinct manifest names.
+            Manifest target = new Manifest(TAG, "2.9.1", Instant.EPOCH, Manifest.SHA256,
+                    Map.of(alias, prior.files().get("mods/a.jar")));
+            byte[] bytes = TestFiles.bytes(target.toJson());
+            s3.put(releaseKey(TAG, "2.9.1"), bytes);
+            s3.put(signatureKey(TAG, "2.9.1"), TestSigning.sign(bytes));
+            assertTrue(Files.isSameFile(player.resolve("mods/a.jar"), player.resolve(alias)));
+            long chunksBefore = getCount(s3, chunkKey(Sha256.ofBytes(content)));
+
+            update(player, TAG, "2.9.1");
+
+            assertArrayEquals(content, Files.readAllBytes(player.resolve(alias)));
+            assertArrayEquals(content, Files.readAllBytes(Layout.backupDir(player, TAG, "2.9.0").resolve("mods/a.jar")));
+            assertEquals("2.9.1", applied(player, TAG));
+            assertEquals(target.files(), Manifest.read(Layout.releaseFile(player, TAG, "2.9.1")).files());
+            assertEquals(chunksBefore, getCount(s3, chunkKey(Sha256.ofBytes(content))),
+                    "the matching local payload can supply every chunk before it is moved");
+        }
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void leavesTheOldReleaseIntactWhenAnAliasCannotBeStaged(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            byte[] content = TestFiles.bytes("unchanged payload");
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods/a.jar", content));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, TAG, "2.9.0");
+            Manifest prior = manifest(s3, TAG, "2.9.0");
+            Manifest target = new Manifest(TAG, "2.9.1", Instant.EPOCH, Manifest.SHA256,
+                    Map.of("mods/a.jar.", prior.files().get("mods/a.jar")));
+            byte[] bytes = TestFiles.bytes(target.toJson());
+            s3.put(releaseKey(TAG, "2.9.1"), bytes);
+            s3.put(signatureKey(TAG, "2.9.1"), TestSigning.sign(bytes));
+            s3.fail("GET", indexKey(prior.files().get("mods/a.jar").indexId()), 500);
+            String oldManifest = Files.readString(Layout.releaseFile(player, TAG, "2.9.0"));
+            int before = s3.requests().size();
+
+            UserError error = assertThrows(UserError.class, () -> update(player, TAG, "2.9.1"));
+
+            assertTrue(error.getMessage().contains("500"), error.getMessage());
+            assertArrayEquals(content, Files.readAllBytes(player.resolve("mods/a.jar")));
+            assertEquals("2.9.0", applied(player, TAG));
+            assertEquals(oldManifest, Files.readString(Layout.releaseFile(player, TAG, "2.9.0")));
+            assertFalse(Files.exists(Layout.releaseFile(player, TAG, "2.9.1")));
+            assertFalse(Files.exists(Layout.backupDir(player, TAG, "2.9.0")));
+            assertTrue(s3.requests().subList(before, s3.requests().size()).stream()
+                    .noneMatch(request -> request.startsWith("PUT ") || request.contains("/blob/")),
+                    "failed staging must not fetch payload chunks or write remote state");
+        }
+    }
+
+    @Test
+    void reinstallsMatchingContentBelowADirectoryThatWillMoveToBackup(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            byte[] content = TestFiles.bytes("matching nested target");
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods", TestFiles.bytes("old file")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, TAG, "2.9.0");
+            Files.delete(player.resolve("mods"));
+            TestFiles.write(player, "mods/a.jar", content);
+            TestFiles.write(player, "mods/player.cfg", "keep in backup");
+            publish(publisher, TAG, "2.9.1", Map.of("mods/a.jar", content));
+
+            update(player, TAG, "2.9.1");
+
+            assertArrayEquals(content, Files.readAllBytes(player.resolve("mods/a.jar")));
+            Path backup = Layout.backupDir(player, TAG, "2.9.0");
+            assertArrayEquals(content, Files.readAllBytes(backup.resolve("mods/a.jar")));
+            assertEquals("keep in backup", Files.readString(backup.resolve("mods/player.cfg")));
+            assertFalse(Files.exists(player.resolve("mods/player.cfg")));
+            assertEquals("2.9.1", applied(player, TAG));
+        }
+    }
+
+    @Test
+    void keepsSkippingUnrelatedMatchingContentWhenAnotherPathIsDeleted(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            byte[] content = TestFiles.bytes("matching target");
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods/old.jar", TestFiles.bytes("old payload")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, TAG, "2.9.0");
+            publish(publisher, TAG, "2.9.1", Map.of("mods/new.jar", content));
+            TestFiles.write(player, "mods/new.jar", content);
+            FileTime modified = FileTime.fromMillis(1_600_000_000_000L);
+            Files.setLastModifiedTime(player.resolve("mods/new.jar"), modified);
+            int before = s3.requests().size();
+
+            update(player, TAG, "2.9.1");
+
+            assertArrayEquals(content, Files.readAllBytes(player.resolve("mods/new.jar")));
+            assertEquals(modified, Files.getLastModifiedTime(player.resolve("mods/new.jar")));
+            assertEquals("old payload", Files.readString(Layout.backupDir(player, TAG, "2.9.0").resolve("mods/old.jar")));
+            assertFalse(Files.exists(player.resolve("mods/old.jar")));
+            assertEquals("2.9.1", applied(player, TAG));
+            assertEquals(List.of("GET " + releaseKey(TAG, "2.9.1"), "GET " + signatureKey(TAG, "2.9.1")),
+                    s3.requests().subList(before, s3.requests().size()));
+        }
+    }
+
+    @Test
+    void skipsMatchingContentWhenADeletedDescendantIsAlreadyBlocked(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            byte[] content = TestFiles.bytes("matching target");
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("mods/old.jar", TestFiles.bytes("old payload")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, TAG, "2.9.0");
+            Files.delete(player.resolve("mods/old.jar"));
+            Files.delete(player.resolve("mods"));
+            TestFiles.write(player, "mods", "player file blocks old descendant");
+            publish(publisher, TAG, "2.9.1", Map.of("config/new.cfg", content));
+            TestFiles.write(player, "config/new.cfg", content);
+            int before = s3.requests().size();
+
+            update(player, TAG, "2.9.1");
+
+            assertArrayEquals(content, Files.readAllBytes(player.resolve("config/new.cfg")));
+            assertEquals("player file blocks old descendant", Files.readString(player.resolve("mods")));
+            assertEquals("2.9.1", applied(player, TAG));
+            assertFalse(Files.exists(Layout.backupDir(player, TAG, "2.9.0")));
+            assertEquals(List.of("GET " + releaseKey(TAG, "2.9.1"), "GET " + signatureKey(TAG, "2.9.1")),
+                    s3.requests().subList(before, s3.requests().size()));
         }
     }
 
