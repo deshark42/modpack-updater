@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import io.github.deshark42.modpackupdater.Main;
 import io.github.deshark42.modpackupdater.TestFiles;
 import io.github.deshark42.modpackupdater.UserError;
+import io.github.deshark42.modpackupdater.fs.PathGuard;
 import io.github.deshark42.modpackupdater.model.FileEntry;
 import io.github.deshark42.modpackupdater.model.Manifest;
 import java.io.IOException;
@@ -215,6 +216,24 @@ class UpdaterProtectionTest {
         assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
         assertEquals("external payload", Files.readString(outside.resolve("a.jar")));
         assertEquals("updater", Files.readString(workspace.resolve("runner.jar")));
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void reusesOnePreflightOnlyForThePathsItAlreadyCovered(@TempDir Path root) throws Exception {
+        TestFiles.write(root, "runner.jar", "updater");
+        TestFiles.write(root, "mods/a.jar", "ordinary payload");
+        Path outside = Files.createDirectory(root.resolve("outside"));
+        junction(root.resolve("extra"), outside);
+        UpdaterProtection protection = new UpdaterProtection(root, root.resolve("runner.jar"));
+        PathGuard.Preflight preflight = PathGuard.preflight();
+        protection.require(largeManifest("mods/a.jar"), UpdaterProtection.MAX_PATH_WORKERS, preflight);
+
+        UserError error = assertThrows(UserError.class, () -> protection.require(largeManifest("extra/a.jar"),
+                UpdaterProtection.MAX_PATH_WORKERS, preflight));
+
+        assertTrue(error.getMessage().contains("filesystem link or alias"), error.getMessage());
+        assertEquals("ordinary payload", Files.readString(root.resolve("mods/a.jar")));
     }
 
     @Test

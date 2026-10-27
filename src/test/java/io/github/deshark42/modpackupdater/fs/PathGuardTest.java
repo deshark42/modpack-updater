@@ -146,6 +146,25 @@ class PathGuardTest {
     }
 
     @Test
+    void reusesOneBatchOfMetadataInLaterReadOnlyChecks(@TempDir Path root) throws Exception {
+        Path directory = Files.createDirectory(root.resolve("mods"));
+        Path file = Files.writeString(directory.resolve("a.jar"), "ordinary file");
+        PathGuard guard = PathGuard.at(root);
+        PathGuard.Preflight preflight = PathGuard.preflight();
+
+        assertTrue(guard.inspectAll(List.of(file), preflight).containsKey(file));
+        assertTrue(guard.inspectAll(List.of(file, directory.resolve("b.jar")), preflight).containsKey(file));
+
+        Path outside = Files.createDirectory(root.resolve("outside"));
+        directoryLink(directory.resolve("linked.jar"), outside);
+        // The first batch's findings cover only the paths it walked, so a link the second batch adds
+        // is still checked afresh.
+        assertTrue(assertThrows(UserError.class,
+                () -> guard.inspectAll(List.of(directory.resolve("linked.jar")), preflight))
+                .getMessage().contains("filesystem link or alias"));
+    }
+
+    @Test
     void capturedRootStillRejectsEscapesAndPermitsFileToDirectoryTransitions(@TempDir Path root)
             throws IOException {
         Path workspace = Files.createDirectory(root.resolve("instance"));
