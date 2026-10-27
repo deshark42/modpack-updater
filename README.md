@@ -39,6 +39,8 @@ java -jar modpack-updater.jar keygen
 }
 ```
 
+`concurrency` 控制传输与部分本地处理的并发度，缺省为 8。更新的清单路径预检也受此值限制，同时最多使用 8 个 worker，且每个 worker 至少分配 128 条路径；小清单直接串行检查。设置为 1 可串行预检。所有预检 worker 都结束后，才会判断已是相同 release 或进入后续更新。
+
 私有桶还需设置 `access_key`、`secret_key`；公开读取可省略。私钥和公钥路径相对工作区，也可以填写工作区外的绝对路径。位于工作区内的密钥必须在 `.modpack-updater/` 下，防止私钥进入发布内容或可信公钥被普通更新替换。
 
 发布内容有两个可以同时使用的 base 输入目录，`init --tag client` 会创建它们：

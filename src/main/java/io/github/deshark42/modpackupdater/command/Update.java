@@ -123,7 +123,7 @@ public final class Update {
             LOG.debug("tag {}: reading local manifest for release {}", tag, applied);
             local = Manifest.read(appliedManifest);
             LOG.debug("tag {}: checking {} local manifest paths for release {}", tag, local.files().size(), applied);
-            protection.require(local);
+            protection.require(local, config.concurrency());
         }
 
         if (targetId.equals(applied)) {
@@ -145,7 +145,7 @@ public final class Update {
             throw new UserError("signed manifest identity does not match requested tag " + tag + " release " + targetId);
         }
         LOG.debug("tag {}: checking {} target manifest paths for release {}", tag, target.files().size(), targetId);
-        protection.require(target);
+        protection.require(target, config.concurrency());
         LOG.info("verified the release signature for tag {} release {}", tag, targetId);
         LOG.debug("tag {}: building update plan", tag);
         Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());

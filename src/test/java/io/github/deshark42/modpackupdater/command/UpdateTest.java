@@ -586,6 +586,14 @@ class UpdateTest {
                 publish(publisher, TAG, "2.9.1", next);
             }
             Path oldFile = Layout.releaseFile(player, TAG, "2.9.0");
+            // A large legacy record exercises parallel preflight, including the same-release return path.
+            Manifest legacy = Manifest.read(oldFile);
+            var tracked = new HashMap<>(legacy.files());
+            for (int i = 0; i < 256; i++) {
+                tracked.put("padding/missing-" + i, legacy.files().get("a-first.cfg"));
+            }
+            new Manifest(legacy.tag(), legacy.releaseId(), legacy.publishedAt(), legacy.hashAlgorithm(), tracked)
+                    .write(oldFile);
             String oldManifest = Files.readString(oldFile);
             int before = s3.requests().size();
 
