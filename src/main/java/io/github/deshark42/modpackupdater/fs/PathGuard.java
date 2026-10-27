@@ -121,16 +121,21 @@ public final class PathGuard {
                     break; // an ordinary file may be replaced with a directory during apply
                 }
             }
-            // Resolve the deepest existing path once, rather than resolving every prefix (each
-            // of which walks its ancestors again on Windows). Attribute checks above still reject
-            // every link, including internal and dangling links; this also catches native aliases.
-            if (!existing.equals(base) && (inspection == null || !inspection.realPaths.contains(existing))) {
-                Path expected = realBase.resolve(base.relativize(existing));
-                if (!existing.toRealPath().equals(expected)) {
-                    throw new UserError("refusing a filesystem link or alias below the workspace: " + existing);
-                }
-                if (inspection != null) {
-                    inspection.realPaths.add(existing);
+            // Resolve at most one existing directory per path, rather than every leaf: an alias in an
+            // ancestor (native spelling, link or junction) changes the deepest directory's real path,
+            // while respelling a file leaf (8.3 short name, trailing dot or space, letter case) keeps
+            // it in the same directory. The no-follow attribute checks above still reject links,
+            // junctions and device names anywhere in the path, including through such a leaf alias.
+            if (!existing.equals(base)) {
+                Path resolved = deepest.isDirectory() ? existing : existing.getParent();
+                if (inspection == null || !inspection.realPaths.contains(resolved)) {
+                    Path expected = realBase.resolve(base.relativize(resolved));
+                    if (!resolved.toRealPath().equals(expected)) {
+                        throw new UserError("refusing a filesystem link or alias below the workspace: " + resolved);
+                    }
+                    if (inspection != null) {
+                        inspection.realPaths.add(resolved);
+                    }
                 }
             }
             return absolute.equals(existing) ? deepest : null;
