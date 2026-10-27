@@ -195,6 +195,37 @@ class PathGuardTest {
     }
 
     @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void rejectsShortDirectoryAliasesOfLinks(@TempDir Path root) throws Exception {
+        Path outside = Files.createDirectory(root.resolve("outside"));
+        Path link = root.resolve("LongDirectoryName");
+        directoryLink(link, outside);
+        Path shortName = root.resolve("LONGDI~1");
+        assumeTrue(Files.isDirectory(shortName) && Files.isSameFile(link, shortName),
+                "8.3 short names must be enabled on this volume");
+
+        Path target = shortName.resolve("a.jar");
+        assertTrue(assertThrows(UserError.class, () -> PathGuard.require(root, target))
+                .getMessage().contains("filesystem link or alias"));
+        assertTrue(assertThrows(UserError.class, () -> PathGuard.at(root).inspectAll(List.of(target)))
+                .getMessage().contains("filesystem link or alias"));
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void acceptsALeafFileRespelledInsideItsCheckedDirectory(@TempDir Path root) throws IOException {
+        Path directory = Files.createDirectory(root.resolve("mods"));
+        Files.writeString(directory.resolve("existing.jar"), "ordinary file");
+        // Win32 also accepts a trailing dot as an alias for a file. The check resolves the deepest
+        // existing directory, so this respelling cannot leave the directory it names; links and
+        // junctions are still rejected by the no-follow attribute checks.
+        Path target = directory.resolve("existing.jar.");
+
+        assertEquals(target, PathGuard.require(root, target));
+        assertTrue(PathGuard.at(root).inspectAll(List.of(target)).containsKey(target));
+    }
+
+    @Test
     void inspectsExistingAndMissingSiblingsWithoutReturningTheirParentAttributes(@TempDir Path root)
             throws IOException {
         TestFiles.write(root, "config/nested/a.cfg", "one");
