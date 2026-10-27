@@ -120,15 +120,18 @@ public final class Update {
                 throw new UserError("cannot tell which files are already applied: " + appliedManifest
                         + " is missing; restore it or delete " + currentFile);
             }
+            if (targetId.equals(applied)) {
+                // The preflight exists to make a run that can mutate payload paths fail before it
+                // touches one. A run with nothing to apply mutates nothing, so reading the local
+                // manifest and walking its paths is pure cost: on a real instance the walk is the
+                // bulk of a no-op update.
+                LOG.info("tag {} is already at release {}", tag, applied);
+                return;
+            }
             LOG.debug("tag {}: reading local manifest for release {}", tag, applied);
             local = Manifest.read(appliedManifest);
             LOG.debug("tag {}: checking {} local manifest paths for release {}", tag, local.files().size(), applied);
             protection.require(local, config.concurrency());
-        }
-
-        if (targetId.equals(applied)) {
-            LOG.info("tag {} is already at release {}", tag, applied);
-            return;
         }
         LOG.info("updating tag {} to release {}", tag, targetId);
 

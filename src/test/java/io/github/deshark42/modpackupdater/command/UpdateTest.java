@@ -563,7 +563,7 @@ class UpdateTest {
     }
 
     @ParameterizedTest(name = "legacy updater ownership is refused for {0}")
-    @ValueSource(strings = {"deleted", "unchanged", "same-release"})
+    @ValueSource(strings = {"deleted", "unchanged"})
     void refusesAnOldManifestClaimingTheUpdatersParentBeforeAnyMutation(String scenario, @TempDir Path root)
             throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
@@ -586,7 +586,7 @@ class UpdateTest {
                 publish(publisher, TAG, "2.9.1", next);
             }
             Path oldFile = Layout.releaseFile(player, TAG, "2.9.0");
-            // A large legacy record exercises parallel preflight, including the same-release return path.
+            // A large legacy record exercises parallel preflight.
             Manifest legacy = Manifest.read(oldFile);
             var tracked = new HashMap<>(legacy.files());
             for (int i = 0; i < 256; i++) {
@@ -609,6 +609,50 @@ class UpdateTest {
             assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
             assertEquals(List.of("GET " + latestKey(TAG)), s3.requests().subList(before, s3.requests().size()));
             assertNothingStaged(player);
+        }
+    }
+
+    @Test
+    void skipsTheOldManifestPreflightWhenTheLatestReleaseIsAlreadyApplied(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "2.9.0", Map.of("a-first.cfg", TestFiles.bytes("A"),
+                    "tools", TestFiles.bytes("old file")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, TAG, null);
+            // The legacy tracked file has since become the directory containing the locally installed
+            // updater, so the preflight refuses this manifest; a no-op run must not even read it.
+            Files.delete(player.resolve("tools"));
+            TestFiles.write(player, "tools/runner.jar", "updater");
+            Path oldFile = Layout.releaseFile(player, TAG, "2.9.0");
+            Manifest legacy = Manifest.read(oldFile);
+            var tracked = new HashMap<>(legacy.files());
+            for (int i = 0; i < 256; i++) {
+                tracked.put("padding/missing-" + i, legacy.files().get("a-first.cfg"));
+            }
+            new Manifest(legacy.tag(), legacy.releaseId(), legacy.publishedAt(), legacy.hashAlgorithm(), tracked)
+                    .write(oldFile);
+            String oldManifest = Files.readString(oldFile);
+            int before = s3.requests().size();
+            int transcriptBefore = transcript(player).length();
+            resetLog();
+
+            update(player, TAG, null);
+
+            assertEquals("updater", Files.readString(player.resolve("tools/runner.jar")));
+            assertEquals(oldManifest, Files.readString(oldFile), "the run did not touch the old manifest");
+            assertEquals("2.9.0", applied(player, TAG));
+            assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
+            assertEquals(List.of("GET " + latestKey(TAG)), s3.requests().subList(before, s3.requests().size()));
+            assertNothingStaged(player);
+            assertTrue(captured.outText().contains("tag client is already at release 2.9.0"), captured.outText());
+            assertEquals(List.of("loading workspace configuration", "validating signing key paths",
+                    "loading trusted public key", "locating updater and workspace", "initializing object store",
+                    "resolving latest release", "reading local release pointer"),
+                    stageStarts(transcript(player).substring(transcriptBefore)),
+                    "a run with nothing to apply does not read the old manifest");
         }
     }
 
@@ -1182,8 +1226,8 @@ class UpdateTest {
             assertEquals(List.of(
                     "loading workspace configuration", "validating signing key paths", "loading trusted public key",
                     "locating updater and workspace", "initializing object store", "resolving latest release",
-                    "reading local release pointer", "reading local manifest for release 2.9.0",
-                    "checking 2 local manifest paths for release 2.9.0"), stageStarts(secondTranscript));
+                    "reading local release pointer"), stageStarts(secondTranscript),
+                    "a workspace that is already at the latest release skips the old manifest preflight");
             assertFalse(captured.outText().contains("tag client:"), "stage details stay out of the console");
             List<String> messages = captured.outText().lines().map(UpdateTest::body).toList();
             assertEquals("tag client is already at release 2.9.0", messages.get(messages.size() - 1));
