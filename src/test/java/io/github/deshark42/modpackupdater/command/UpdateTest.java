@@ -577,14 +577,12 @@ class UpdateTest {
             // A legacy tracked file has since become the directory containing the locally installed updater.
             Files.delete(player.resolve("tools"));
             TestFiles.write(player, "tools/runner.jar", "updater");
-            if (!scenario.equals("same-release")) {
-                Map<String, byte[]> next = new HashMap<>();
-                next.put("a-first.cfg", TestFiles.bytes("new A"));
-                if (scenario.equals("unchanged")) {
-                    next.put("tools", TestFiles.bytes("old file"));
-                }
-                publish(publisher, TAG, "2.9.1", next);
+            Map<String, byte[]> next = new HashMap<>();
+            next.put("a-first.cfg", TestFiles.bytes("new A"));
+            if (scenario.equals("unchanged")) {
+                next.put("tools", TestFiles.bytes("old file"));
             }
+            publish(publisher, TAG, "2.9.1", next);
             Path oldFile = Layout.releaseFile(player, TAG, "2.9.0");
             // A large legacy record exercises parallel preflight.
             Manifest legacy = Manifest.read(oldFile);
