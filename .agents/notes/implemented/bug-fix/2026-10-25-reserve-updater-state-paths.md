@@ -22,6 +22,6 @@ Status: implemented
 
 ## 后果
 
-- 以前包含保留路径的 release 或本地清单现在会明确失败；必须由操作者修复，工具不会自动删除或迁移它们。
+- 以前包含保留路径的 release 或本地清单现在会明确失败；必须由操作者修复，工具不会自动删除或迁移它们。目标 release 已应用的无操作运行不读取本地旧清单，这类清单留到下一次会变更的运行时失败（[release 已应用时不再预检旧清单](../simplification/2026-10-27-skip-preflight-when-release-is-already-applied.md)）。
 - `SafePathTest` 持有路径及跨平台别名矩阵；`ManifestTest` 覆盖直接构造入口；命令测试覆盖发布前拒绝、远端覆盖配置以及旧清单触发删除三条实际接线，并检查桶、配置、文件和指针没有对应副作用。
 - 这是命名空间保护，不验证发布者身份，也不阻止发布者更新正常模组或游戏配置；真实文件系统的别名由[链接重定向保护](2026-10-25-reject-workspace-link-redirections.md)约束。
