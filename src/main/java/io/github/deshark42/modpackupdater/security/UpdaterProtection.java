@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -62,16 +63,35 @@ public final class UpdaterProtection {
     }
 
     public void require(Manifest manifest, int concurrency) {
+        require(manifest, concurrency, PathGuard.preflight());
+    }
+
+    /**
+     * Checks one manifest, starting from the metadata an earlier read-only preflight of this round
+     * gathered. Pass a preflight of an earlier moment only while nothing local was written in
+     * between: before the payload phase, the run reuses one between the two manifest preflights,
+     * which network fetches alone separate.
+     */
+    public void require(Manifest manifest, int concurrency, PathGuard.Preflight preflight) {
         Map<String, Path> paths = new LinkedHashMap<>();
         for (String relative : manifest.files().keySet()) {
             paths.put(relative, workspace.resolve(SafePath.require(relative)).normalize());
         }
         PathGuard guard = PathGuard.at(workspace);
-        checkBatches(new ArrayList<>(paths.entrySet()), concurrency, batch -> require(guard, batch));
+        List<PathGuard.Preflight> batches = new CopyOnWriteArrayList<>();
+        checkBatches(new ArrayList<>(paths.entrySet()), concurrency,
+                batch -> batches.add(require(guard, batch, preflight)));
+        // The workers have stopped before they are folded in, so the shared cache stays single-threaded.
+        for (PathGuard.Preflight batch : batches) {
+            preflight.merge(batch);
+        }
     }
 
-    private void require(PathGuard guard, List<Map.Entry<String, Path>> paths) {
-        Map<Path, BasicFileAttributes> checked = guard.inspectAll(paths.stream().map(Map.Entry::getValue).toList());
+    private PathGuard.Preflight require(PathGuard guard, List<Map.Entry<String, Path>> paths,
+            PathGuard.Preflight preflight) {
+        PathGuard.Preflight batch = preflight.copy();
+        Map<Path, BasicFileAttributes> checked = guard.inspectAll(
+                paths.stream().map(Map.Entry::getValue).toList(), batch);
         BasicFileAttributes updaterAttributes = null;
         for (Map.Entry<String, Path> entry : paths) {
             String relative = entry.getKey();
@@ -96,6 +116,7 @@ public final class UpdaterProtection {
                 throw new UserError("cannot check release path against the running updater: " + relative, e);
             }
         }
+        return batch;
     }
 
     /** Keeps each metadata cache worker-local and joins all readers before returning, even on failure. */

@@ -111,6 +111,10 @@ public final class Update {
 
         String applied = null;
         Manifest local = null;
+        // Both manifest preflights are read-only and network fetches alone separate them, so the
+        // target one starts from the metadata the local one already gathered. Once the payload phase
+        // writes anything, the cache is finished.
+        PathGuard.Preflight preflight = PathGuard.preflight();
         LOG.debug("tag {}: reading local release pointer", tag);
         Path currentFile = Layout.currentFile(workspace, tag);
         if (Files.exists(currentFile)) {
@@ -131,7 +135,7 @@ public final class Update {
             LOG.debug("tag {}: reading local manifest for release {}", tag, applied);
             local = Manifest.read(appliedManifest);
             LOG.debug("tag {}: checking {} local manifest paths for release {}", tag, local.files().size(), applied);
-            protection.require(local, config.concurrency());
+            protection.require(local, config.concurrency(), preflight);
         }
         LOG.info("updating tag {} to release {}", tag, targetId);
 
@@ -148,7 +152,7 @@ public final class Update {
             throw new UserError("signed manifest identity does not match requested tag " + tag + " release " + targetId);
         }
         LOG.debug("tag {}: checking {} target manifest paths for release {}", tag, target.files().size(), targetId);
-        protection.require(target, config.concurrency());
+        protection.require(target, config.concurrency(), preflight);
         LOG.info("verified the release signature for tag {} release {}", tag, targetId);
         LOG.debug("tag {}: building update plan", tag);
         Path releaseFile = Layout.releaseFile(workspace, tag, target.releaseId());
@@ -176,14 +180,12 @@ public final class Update {
                 ? Layout.initialBackupDir(workspace, tag)
                 : Layout.backupDir(workspace, tag, applied);
         List<String> downloads = plan.downloads();
-        // Validate every affected source and backup destination before touching any payload file.
-        // A late path in the plan must not fail only after earlier files have already moved.
+        // Both manifest preflights already validated every source path this plan touches, so only the
+        // backup destinations are left. A late one must not fail after earlier files have moved.
         for (String path : downloads) {
-            SafePath.resolve(workspace, path);
             SafePath.resolve(backup, path);
         }
         for (String path : plan.deleted()) {
-            SafePath.resolve(workspace, path);
             SafePath.resolve(backup, path);
         }
 

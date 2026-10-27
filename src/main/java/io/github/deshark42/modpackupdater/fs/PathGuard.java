@@ -49,15 +49,29 @@ public final class PathGuard {
      * Ordinary require calls and subsequent inspections still check descendants afresh.
      */
     public Map<Path, BasicFileAttributes> inspectAll(Iterable<Path> paths) {
-        Inspection inspection = new Inspection();
+        return inspectAll(paths, preflight());
+    }
+
+    /**
+     * Checks one read-only set of paths, starting from the metadata an earlier batch gathered. Share
+     * a preflight only while the tree has not been written: it holds findings from one moment, not a
+     * lock, exactly like a single batch claim. Returns the attributes of fully existing requested
+     * paths, keyed by absolute normalized path.
+     */
+    public Map<Path, BasicFileAttributes> inspectAll(Iterable<Path> paths, Preflight preflight) {
         Map<Path, BasicFileAttributes> result = new HashMap<>();
         for (Path path : paths) {
-            BasicFileAttributes attributes = inspect(base, path, realBase, inspection);
+            BasicFileAttributes attributes = inspect(base, path, realBase, preflight);
             if (attributes != null) {
                 result.put(path.toAbsolutePath().normalize(), attributes);
             }
         }
         return Map.copyOf(result);
+    }
+
+    /** Captures an empty preflight; share it only among checks below one root. */
+    public static Preflight preflight() {
+        return new Preflight();
     }
 
     /**
@@ -72,12 +86,12 @@ public final class PathGuard {
         return path;
     }
 
-    private static BasicFileAttributes inspect(Path base, Path path, Path realBase, Inspection inspection) {
+    private static BasicFileAttributes inspect(Path base, Path path, Path realBase, Preflight preflight) {
         Path absolute = path.toAbsolutePath().normalize();
         if (!absolute.startsWith(base)) {
             throw new UserError("path escapes its filesystem root: " + path);
         }
-        if (absolute.equals(base) && inspection == null) {
+        if (absolute.equals(base) && preflight == null) {
             return null;
         }
         try {
@@ -97,16 +111,16 @@ public final class PathGuard {
             for (Path part : base.relativize(absolute)) {
                 current = current.resolve(part);
                 BasicFileAttributes attributes;
-                if (inspection != null && inspection.attributes.containsKey(current)) {
-                    attributes = inspection.attributes.get(current);
+                if (preflight != null && preflight.attributes.containsKey(current)) {
+                    attributes = preflight.attributes.get(current);
                 } else {
                     try {
                         attributes = Files.readAttributes(current, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
                     } catch (NoSuchFileException e) {
                         attributes = null;
                     }
-                    if (inspection != null) {
-                        inspection.attributes.put(current, attributes);
+                    if (preflight != null) {
+                        preflight.attributes.put(current, attributes);
                     }
                 }
                 if (attributes == null) {
@@ -128,13 +142,13 @@ public final class PathGuard {
             // junctions and device names anywhere in the path, including through such a leaf alias.
             if (!existing.equals(base)) {
                 Path resolved = deepest.isDirectory() ? existing : existing.getParent();
-                if (inspection == null || !inspection.realPaths.contains(resolved)) {
+                if (preflight == null || !preflight.realPaths.contains(resolved)) {
                     Path expected = realBase.resolve(base.relativize(resolved));
                     if (!resolved.toRealPath().equals(expected)) {
                         throw new UserError("refusing a filesystem link or alias below the workspace: " + resolved);
                     }
-                    if (inspection != null) {
-                        inspection.realPaths.add(resolved);
+                    if (preflight != null) {
+                        preflight.realPaths.add(resolved);
                     }
                 }
             }
@@ -144,8 +158,33 @@ public final class PathGuard {
         }
     }
 
-    private static final class Inspection {
+    /**
+     * What one read-only preflight gathered: the no-follow attributes of the path segments it walked
+     * (a null value means the segment is missing) and the real-path comparisons that succeeded.
+     * Later preflights of the same root may start from it while nothing writes to the tree.
+     */
+    public static final class Preflight {
+
         private final Map<Path, BasicFileAttributes> attributes = new HashMap<>();
         private final Set<Path> realPaths = new HashSet<>();
+
+        private Preflight() {
+        }
+
+        private Preflight(Preflight seed) {
+            attributes.putAll(seed.attributes);
+            realPaths.addAll(seed.realPaths);
+        }
+
+        /** A worker-local copy, so batches that run in parallel never share mutable metadata. */
+        public Preflight copy() {
+            return new Preflight(this);
+        }
+
+        /** Folds in another preflight's findings; call it once that preflight's workers stopped. */
+        public void merge(Preflight other) {
+            other.attributes.forEach(attributes::putIfAbsent);
+            realPaths.addAll(other.realPaths);
+        }
     }
 }
