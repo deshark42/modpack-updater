@@ -12,6 +12,7 @@ public final class Layout {
     public static final String CURRENT = "current.json";
     public static final String RELEASES = "releases";
     public static final String BACKUP = "backup";
+    public static final String BACKUP_ORDER = "backup-order.txt";
     public static final String LOGS = "logs";
     public static final String BASE = "base";
     public static final String BASE_PACK = "base_pack";
@@ -93,6 +94,10 @@ public final class Layout {
     /** The directory every release's moved-away files are kept under. */
     public static Path backupsDir(Path workspaceRoot, String tag) {
         return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), BACKUP);
+    }
+
+    public static Path backupOrderFile(Path workspaceRoot, String tag) {
+        return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), BACKUP_ORDER);
     }
 
     public static Path backupDir(Path workspaceRoot, String tag, String releaseId) {

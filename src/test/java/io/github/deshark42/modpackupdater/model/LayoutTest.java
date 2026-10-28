@@ -45,6 +45,8 @@ class LayoutTest {
                         tag.resolve(Layout.RELEASES).resolve("2.9.0.json")),
                 Arguments.of("backups", (Function<Path, Path>) root -> Layout.backupsDir(root, "client"),
                         tag.resolve(Layout.BACKUP)),
+                Arguments.of("backup order", (Function<Path, Path>) root -> Layout.backupOrderFile(root, "client"),
+                        tag.resolve(Layout.BACKUP_ORDER)),
                 Arguments.of("backup", (Function<Path, Path>) root -> Layout.backupDir(root, "client", "2.9.0"),
                         tag.resolve(Layout.BACKUP).resolve("2.9.0")),
                 Arguments.of("initial backup", (Function<Path, Path>) root -> Layout.initialBackupDir(root, "client"),

@@ -89,6 +89,123 @@ class UpdateTest {
         }
     }
 
+    private static void oldBackups(Path workspace) throws IOException {
+        for (int i = 0; i < 8; i++) {
+            Path backup = Layout.backupDir(workspace, TAG, "old" + i);
+            TestFiles.write(backup, "mods/old.jar", "backup " + i);
+            Files.setLastModifiedTime(backup, FileTime.fromMillis(1_600_000_000_000L + i * 1000L));
+        }
+    }
+
+    @Test
+    void aSuccessfulUpdateCleansOldBackups(@TempDir Path root) throws IOException {
+        successfulCleanup(root, "2");
+    }
+
+    @Test
+    void anAlreadyCurrentCheckCleansOldBackups(@TempDir Path root) throws IOException {
+        successfulCleanup(root, "1");
+    }
+
+    private static void successfulCleanup(Path root, String target) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, "1", Map.of("mods/a.jar", TestFiles.bytes("old payload")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            TestFiles.write(player, "mods/a.jar", "original local file");
+            update(player, "1");
+            oldBackups(player);
+            publish(publisher, "2", Map.of("mods/a.jar", TestFiles.bytes("new payload")));
+
+            update(player, target);
+
+            assertEquals(target, Pointer.read(Layout.currentFile(player, TAG)).releaseId());
+            assertEquals(target.equals("1") ? "old payload" : "new payload",
+                    Files.readString(player.resolve("mods/a.jar")));
+            assertFalse(Files.exists(Layout.backupDir(player, TAG, "old0")));
+            assertEquals(target.equals("1"), Files.exists(Layout.backupDir(player, TAG, "old1")));
+            try (var children = Files.list(Layout.backupsDir(player, TAG))) {
+                assertEquals(7, children.filter(Files::isDirectory)
+                        .filter(path -> !path.getFileName().toString().equals(Layout.INITIAL)).count());
+            }
+            assertEquals("original local file", Files.readString(Layout.initialBackupDir(player, TAG).resolve("mods/a.jar")));
+            if (target.equals("2")) {
+                assertEquals("old payload", Files.readString(Layout.backupDir(player, TAG, "1").resolve("mods/a.jar")));
+            }
+        }
+    }
+
+    @Test
+    void aFailedStateCommitKeepsBackupsAndTheOldPointer(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, "1", Map.of("mods/a.jar", TestFiles.bytes("old payload")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, "1");
+            oldBackups(player);
+            publish(publisher, "2", Map.of("mods/a.jar", TestFiles.bytes("new payload")));
+            Files.createDirectory(Layout.releaseFile(player, TAG, "2"));
+
+            UserError error = assertThrows(UserError.class, () -> update(player, "2"));
+
+            assertTrue(error.getMessage().contains("cannot write"), error.getMessage());
+            assertEquals("1", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
+            assertEquals("new payload", Files.readString(player.resolve("mods/a.jar")));
+            assertEquals("old payload", Files.readString(Layout.backupDir(player, TAG, "1").resolve("mods/a.jar")));
+            for (int i = 0; i < 8; i++) {
+                assertEquals("backup " + i, Files.readString(Layout.backupDir(player, TAG, "old" + i).resolve("mods/old.jar")));
+            }
+            assertNothingStaged(player);
+        }
+    }
+
+    @Test
+    void anOrderWriteFailureStopsBeforeApplicationAndARetryPreservesRefreshedBackups(@TempDir Path root)
+            throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, "1", Map.of("mods/a.jar", TestFiles.bytes("old payload")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, "1");
+            TestFiles.write(Layout.backupDir(player, TAG, "1"), "mods/a.jar", "older backup");
+            String order = "1\n";
+            for (int i = 1; i <= 6; i++) {
+                TestFiles.write(Layout.backupDir(player, TAG, "old" + i), "mods/a.jar", "backup " + i);
+                order += "old" + i + "\n";
+            }
+            Path orderFile = Layout.backupOrderFile(player, TAG);
+            Files.createDirectory(orderFile);
+            publish(publisher, "2", Map.of("mods/a.jar", TestFiles.bytes("new payload")));
+
+            UserError error = assertThrows(UserError.class, () -> update(player, "2"));
+
+            assertTrue(error.getMessage().contains("backup order"), error.getMessage());
+            assertEquals("old payload", Files.readString(player.resolve("mods/a.jar")));
+            assertEquals("older backup", Files.readString(Layout.backupDir(player, TAG, "1").resolve("mods/a.jar")));
+            assertEquals("1", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
+            assertFalse(Files.exists(Layout.releaseFile(player, TAG, "2")));
+            assertNothingStaged(player);
+            Files.delete(orderFile);
+            Files.writeString(orderFile, order);
+            update(player, "2");
+            publish(publisher, "3", Map.of("mods/a.jar", TestFiles.bytes("newest payload")));
+
+            update(player, "3");
+
+            assertEquals("3", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
+            assertEquals("newest payload", Files.readString(player.resolve("mods/a.jar")));
+            assertEquals("old payload", Files.readString(Layout.backupDir(player, TAG, "1").resolve("mods/a.jar")));
+            assertEquals("new payload", Files.readString(Layout.backupDir(player, TAG, "2").resolve("mods/a.jar")));
+            assertFalse(Files.exists(Layout.backupDir(player, TAG, "old1")));
+        }
+    }
+
     @Test
     void aLatestUpdateAppliesTheReleaseWithOnlyThePublicKeyAndPreservesLocalContent(@TempDir Path root)
             throws IOException {

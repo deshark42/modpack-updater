@@ -3,6 +3,7 @@ package io.github.deshark42.modpackupdater.command;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.AppliedRelease;
 import io.github.deshark42.modpackupdater.fs.AtomicFile;
+import io.github.deshark42.modpackupdater.fs.BackupRetention;
 import io.github.deshark42.modpackupdater.fs.LocalContent;
 import io.github.deshark42.modpackupdater.fs.LocalContent.Local;
 import io.github.deshark42.modpackupdater.fs.LocalContent.Reuse;
@@ -128,6 +129,7 @@ public final class Update {
         Manifest local = state.manifest();
         Path currentFile = Layout.currentFile(workspace, tag);
         if (targetId.equals(applied)) {
+            BackupRetention.afterUpdate(workspace, tag, null);
             LOG.info("tag {} is already at release {}", tag, applied);
             return;
         }
@@ -275,6 +277,11 @@ public final class Update {
             // Deletions go first, so a path that becomes a file can replace a directory that shrank
             // out of the manifest. A target that already exists is moved aside before its new
             // content goes in, which is what makes the old file recoverable.
+            boolean willBackUp = plan.deleted().stream().anyMatch(path -> exists(SafePath.resolve(workspace, path)))
+                    || toFetch.stream().anyMatch(path -> exists(SafePath.resolve(workspace, path)));
+            if (willBackUp) {
+                BackupRetention.record(workspace, tag, applied);
+            }
             LOG.debug("tag {}: applying files and moving backups", tag);
             for (String path : plan.deleted()) {
                 moved += moveAside(workspace, backup, path) ? 1 : 0;
@@ -313,6 +320,7 @@ public final class Update {
         new Pointer(target.releaseId()).write(currentFile);
         LOG.info("wrote {}", Text.relativeTo(workspace, releaseFile));
         LOG.info("wrote {}", Text.relativeTo(workspace, currentFile));
+        BackupRetention.afterUpdate(workspace, tag, moved > 0 ? applied : null);
         LOG.info(transferSummary(fetchedFiles, downloadedBytes, downloadNanos, reused));
         LOG.info("updated tag {} to release {} in {}", tag, target.releaseId(),
                 Text.elapsed(System.nanoTime() - startedAt));
