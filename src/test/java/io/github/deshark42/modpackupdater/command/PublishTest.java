@@ -41,6 +41,9 @@ import java.util.TreeSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @ResourceLock(TestLogs.RESOURCE)
 class PublishTest {
@@ -142,6 +145,78 @@ class PublishTest {
     }
 
     @Test
+    void aPublishAdvancesOnlyItsSelectedChannelAfterTheSignature(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            TestWorkspace.base(workspace, TAG, "mods/test.jar", "beta content");
+            String betaKey = key(ObjectKeys.channel(TAG, "beta"));
+            String nightlyKey = key(ObjectKeys.channel(TAG, "nightly"));
+            byte[] oldPointer = TestFiles.bytes(new Pointer("previous").toJson());
+            s3.put(latestKey(), oldPointer);
+            s3.put(betaKey, oldPointer);
+            s3.put(nightlyKey, oldPointer);
+            s3.failPut(latestKey());
+            s3.failPut(nightlyKey);
+
+            Publish.run(workspace, TAG, RELEASE, 40, "beta", CLOCK);
+
+            assertEquals(new Pointer(RELEASE), Pointer.parse(s3.text(betaKey), "beta"));
+            assertArrayEquals(oldPointer, s3.object(latestKey()));
+            assertArrayEquals(oldPointer, s3.object(nightlyKey));
+            assertTrue(s3.requests().stream().noneMatch(request -> request.endsWith(" " + latestKey())
+                    || request.endsWith(" " + nightlyKey)), "other channels are neither read nor written");
+            Manifest manifest = Manifest.parse(s3.text(releaseKey()), "published manifest");
+            Set<String> writes = new TreeSet<>(assertPublishedContent(s3, manifest,
+                    Map.of("mods/test.jar", TestFiles.bytes("beta content"))));
+            writes.add(releaseKey());
+            writes.add(signatureKey());
+            writes.add(betaKey);
+            assertWrites(s3, writes);
+            List<String> requests = s3.requests();
+            assertTrue(requests.indexOf("PUT " + signatureKey()) > requests.indexOf("PUT " + releaseKey()));
+            assertTrue(requests.indexOf("PUT " + betaKey) > requests.indexOf("PUT " + signatureKey()));
+            FakeS3.Request pointerWrite = s3.requestsDetailed().stream()
+                    .filter(request -> request.method().equals("PUT") && request.path().equals(betaKey))
+                    .findFirst().orElseThrow();
+            assertEquals(ObjectKeys.NO_STORE_CACHE_CONTROL, pointerWrite.headers().get("cache-control"));
+        }
+    }
+
+    @Test
+    void anInvalidChannelFailsBeforeOpeningPublishInputs(@TempDir Path workspace) throws IOException {
+        UserError error = assertThrows(UserError.class,
+                () -> Publish.run(workspace, TAG, RELEASE, 40, "../beta", CLOCK));
+
+        assertTrue(error.getMessage().contains("invalid channel"), error.getMessage());
+        try (var entries = Files.list(workspace)) {
+            assertEquals(List.of(), entries.toList(), "channel validation creates no workspace files");
+        }
+    }
+
+    @Test
+    void aReleaseIdCannotBeReusedInAnotherChannel(@TempDir Path workspace) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(workspace, s3);
+            TestWorkspace.base(workspace, TAG, "mods/test.jar", "first content");
+            Publish.run(workspace, TAG, RELEASE, 40, CLOCK);
+            byte[] originalManifest = s3.object(releaseKey());
+            byte[] originalSignature = s3.object(signatureKey());
+            byte[] originalLatest = s3.object(latestKey());
+            int before = s3.requests().size();
+
+            UserError error = assertThrows(UserError.class,
+                    () -> Publish.run(workspace, TAG, RELEASE, 40, "beta", CLOCK));
+
+            assertTrue(error.getMessage().contains("already exists"), error.getMessage());
+            assertEquals(List.of("HEAD " + releaseKey()), s3.requests().subList(before, s3.requests().size()));
+            assertArrayEquals(originalManifest, s3.object(releaseKey()));
+            assertArrayEquals(originalSignature, s3.object(signatureKey()));
+            assertArrayEquals(originalLatest, s3.object(latestKey()));
+            assertNull(s3.object(key(ObjectKeys.channel(TAG, "beta"))));
+        }
+    }
+
+    @Test
     void aPublishWithoutLatestDoesNotCreateAPointer(@TempDir Path workspace) throws IOException {
         assertPublishWithoutLatest(workspace, false);
     }
@@ -181,17 +256,11 @@ class PublishTest {
         }
     }
 
-    @Test
-    void aFailedSignatureUploadPreservesLatestAndReleasesItsInputs(@TempDir Path workspace) throws IOException {
-        assertFailedSignatureUpload(workspace, true);
-    }
-
-    @Test
-    void aPublishWithoutLatestStillFailsWhenItsSignatureUploadFails(@TempDir Path workspace) throws IOException {
-        assertFailedSignatureUpload(workspace, false);
-    }
-
-    private static void assertFailedSignatureUpload(Path workspace, boolean updateLatest) throws IOException {
+    @ParameterizedTest(name = "failed signature with channel {0}")
+    @NullSource
+    @ValueSource(strings = {"latest", "beta"})
+    void aFailedSignatureUploadPreservesChannelsAndReleasesItsInputs(String channel,
+            @TempDir Path workspace) throws IOException {
         try (FakeS3 s3 = new FakeS3(); TestLogs logs = new TestLogs()) {
             TestWorkspace.configure(workspace, s3);
             Path zip = Layout.basePackDir(workspace, TAG).resolve("instance.zip");
@@ -201,11 +270,13 @@ class PublishTest {
             // An earlier publisher already owns this pointer; this run must not advance it on failure.
             byte[] oldLatest = TestFiles.bytes(new Pointer("previous").toJson());
             s3.put(latestKey(), oldLatest);
+            String betaKey = key(ObjectKeys.channel(TAG, "beta"));
+            s3.put(betaKey, oldLatest);
             s3.failPut(signatureKey());
             logs.begin(workspace, "publish-client", CLOCK);
 
             UserError error = assertThrows(UserError.class,
-                    () -> Publish.run(workspace, TAG, RELEASE, 40, updateLatest, CLOCK));
+                    () -> Publish.run(workspace, TAG, RELEASE, 40, channel, CLOCK));
 
             assertTrue(error.getMessage().contains("HTTP 500"), error.getMessage());
             assertArrayEquals(oldLatest, s3.object(latestKey()), "latest does not advertise an unsigned release");
@@ -218,7 +289,9 @@ class PublishTest {
             writes.add(releaseKey());
             writes.add(signatureKey());
             assertWrites(s3, writes);
-            assertEquals(content.size() + 2, s3.objectCount(), "content, an unpublished manifest and the unchanged pointer remain");
+            assertArrayEquals(oldLatest, s3.object(betaKey), "a failed signature cannot advance beta either");
+            assertEquals(content.size() + 3, s3.objectCount(), "content, an unpublished manifest and both unchanged pointers remain");
+            assertFalse(s3.requests().contains("PUT " + betaKey), "beta is never reached");
             assertFalse(s3.requests().contains("PUT " + latestKey()), "latest is never reached");
             assertTrue(s3.requests().stream().noneMatch(request -> request.startsWith("GET ")), "publishing needs no object download");
             assertCacheAnswersWithoutRequests(workspace, s3, manifest);

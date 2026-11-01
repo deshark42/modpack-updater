@@ -1,11 +1,14 @@
 package io.github.deshark42.modpackupdater.model;
 
+import io.github.deshark42.modpackupdater.UserError;
+
 /** Object keys in the bucket, relative to the configured prefix. */
 public final class ObjectKeys {
 
     public static final String BLOB = "blob";
     public static final String INDEX = "index";
     public static final String METADATA = "metadata";
+    public static final String DEFAULT_CHANNEL = "latest";
 
     /**
      * The Cache-Control of an object that is only ever added, never rewritten or deleted: content
@@ -13,7 +16,7 @@ public final class ObjectKeys {
      */
     public static final String IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
-    /** The Cache-Control of the one object a publish rewrites: the tag's latest pointer. */
+    /** The Cache-Control of mutable channel pointers. */
     public static final String NO_STORE_CACHE_CONTROL = "no-store";
 
     private ObjectKeys() {
@@ -37,7 +40,11 @@ public final class ObjectKeys {
     }
 
     public static String latest(String tag) {
-        return METADATA + "/" + Names.requireTag(tag) + "/latest.json";
+        return channel(tag, DEFAULT_CHANNEL);
+    }
+
+    public static String channel(String tag, String channel) {
+        return METADATA + "/" + Names.requireTag(tag) + "/" + Names.requireChannel(channel) + ".json";
     }
 
     public static String signature(String tag, String releaseId) {
@@ -49,15 +56,29 @@ public final class ObjectKeys {
      * been decided: no kind is immutable by default, so a new one has to say so here.
      */
     public static String cacheControl(String key) {
+        if (isChannelPointer(key)) {
+            return NO_STORE_CACHE_CONTROL;
+        }
         if (key.startsWith(BLOB + "/") || key.startsWith(INDEX + "/")
                 || (key.startsWith(METADATA + "/") && key.contains("/releases/")
                 && (key.endsWith(".json") || key.endsWith(".json.sig")))) {
             return IMMUTABLE_CACHE_CONTROL;
         }
-        if (key.startsWith(METADATA + "/") && key.endsWith("/latest.json")) {
-            return NO_STORE_CACHE_CONTROL;
-        }
         return null;
+    }
+
+    private static boolean isChannelPointer(String key) {
+        String[] parts = key.split("/", -1);
+        if (parts.length != 3 || !parts[0].equals(METADATA) || !parts[2].endsWith(".json")) {
+            return false;
+        }
+        try {
+            Names.requireTag(parts[1]);
+            Names.requireChannel(parts[2].substring(0, parts[2].length() - ".json".length()));
+            return true;
+        } catch (UserError e) {
+            return false;
+        }
     }
 
     private static String shard(String hash) {

@@ -4,7 +4,7 @@ import io.github.deshark42.modpackupdater.UserError;
 import java.util.regex.Pattern;
 
 /**
- * Tags and release ids end up in object keys and file names. Restricting them to a portable
+ * Tags, release ids and channels end up in object keys and file names. Restricting them to a portable
  * character set at both ends keeps them from walking out of the bucket prefix or the state directory.
  */
 public final class Names {
@@ -21,6 +21,10 @@ public final class Names {
 
     public static String requireReleaseId(String releaseId) {
         return require(releaseId, "release id");
+    }
+
+    public static String requireChannel(String channel) {
+        return require(channel, "channel");
     }
 
     private static String require(String value, String what) {

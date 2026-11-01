@@ -7,6 +7,7 @@ import io.github.deshark42.modpackupdater.command.Publish;
 import io.github.deshark42.modpackupdater.command.Update;
 import io.github.deshark42.modpackupdater.log.Logging;
 import io.github.deshark42.modpackupdater.model.Names;
+import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -34,10 +35,11 @@ public final class Cli {
             "options: --workspace <dir>   work in this directory instead of the current one",
             "         --tag <tag>         update: repeat to update tags in order; stop on the first failure",
             "         --id <release-id>   update: apply this release (one distinct tag only)",
+            "         --channel <name>    publish/update: select a channel (default latest)",
             "         --cache-max-age-days <days>",
             "                             how long the local blob cache stays usable (default "
                     + Publish.DEFAULT_CACHE_MAX_AGE_DAYS + ")",
-            "         --no-latest         publish: upload the release without updating latest.json");
+            "         --no-latest         publish: update no channel; cannot be combined with --channel");
 
     private Cli() {
     }
@@ -56,7 +58,7 @@ public final class Cli {
         for (int i = 1; i < args.length; i++) {
             String argument = args[i];
             switch (argument) {
-                case "--tag", "--id", "--workspace", "--cache-max-age-days" -> {
+                case "--tag", "--id", "--workspace", "--cache-max-age-days", "--channel" -> {
                     if (i + 1 == args.length) {
                         return usage(err, argument + " needs a value");
                     }
@@ -79,6 +81,7 @@ public final class Cli {
         }
         Path workspace = cwd.resolve(options.getOrDefault("workspace", ".")).toAbsolutePath().normalize();
         String tag = options.get("tag");
+        String channel = options.getOrDefault("channel", ObjectKeys.DEFAULT_CHANNEL);
         String action = null;
         try {
             switch (command) {
@@ -99,6 +102,9 @@ public final class Cli {
                     if (releaseId == null) {
                         return usage(err, "publish needs --id <release-id>");
                     }
+                    if (options.containsKey("channel") && options.containsKey("no-latest")) {
+                        return usage(err, "publish cannot combine --channel with --no-latest");
+                    }
                     int cacheMaxAgeDays = Publish.DEFAULT_CACHE_MAX_AGE_DAYS;
                     if (options.containsKey("cache-max-age-days")) {
                         String value = options.get("cache-max-age-days");
@@ -113,7 +119,8 @@ public final class Cli {
                     }
                     action = "publishing release " + releaseId + " of tag " + tag;
                     Logging.begin(workspace, "publish-" + tag, out, err, clock);
-                    Publish.run(workspace, tag, releaseId, cacheMaxAgeDays, !options.containsKey("no-latest"), clock);
+                    Publish.run(workspace, tag, releaseId, cacheMaxAgeDays,
+                            options.containsKey("no-latest") ? null : channel, clock);
                     return OK;
                 }
                 case "update" -> {
@@ -129,6 +136,7 @@ public final class Cli {
                     }
                     action = "updating tag " + updateTags.iterator().next();
                     Logging.begin(workspace, updateTags.size() == 1 ? "update-" + tag : "update", out, err, clock);
+                    Names.requireChannel(channel);
                     for (String updateTag : updateTags) {
                         action = "updating tag " + updateTag;
                         Names.requireTag(updateTag);
@@ -139,11 +147,14 @@ public final class Cli {
                     for (String updateTag : updateTags) {
                         action = "updating tag " + updateTag;
                         Logging.resetProgress();
-                        Update.run(workspace, updateTag, releaseId, clock);
+                        Update.run(workspace, updateTag, releaseId, channel, clock);
                     }
                     return OK;
                 }
                 case "init" -> {
+                    if (options.containsKey("channel")) {
+                        return usage(err, "init does not take --channel");
+                    }
                     if (options.containsKey("id")) {
                         return usage(err, "init does not take --id");
                     }

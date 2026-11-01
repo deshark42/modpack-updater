@@ -4,11 +4,11 @@ Status: implemented
 
 ## 问题
 
-[发布者工作区](2026-10-13-publisher-workspace.md)与[订阅者工作区](2026-10-14-subscriber-workspace.md)都靠两份 release 清单相减来决定该动哪些路径；更新在下载阶段会读目标路径上的既有文件，但只用于决定跳过哪些文件的下载与复用多少块，不参与路径集合的判断；两边也都要读 latest.json 才知道有没有新版本。这几份要长期共存、可演进的 JSON 里到底写什么，[对象存储布局](2026-10-13-object-storage-layout.md)只定了位置，字段留白。config.json 由发布者与订阅者共用同一份字段定义，也在这里一次定下。
+[发布者工作区](2026-10-13-publisher-workspace.md)与[订阅者工作区](2026-10-14-subscriber-workspace.md)都靠两份 release 清单相减来决定该动哪些路径；更新在下载阶段会读目标路径上的既有文件，但只用于决定跳过哪些文件的下载与复用多少块，不参与路径集合的判断；订阅者通过 channel 指针确定目标版本。这几份要长期共存、可演进的 JSON 里到底写什么，[对象存储布局](2026-10-13-object-storage-layout.md)只定了位置，字段留白。config.json 由发布者与订阅者共用同一份字段定义，也在这里一次定下。
 
 ## 决策
 
-三种 JSON 文件：release 清单（每个 release 一份，写完不变）、latest（每个 tag 一份，唯一可覆写）、config.json（两端各一份）；release 清单还配有强制验证的独立签名，见[发布清单签名](../feature/2026-10-25-ed25519-release-signatures.md)。发布写入顺序与 blob/、index/ 内部布局见[对象存储布局](2026-10-13-object-storage-layout.md)。
+三种 JSON 文件：release 清单（每个 release 一份，写完不变）、channel 指针（每个 tag/channel 一份，是仅有的可覆写对象）、config.json（两端各一份）；release 清单还配有强制验证的独立签名，见[发布清单签名](../feature/2026-10-25-ed25519-release-signatures.md)。发布写入顺序与 blob/、index/ 内部布局见[对象存储布局](2026-10-13-object-storage-layout.md)。
 
 **release 清单** metadata/<tag>/releases/<release_id>.json
 
@@ -32,16 +32,16 @@ Status: implemented
 - 清单不记块与块表的路径：路径由 index_id 与块哈希推导，所以调整 blob/、index/ 内部布局不必重写任何清单。
 - 只记文件：空目录、权限位、符号链接都不进清单。
 - published_at 只作信息，不参与任何判断；tag 与 release_id 在验签后必须与请求身份一致，防止把其他 tag 或版本的有效清单替换进来，认证约束由[发布清单签名](../feature/2026-10-25-ed25519-release-signatures.md)持有。
-- version 是格式版本：清单是 2，latest 与订阅者的 current.json 仍带各自的 version 1。
-- release 清单以 gzip 存放，对象上声明 Content-Encoding: gzip；latest.json 只有几十字节，保持明文。订阅者按响应头解压，没有该头的对象按明文读；两种传输形式都必须通过发布验签，未签名的历史发布需要以新 id 重新发布。
+- version 是格式版本：清单是 2，所有 channel 指针与订阅者的 current.json 仍带各自的 version 1。
+- release 清单以 gzip 存放，对象上声明 Content-Encoding: gzip；channel 指针只有几十字节，保持明文。订阅者按响应头解压，没有该头的对象按明文读；两种传输形式都必须通过发布验签，未签名的历史发布需要以新 id 重新发布。
 
-**latest** metadata/<tag>/latest.json
+**channel 指针** metadata/<tag>/<channel>.json（默认 latest，沿用 metadata/<tag>/latest.json）
 
 ```json
 { "version": 1, "release_id": "2.9.0-RC1" }
 ```
 
-只回答"这个 tag 现在最新是哪个 release"，其余信息一律去 release 清单取：它要足够小，订阅者每次更新都先读它；`update --id` 指定 release 时跳过这次读取。
+只回答"这个 tag 的所选 channel 指向哪个 release"，其余信息一律去 release 清单取：它要足够小，订阅者每次更新都先读所选指针；缺失时失败，不回退到 latest。`update --id` 指定 release 时完全跳过所有 channel 查询，即使同时给了 `--channel`。清单与签名不记录 channel，并由各 channel 共享；channel 只在调用时选择，不写入 config 或本地 current.json，也不新增按 channel 划分的状态目录。
 
 **config.json（发布者与订阅者共用字段定义）**
 
@@ -66,15 +66,15 @@ Status: implemented
 - 连接信息与 S3 访问密钥只从 config.json 读取，工具不看环境变量：少一条取值路径，少一处需要解释的行为。
 - `signing_private_key` 与 `trusted_public_key` 配置本地 PEM 文件路径，不是文件内容或下载 URL；缺失时补上上例的默认路径，但不自动生成或下载密钥。发布私钥和订阅者公钥的角色、位置约束及升级方式见[发布清单签名](../feature/2026-10-25-ed25519-release-signatures.md)。
 - path_style 给 MinIO 与自建端点用，AWS 可省略。
-- prefix 可选，默认空。tag 不进 config，由命令参数给出。
+- prefix 可选，默认空。tag 与 channel 不进 config，由命令参数给出。
 - concurrency 是同时在传的块与块表的数量，默认 8，取值 1–64：块只有几十 KiB，耗时以请求往返为主，4 个并发等不满上行带宽。
 - region、prefix、path_style、concurrency、read_endpoint 都可以整段省掉。工具读到缺字段就把默认值补进文件（保留已有值与不认识的键），read_endpoint 补的是空串，于是早先版本写的 config.json 不必手工迁移；补过之后文件不再被改写。
 
 **取值与字符集**
 
 - 路径是工作区相对的 POSIX 路径，用 / 分隔；拒绝绝对路径、反斜杠与冒号，冗余分隔符及 .、.. 段规范化后不得逃出工作区。首段不得使用更新器保留的 `.modpack-updater` 命名空间，跨平台别名与校验入口见[状态路径保护](../bug-fix/2026-10-25-reserve-updater-state-paths.md)。
-- tag 取 [a-z0-9][a-z0-9._-]*，release_id 取 [A-Za-z0-9][A-Za-z0-9._+-]*。两者都会成为路径段与文件名，字符集之外一律拒绝，否则订阅者拼 <tag>/current.json 时会被路径穿越。
-- release_id 在每个 tag 内唯一，不同 tag 之间互不相干。
+- tag、release_id 与 channel 统一取 `[A-Za-z0-9][A-Za-z0-9._-]*`，最长 120 个字符，区分大小写。它们都会成为路径段与文件名，字符集之外一律拒绝，否则对象键与本地状态路径会被路径穿越。
+- release_id 在每个 tag 内跨 channel 唯一，不同 tag 之间互不相干。
 - 两端遇到不认识的 version 直接报错，不猜着解析。
 
 ## 曾考虑的替代方案
@@ -86,8 +86,8 @@ Status: implemented
 ## 后果
 
 - 内容不变的同一份发布内容（同一份 base/ 与 overlay/）用两个 release_id 各发布一次，两份清单除 release_id 与 published_at 外逐字节一致：序列化确定，不随目录遍历顺序漂移。
-- 订阅者只读 latest.json 就能判断本地是否落后；落后时用本地清单与目标清单相减，不读取任何块即可列出新增、删除、修改三类路径。
-- 遇到不认识的 version、越界的 tag 或 release_id，两端都在动手之前报错退出。
+- 订阅者只读所选 channel 指针就能判断本地是否处于目标版本；落后时用本地清单与目标清单相减，不读取任何块即可列出新增、删除、修改三类路径。
+- 遇到不认识的 version、越界的 tag、release_id 或 channel，两端都在动手之前报错退出。
 - 公开桶无需 S3 访问密钥，私有桶靠 config.json 里的访问密钥完成存储读写；两者都要求发布者使用私钥签署、订阅者使用可信公钥验证。
 - 清单整体进内存：十万级文件的整合包会明显吃内存与解析时间；届时换流式解析即可，格式不必变。
 - published_at 不用于选择新旧版本；签署的 tag 和 release_id 则参与请求身份绑定，不能只凭签名有效就接受其他身份的清单。

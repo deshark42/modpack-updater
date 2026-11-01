@@ -8,8 +8,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * "Which release is current": the remote metadata/<tag>/latest.json and the local
- * .modpack-updater/<tag>/current.json have the same shape.
+ * "Which release is current": remote metadata/&lt;tag&gt;/&lt;channel&gt;.json pointers
+ * (default channel: latest) and local .modpack-updater/&lt;tag&gt;/current.json share
+ * the same shape. Channel selection does not change the local release identity.
  */
 public record Pointer(String releaseId) {
 

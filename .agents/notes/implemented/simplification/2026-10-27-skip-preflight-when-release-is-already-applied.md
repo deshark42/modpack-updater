@@ -29,6 +29,6 @@ Status: implemented
 - 无操作运行不再发现不一致的旧清单：无法读取的 JSON、保留的状态路径、声称拥有更新器的路径、链接等。第一次真正会改动的运行仍会在任何变更前因它失败，因此失败从无操作运行推迟到下一次真实更新；操作者的修复方式不变。
 - 更新器本体与本地信任根的权限边界没有放宽：会变更的运行仍全量预检旧清单与目标清单，信任配置与密钥位置检查保持不变（[更新器保护](../bug-fix/2026-10-26-protect-running-updater-and-trust-root.md)）。
 - `UpdateTest.skipsTheOldManifestPreflightWhenTheLatestReleaseIsAlreadyApplied` 把旧清单篡改为含 256 条填充路径且声称拥有更新器父目录，断言无操作运行只请求 latest、不触碰任何文件、暂存阶段停在 `reading local release pointer`，并记录 `already at release`。`refusesAnOldManifestClaimingTheUpdatersParentBeforeAnyMutation` 只保留 `{deleted, unchanged}` 两个会变更的场景；`readsEveryObjectThroughTheReadEndpointWithoutCredentials` 也断言无操作的阶段列表止于 `reading local release pointer`。`./gradlew test` 全部通过。
-- 无操作运行现在只支付抓取 latest 指针与读取已应用指针的成本，不再解析或遍历任何清单。真实实例副本上的 A/B（同一 NTFS 副本、Zulu 21、`update --tag client --tag i18n`，两个 jar 各 5 次且都是无操作）中，墙上时间中位数从 3571 毫秒降到 1373 毫秒（-62%）：`client` 从 2479 毫秒降到 486 毫秒（-80%，其中旧清单读取 186 毫秒与路径检查 1842 毫秒整体消失），`i18n` 从 356 毫秒降到 216 毫秒（-39%）。省下的是与用户日志中同一段的预检工作；副本页缓存较热，检查耗时比用户日志的 2527 毫秒低。
+- 无操作运行只支付抓取所选 channel 指针（`--id` 时跳过）与读取已应用指针的成本，不再解析或遍历任何清单。真实实例副本上的 A/B（同一 NTFS 副本、Zulu 21、`update --tag client --tag i18n`，两个 jar 各 5 次且都是无操作）中，墙上时间中位数从 3571 毫秒降到 1373 毫秒（-62%）：`client` 从 2479 毫秒降到 486 毫秒（-80%，其中旧清单读取 186 毫秒与路径检查 1842 毫秒整体消失），`i18n` 从 356 毫秒降到 216 毫秒（-39%）。省下的是与用户日志中同一段的预检工作；副本页缓存较热，检查耗时比用户日志的 2527 毫秒低。
 - 剩余的无操作成本不在更新路径上：JVM 启动与退出约 0.7 秒，占候选墙上时间约一半；`latest.json` 的 GET 在 177 至 531 毫秒间波动，属网络侧。两处都要另行处理后才能把无操作更新压到 1 秒以下。
 - 本地旧清单本来就没有验签：验签只针对从存储读取的目标清单，本地清单是更新器自己写下的受信状态；跳过它的读取不减少任何签名验证。

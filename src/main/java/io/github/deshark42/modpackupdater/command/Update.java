@@ -58,7 +58,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Update one tag to the release the bucket says is latest, or to the one named on the command line.
+ * Update one tag to the release selected by a channel, or to an explicitly named release.
  *
  * <p>The run has two phases. The plan is derived from the two manifests alone: it decides which
  * paths change and never looks at the files on disk, so a path both releases agree on is left alone
@@ -86,15 +86,20 @@ public final class Update {
     }
 
     public static void run(Path workspace, String tag, String releaseId, Clock clock) {
-        run(workspace, tag, releaseId, UpdaterProtection.runningUpdater(), clock);
+        run(workspace, tag, releaseId, ObjectKeys.DEFAULT_CHANNEL, clock);
+    }
+
+    public static void run(Path workspace, String tag, String releaseId, String channel, Clock clock) {
+        run(workspace, tag, releaseId, channel, UpdaterProtection.runningUpdater(), clock);
     }
 
     static void run(Path workspace, String tag, String releaseId, Path updater) {
-        run(workspace, tag, releaseId, updater, Clock.systemUTC());
+        run(workspace, tag, releaseId, ObjectKeys.DEFAULT_CHANNEL, updater, Clock.systemUTC());
     }
 
-    private static void run(Path workspace, String tag, String releaseId, Path updater, Clock clock) {
+    private static void run(Path workspace, String tag, String releaseId, String channel, Path updater, Clock clock) {
         Names.requireTag(tag);
+        Names.requireChannel(channel);
         if (releaseId != null) {
             Names.requireReleaseId(releaseId);
         }
@@ -111,15 +116,15 @@ public final class Update {
         LOG.debug("tag {}: initializing object store", tag);
         ObjectReader store = config.readEndpoint() == null ? new S3Store(config, clock) : new S3ReadStore(config);
 
-        // an explicit release id bypasses latest.json entirely, so a pinned update works even while
+        // An explicit release id bypasses all channels, so a pinned update works even while
         // the pointer is missing or names a release the caller does not want
         String targetId = releaseId;
         if (targetId == null) {
-            LOG.debug("tag {}: resolving latest release", tag);
-            String latestKey = ObjectKeys.latest(tag);
-            Pointer latest = Pointer.parse(new String(store.getBytes(latestKey), StandardCharsets.UTF_8),
-                    store.key(latestKey));
-            targetId = latest.releaseId();
+            LOG.debug("tag {}: resolving channel {}", tag, channel);
+            String channelKey = ObjectKeys.channel(tag, channel);
+            Pointer pointer = Pointer.parse(new String(store.getBytes(channelKey), StandardCharsets.UTF_8),
+                    store.key(channelKey));
+            targetId = pointer.releaseId();
         }
 
         // Both manifest preflights share read-only metadata until payload writes begin.

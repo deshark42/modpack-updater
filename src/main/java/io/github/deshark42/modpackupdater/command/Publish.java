@@ -46,7 +46,7 @@ import org.slf4j.LoggerFactory;
  * Publish one complete release of a tag: merge the tag's base tree with its overlay, drop what
  * remove.txt takes out of base, split the files into content-defined chunks, upload the chunks and
  * chunk tables the bucket does not have yet, then write the release manifest, its Ed25519 signature,
- * and optionally the latest pointer.
+ * and optionally a channel pointer.
  *
  * <p>The console shows the milestones of the run; the transcript keeps the per-file detail as well.
  */
@@ -74,20 +74,28 @@ public final class Publish {
 
     public static void run(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
             boolean updateLatest, Clock clock) {
+        run(workspace, tag, releaseId, cacheMaxAgeDays, updateLatest ? ObjectKeys.DEFAULT_CHANNEL : null, clock);
+    }
+
+    public static void run(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
+            String channel, Clock clock) {
         Names.requireTag(tag);
         Names.requireReleaseId(releaseId);
+        if (channel != null) {
+            Names.requireChannel(channel);
+        }
         if (cacheMaxAgeDays < 1) {
             throw new UserError("cache max age must be at least 1 day: " + cacheMaxAgeDays);
         }
         long startedAt = System.nanoTime();
         LOG.info("publishing release {} of tag {}", releaseId, tag);
         try (BaseSource source = BaseSource.open(workspace, tag)) {
-            publish(workspace, tag, releaseId, cacheMaxAgeDays, updateLatest, source, startedAt, clock);
+            publish(workspace, tag, releaseId, cacheMaxAgeDays, channel, source, startedAt, clock);
         }
     }
 
     private static void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
-            boolean updateLatest, BaseSource source, long startedAt, Clock clock) {
+            String channel, BaseSource source, long startedAt, Clock clock) {
         Path overlay = Layout.overlayDir(workspace, tag);
         String baseName = source.inputs().stream().map(input -> Text.relativeTo(workspace, input))
                 .collect(Collectors.joining(" + "));
@@ -141,7 +149,7 @@ public final class Publish {
         // Reject reserved paths before any content or metadata can reach the bucket.
         files.keySet().forEach(SafePath::require);
         String releaseKey = ObjectKeys.release(tag, releaseId);
-        String latestKey = ObjectKeys.latest(tag);
+        String channelKey = channel == null ? null : ObjectKeys.channel(tag, channel);
 
         Config config = Workspace.load(workspace);
         PrivateKey signingKey = ReleaseSigning.privateKey(config.privateKeyFile(workspace));
@@ -246,12 +254,12 @@ public final class Publish {
         String signatureKey = ObjectKeys.signature(tag, releaseId);
         store.putBytes(signatureKey, signature);
         LOG.info("wrote {}: {}", signatureKey, Sizes.human(signature.length));
-        if (updateLatest) {
-            LOG.info("wrote {}: {}", latestKey, write(store, latestKey, new Pointer(releaseId).toJson()));
+        if (channel != null) {
+            LOG.info("wrote {}: {}", channelKey, write(store, channelKey, new Pointer(releaseId).toJson()));
         }
         LOG.info(uploadedSummary(uploading.size(), skipped, uploadedBytes.get(), uploadNanos, toUpload));
         LOG.info("published release {} of tag {} {} in {}", releaseId, tag,
-                updateLatest ? "as the latest" : "without updating latest",
+                channel == null ? "without updating latest or any other channel" : "to channel " + channel,
                 Text.elapsed(System.nanoTime() - startedAt));
     }
 

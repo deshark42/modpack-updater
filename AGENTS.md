@@ -7,7 +7,8 @@ Agent Notes are agent-written RFCs that record the rationale and the rejected al
 ## Vocabulary
 
 - **tag** — one publish stream (for example `client` or `server`); tags evolve independently.
-- **release** — one immutable version of a tag, named by `release_id`.
+- **release** — one immutable version of a tag, named by `release_id`, unique across that tag’s channels.
+- **channel** — an invocation-selected pointer to a tag’s release (default `latest`), not a separate release or local-state identity.
 - **manifest** — a release's complete path list, each file with its hash, size and chunk-table id.
 - **chunk** — one content-defined slice of a file, addressed by the sha256 of its bytes.
 - **chunk table** (`index`) — the ordered chunk list of one file, addressed by the sha256 of the table bytes.
@@ -51,14 +52,16 @@ Usage:
 ```sh
 java -jar build/libs/modpack-updater.jar init [--tag <tag>]
 java -jar build/libs/modpack-updater.jar keygen
-java -jar build/libs/modpack-updater.jar publish --tag <tag> --id <release-id> [--no-latest]
-java -jar build/libs/modpack-updater.jar update --tag <tag> [--id <release-id>]
-java -jar build/libs/modpack-updater.jar update --tag <tag> --tag <tag> [--tag <tag> ...]
+java -jar build/libs/modpack-updater.jar publish --tag <tag> --id <release-id> [--channel <name> | --no-latest]
+java -jar build/libs/modpack-updater.jar update --tag <tag> [--channel <name>] [--id <release-id>]
+java -jar build/libs/modpack-updater.jar update --tag <tag> --tag <tag> [--tag <tag> ...] [--channel <name>]
 ```
 
-All commands take `--workspace`; `--cache-max-age-days` and the valueless `--no-latest` flag belong to `publish`. Publishing updates latest by default; `--no-latest` uploads a complete signed release without creating or changing the pointer, for testing via `update --id`. The version is not part of the artifact name: `./gradlew build -PappVersion=<version>` (default `0.1.0`) writes it into the jar manifest as `Implementation-Version`.
+All commands take `--workspace`; `--cache-max-age-days` and the valueless `--no-latest` flag belong to `publish`. `publish` and `update` select `latest` by default or an arbitrary `--channel <name>`. Tags, release ids and channels use `[A-Za-z0-9][A-Za-z0-9._-]*`, at most 120 characters, case-sensitive. Publishing advances only the selected `metadata/<tag>/<channel>.json` pointer, after the complete manifest and signature; `latest` keeps its existing path with no migration. Release metadata and signatures are immutable and shared across channels. `--no-latest` uploads a pointerless signed release and cannot be combined with an explicit `--channel`. Channel selection is invocation-only: no persisted config or local current-state identity changes. Beta is not private or a security boundary; there is no promote command. The version is not part of the artifact name: `./gradlew build -PappVersion=<version>` (default `0.1.0`) writes it into the jar manifest as `Implementation-Version`.
 
-For `update`, repeated `--tag` values run sequentially in first-occurrence order, with duplicates skipped. The first failure stops the batch; earlier successful tags are not rolled back. `--id` is only allowed with one distinct tag. This is not a merged subscription or an overlay: tag payload paths must not conflict, including file/directory prefixes.
+For example: `publish --tag client --id 1.1.0-beta1 --channel beta`, then `update --tag client --channel beta`.
+
+For `update`, `--id` bypasses all channel lookups even when `--channel` is supplied; otherwise a missing selected channel fails without falling back to latest. Repeated `--tag` values share the selected channel and run sequentially in first-occurrence order, with duplicates skipped; all tag/id/channel arguments are validated before batch mutations. The first failure stops the batch; earlier successful tags are not rolled back. `--id` is only allowed with one distinct tag. This is not a merged subscription or an overlay: tag payload paths must not conflict, including file/directory prefixes.
 
 Publisher setup, trusted public key distribution and mandatory release verification are documented in [README.md](README.md).
 

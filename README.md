@@ -83,21 +83,32 @@ one_path/
 java -jar modpack-updater.jar publish --tag client --id 1.0.0
 ```
 
-每个 tag 的版本号不可重复使用。发布自动签署清单，依次上传块、块表、清单、签名，默认最后更新 `latest.json`。签名上传失败时 latest 保持旧版本；若清单已经写入，重试需使用新的版本号。
+每个 tag 的版本号跨所有 channel 唯一，不可重复使用。发布自动签署清单，依次上传块、块表、清单、签名，完整上传后才写所选 channel 的指针；默认是 `metadata/<tag>/latest.json`，原有部署无需迁移。签名上传失败时所有指针保持不变；若清单已经写入，重试需使用新的版本号。
 
-重大改动需要先测试时，发布命令加上 `--no-latest`，只上传本次 release，不创建或改写 `latest.json`：
+### 测试 channel 与无指针发布
+
+`publish` 和 `update` 均可用 `--channel <name>` 选择 channel，省略时为 `latest`。例如只推进 beta，不影响 latest：
+
+```sh
+java -jar modpack-updater.jar publish --tag client --id 1.1.0-beta1 --channel beta
+java -jar modpack-updater.jar update --tag client --channel beta
+```
+
+指针位于 `metadata/<tag>/<channel>.json`；清单与签名仍在同一套 `releases/` 下，不按 channel 复制。channel 名区分大小写，与 tag、版本号采用同一可移植规则：`[A-Za-z0-9][A-Za-z0-9._-]*`，最长 120 个字符。channel 只对本次调用生效，不写入配置，也不改变本地按 tag 记录的当前版本身份；切换 channel 仍更新同一个实例。所选 channel 不存在时更新失败，不回退到 latest。beta 或无指针发布都不是私密发布或安全边界，有读取权限的人仍可按版本号获取内容。
+
+若不希望推进任何 channel，使用无值开关 `--no-latest`，只上传本次 release，不创建或改写任何指针；它不能与显式 `--channel`（包括 `--channel latest`）并用：
 
 ```sh
 java -jar modpack-updater.jar publish --tag client --id 1.1.0-RC1 --no-latest
 ```
 
-普通订阅者执行 `update --tag client` 时仍获取原 latest；测试者可显式指定版本，照常验签并更新：
+普通订阅者执行 `update --tag client` 时仍获取原 latest；测试者可显式指定版本，完全绕过所有 channel 指针查询（即使同时传入 `--channel`），照常验签并更新：
 
 ```sh
 java -jar modpack-updater.jar update --tag client --id 1.1.0-RC1
 ```
 
-`--no-latest` 只对本次 `publish` 生效，不接布尔值，也不根据版本号是否带 `RC` 等后缀自动判断。它不是私密发布：有读取权限的人仍可按版本号获取内容。首次发布若跳过 latest，普通更新没有 latest 可读，须使用 `--id`。测试版仍占用该 tag 的版本号，不能用相同 id 再发布来更新 latest；测试通过后需使用新版本号正常发布。
+`--no-latest` 只对本次 `publish` 生效，不接布尔值，也不根据版本号是否带 `RC` 等后缀自动判断。首次发布若未创建任何指针，须使用 `--id` 更新。测试版仍占用该 tag 的版本号，不能用相同 id 再发布来推进 latest；工具没有 promote 命令，测试通过后需使用新版本号正常发布。
 
 ## 订阅者首次配置
 
@@ -122,13 +133,13 @@ java -jar modpack-updater.jar update --tag client
 
 ### 一次更新多个 tag
 
-重复指定 `--tag`，即可在一次运行中依次更新多个 tag，各自读取自己的最新 release：
+重复指定 `--tag`，即可在一次运行中依次更新多个 tag，各自读取所选 channel（默认 latest）的 release；一次调用中的所有 tag 共用同一个 `--channel`：
 
 ```sh
 java -jar modpack-updater.jar update --tag common --tag client
 ```
 
-按参数顺序更新，重复的 tag 只处理第一次。任一 tag 失败就立即停止，不再更新后续 tag，命令返回非零退出码；之前已经成功的 tag 不回滚。修复失败原因后可重新执行同一命令，已经处于目标 release 的 tag 会跳过。
+tag、版本号与 channel 参数在批次开始前统一校验，非法参数不会先更新前面的 tag。按参数顺序更新，重复的 tag 只处理第一次。任一 tag 失败就立即停止，不再更新后续 tag，命令返回非零退出码；之前已经成功的 tag 不回滚。修复失败原因后可重新执行同一命令，已经处于目标 release 的 tag 会跳过。
 
 这是顺序批量更新，不是跨 tag 事务或合并订阅。各 tag 管理的文件路径应互不冲突，包括一个 tag 的文件不能占用另一个 tag 所需的目录路径；不保证后面的 tag 始终覆盖前面的 tag，也不会协调跨 tag 删除。一次更新多个不同 tag 时不能使用 `--id`；需要固定版本时，仍分别使用单 tag 命令。
 
@@ -146,7 +157,7 @@ java -jar modpack-updater.jar update --tag common --tag client
 java -jar modpack-updater.jar update --tag client --id 1.0.0
 ```
 
-签名证明发布授权与内容完整性，不证明模组本身安全，也不提供更新的新鲜度保证：`latest.json` 未签名，存储或 CDN 仍可隐藏新版本、重放合法旧版本或拒绝服务。本实现没有防回退序号。更换公钥需要操作者通过可信渠道手工部署；更换后旧密钥签署的历史版本不能再被接受。
+签名证明发布授权与内容完整性，不证明模组本身安全，也不提供更新的新鲜度保证：所有 channel 指针均未签名，存储或 CDN 仍可隐藏新版本、重放合法旧版本或拒绝服务。本实现没有防回退序号。更换公钥需要操作者通过可信渠道手工部署；更换后旧密钥签署的历史版本不能再被接受。
 
 **release 无权改写更新器或本地信任配置，即使签名有效也不例外，且没有关闭此保护的选项。** 整个 `.modpack-updater/` 命名空间（含配置、公钥、私钥与内部状态）不能出现在发布清单中。`update` 还根据实际加载的代码位置保护当前更新器，不依赖 JAR 文件名；重命名或放进子目录仍受保护，直接从 classpath 运行时则保护对应的 classes 目录。清单路径与更新器相同、是它的父路径或子路径，以及已有文件与其具有相同文件身份的硬链接，都会使当前 tag 失败。更新器升级和可信公钥更换必须由操作者通过独立可信渠道完成。
 

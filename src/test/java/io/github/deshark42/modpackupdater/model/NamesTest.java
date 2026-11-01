@@ -17,6 +17,48 @@ class NamesTest {
         assertEquals(name, Names.requireTag(name));
     }
 
+    @ParameterizedTest(name = "{0} is a portable channel")
+    @ValueSource(strings = {"a", "latest", "beta", "A0._-", "preview.json"})
+    void portableChannelNamesRemainUnchanged(String name) {
+        assertEquals(name, Names.requireChannel(name));
+    }
+
+    @Test
+    void theLongestAllowedChannelRemainsUnchanged() {
+        String longest = "a".repeat(120);
+
+        assertEquals(longest, Names.requireChannel(longest));
+    }
+
+    @Test
+    void aNullChannelIsRejected() {
+        UserError error = assertThrows(UserError.class, () -> Names.requireChannel(null));
+
+        assertTrue(error.getMessage().contains("channel must not be empty"), error.getMessage());
+    }
+
+    @Test
+    void anEmptyChannelIsRejected() {
+        UserError error = assertThrows(UserError.class, () -> Names.requireChannel(""));
+
+        assertTrue(error.getMessage().contains("channel must not be empty"), error.getMessage());
+    }
+
+    @Test
+    void aChannelLongerThanTheLimitIsRejected() {
+        UserError error = assertThrows(UserError.class, () -> Names.requireChannel("a".repeat(121)));
+
+        assertTrue(error.getMessage().contains("channel is longer than 120 characters"), error.getMessage());
+    }
+
+    @ParameterizedTest(name = "[{0}] is not a portable channel name")
+    @ValueSource(strings = {"../x", "a/b", "a\\b", ".hidden", "-lead", "_lead", "a b", "版本", "a:b"})
+    void unsafeChannelNamesAreRejected(String name) {
+        UserError error = assertThrows(UserError.class, () -> Names.requireChannel(name));
+
+        assertTrue(error.getMessage().startsWith("invalid channel"), error.getMessage());
+    }
+
     @Test
     void aPortableReleaseIdRemainsUnchanged() {
         assertEquals("2.9.0-RC1", Names.requireReleaseId("2.9.0-RC1"));

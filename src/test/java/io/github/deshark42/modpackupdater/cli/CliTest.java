@@ -61,8 +61,13 @@ class CliTest {
 
     private void publish(Path workspace, String tag, String releaseId, String path, String content)
             throws IOException {
+        publish(workspace, tag, releaseId, path, content, ObjectKeys.DEFAULT_CHANNEL);
+    }
+
+    private void publish(Path workspace, String tag, String releaseId, String path, String content, String channel)
+            throws IOException {
         TestWorkspace.base(workspace, tag, path, content);
-        Publish.run(workspace, tag, releaseId, Publish.DEFAULT_CACHE_MAX_AGE_DAYS, CLOCK);
+        Publish.run(workspace, tag, releaseId, Publish.DEFAULT_CACHE_MAX_AGE_DAYS, channel, CLOCK);
     }
 
     private static String get(String objectKey) {
@@ -88,6 +93,8 @@ class CliTest {
                         List.of("update", "--tag", "common", "--tag", "../client")),
                 Arguments.of("multiple tags with a pinned release", Cli.USAGE_ERROR, "--id",
                         List.of("update", "--tag", "common", "--tag", TAG, "--id", "1")),
+                Arguments.of("invalid selected channel", Cli.FAILURE, "invalid channel",
+                        List.of("update", "--tag", "common", "--tag", TAG, "--channel", "../beta")),
                 Arguments.of("later tag without a value", Cli.USAGE_ERROR, "needs a value",
                         List.of("update", "--tag", "common", "--tag")));
     }
@@ -110,6 +117,13 @@ class CliTest {
                         List.of("keygen", "--no-latest")),
                 Arguments.of("a boolean value after --no-latest", "unknown option: false",
                         List.of("publish", "--tag", TAG, "--id", "test", "--no-latest", "false")),
+                Arguments.of("init with --channel", "init does not take --channel",
+                        List.of("init", "--channel", "beta")),
+                Arguments.of("keygen with --channel", "keygen only takes --workspace",
+                        List.of("keygen", "--channel", "beta")),
+                Arguments.of("channel without a value", "needs a value", List.of("update", "--tag", TAG, "--channel")),
+                Arguments.of("channel combined with --no-latest", "cannot combine",
+                        List.of("publish", "--tag", TAG, "--id", "1", "--channel", "beta", "--no-latest")),
                 Arguments.of("option without a value", "needs a value", List.of("update", "--tag")));
     }
 
@@ -168,26 +182,32 @@ class CliTest {
         assertUsage(cwd, fragment, args.toArray(String[]::new));
     }
 
-    @Test
-    void aBatchUpdatesEachDistinctTagInFirstOccurrenceOrder(@TempDir Path root) throws IOException {
+    @ParameterizedTest(name = "batch channel {0}")
+    @ValueSource(strings = {"latest", "beta", "nightly"})
+    void aBatchUpdatesEachDistinctTagOnTheSelectedChannelInFirstOccurrenceOrder(String channel,
+            @TempDir Path root) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             Path publisher = root.resolve("publisher");
             TestWorkspace.configure(publisher, s3);
-            publish(publisher, "common", "common-2", "common.txt", "common");
-            publish(publisher, TAG, "client-1", "client.txt", "client");
+            publish(publisher, "common", "common-2", "common.txt", "common", channel);
+            publish(publisher, TAG, "client-1", "client.txt", "client", channel);
             Path player = root.resolve("player");
             TestWorkspace.configure(player, s3);
             int before = s3.requests().size();
 
-            assertEquals(Cli.OK, run(player, "update", "--tag", "common", "--tag", TAG, "--tag", "common"),
+            assertEquals(Cli.OK, run(player, "update", "--tag", "common", "--tag", TAG, "--tag", "common",
+                    "--channel", channel),
                     logs.errText());
 
             assertEquals("common-2", Pointer.read(Layout.currentFile(player, "common")).releaseId());
             assertEquals("client-1", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
             assertEquals("common", Files.readString(player.resolve("common.txt")));
             assertEquals("client", Files.readString(player.resolve("client.txt")));
-            assertEquals(List.of(get(ObjectKeys.latest("common")), get(ObjectKeys.latest(TAG))),
-                    latestRequests(s3, before), "each distinct tag reads its own latest pointer once, in input order");
+            assertEquals(List.of(get(ObjectKeys.channel("common", channel)), get(ObjectKeys.channel(TAG, channel))),
+                    requestsSince(s3, before).stream()
+                            .filter(request -> request.equals(get(ObjectKeys.channel("common", channel)))
+                                    || request.equals(get(ObjectKeys.channel(TAG, channel))))
+                            .toList(), "each distinct tag reads its selected channel once, in input order");
             assertEquals("", logs.errText());
         }
     }
@@ -265,10 +285,12 @@ class CliTest {
             int before = s3.requests().size();
 
             assertEquals(Cli.OK, run(root, "update", "--tag", TAG, "--tag", TAG, "--id", "1",
-                    "--workspace", player.toString()), logs.errText());
+                    "--workspace", player.toString(), "--channel", "missing"), logs.errText());
 
             assertEquals("1", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
             assertEquals("old client", Files.readString(player.resolve("client.txt")));
+            assertFalse(requestsSince(s3, before).contains(get(ObjectKeys.channel(TAG, "missing"))),
+                    "an explicit id bypasses even a nonexistent selected channel");
             assertEquals(List.of(), latestRequests(s3, before), "a pinned update never reads latest");
         }
     }
@@ -345,6 +367,59 @@ class CliTest {
             assertEquals(Cli.OK, run(player, "update", "--tag", TAG, "--id", "test"), logs.errText());
             assertEquals("test", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
             assertEquals("test content", Files.readString(player.resolve("client.txt")));
+        }
+    }
+
+    @Test
+    void aNamedChannelIsPublishedAndSubscribedIndependentlyOfLatest(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "stable", "client.txt", "stable content");
+            TestWorkspace.base(publisher, TAG, "client.txt", "beta content");
+
+            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "candidate",
+                    "--channel", "nightly", "--channel", "beta"), logs.errText());
+
+            assertEquals("candidate", Pointer.parse(s3.text(TestWorkspace.bucketPath(ObjectKeys.channel(TAG, "beta"))),
+                    "beta").releaseId());
+            assertNull(s3.object(TestWorkspace.bucketPath(ObjectKeys.channel(TAG, "nightly"))),
+                    "the last scalar channel option wins");
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            int before = s3.requests().size();
+
+            assertEquals(Cli.OK, run(player, "update", "--tag", TAG, "--channel", "beta"), logs.errText());
+
+            assertEquals("candidate", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
+            assertEquals("beta content", Files.readString(player.resolve("client.txt")));
+            assertFalse(requestsSince(s3, before).contains(get(ObjectKeys.latest(TAG))),
+                    "the selected channel does not consult latest");
+            assertTrue(logs.outText().contains("verified the release signature"), logs.outText());
+        }
+    }
+
+    @Test
+    void aMissingChannelFailsWithoutFallingBackToLatest(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "stable", "client.txt", "stable content");
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            TestFiles.write(player, "client.txt", "local content");
+            int before = s3.requests().size();
+
+            assertEquals(Cli.FAILURE, run(player, "update", "--tag", TAG, "--channel", "beta"), logs.errText());
+
+            assertTrue(logs.errText().contains("beta.json"), logs.errText());
+            assertEquals(List.of(get(ObjectKeys.channel(TAG, "beta"))), requestsSince(s3, before));
+            assertEquals("local content", Files.readString(player.resolve("client.txt")));
+            assertFalse(Files.exists(Layout.currentFile(player, TAG)));
+            assertFalse(Files.exists(Layout.releaseFile(player, TAG, "stable")));
+            assertFalse(Files.exists(Layout.backupsDir(player, TAG)));
+            assertFalse(Files.exists(Layout.blobTempDir(player)));
+            assertFalse(Files.exists(Layout.fileTempDir(player)));
         }
     }
 

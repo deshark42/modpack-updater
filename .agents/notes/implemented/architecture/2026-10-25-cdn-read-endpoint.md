@@ -10,7 +10,7 @@ Status: implemented
 
 - **地址拼不出来。** CDN 一般把桶挂在自己的主机名根下（`https://cdn.example.com/<key>`），或挂在某个子路径下；`endpoint` 只接受不带路径的主机，地址构造又总会把 `bucket` 插进主机名或路径，于是没有任何配置能拼出这种 URL。
 - **签名过不了边。** 签名针对的是客户端请求的那台主机与那组头；CDN 转发后，源站按它收到的 `Host` 与头重新构造规范请求，签名是否仍然有效取决于 CDN 是否改写 `Host`、是否原样转发签名头。很多 CDN 还拒绝缓存带 `Authorization` 的响应，签名本身就让缓存失去意义。
-- **缓存语义是空的。** `latest.json` 是唯一可覆写的对象：不带 `--id` 时，update 的第一件事就是读它；没有 `Cache-Control` 时 CDN 按自己的默认 TTL 缓存它，订阅者会一直看到旧 release。反过来，只增不改的块、块表与 release 清单没有任何缓存指示，CDN 对它们只能用默认策略，最该省的源站流量省不下来。
+- **缓存语义是空的。** channel 指针（默认 `latest.json`）是仅有的可覆写对象：不带 `--id` 时，update 的第一件事就是读所选指针；没有 `Cache-Control` 时 CDN 按自己的默认 TTL 缓存它，订阅者会一直看到旧 release。反过来，只增不改的块、块表与 release 清单没有任何缓存指示，CDN 对它们只能用默认策略，最该省的源站流量省不下来。
 
 工具把缓存与一致性整个交给部署方，但部署方手里没有旋钮：工具既拼不出 CDN 的地址，也不在写入时声明哪个对象可变、哪个不可变。部署只能靠每条 CDN 规则去猜对象语义，猜错的表现就是更新卡在旧版本，或者 CDN 形同虚设。目标是在不改变写侧的前提下，把「读走哪条连接」与「每个对象能缓存多久」变成 config 与对象本身的事实。
 
@@ -46,8 +46,8 @@ config.json 增加可选字段 `read_endpoint`：订阅者读取对象的基础 
 
 publish 在每个 PUT 上带 `Cache-Control`：
 
-- `metadata/<tag>/latest.json`：`no-store`。唯一可覆写的对象，任何一层缓存都不许存。
-- `blob/`、`index/`、`metadata/<tag>/releases/<id>.json`：`public, max-age=31536000, immutable`。它们只增不改不删：块与块表按内容哈希寻址；release 清单不可变的前提是 publish 对已存在的 release_id 直接报错（`Publish.java:119-122`）、从不改写已发布的内容，未来若允许改写某个 release，这一条必须同步收紧。
+- `metadata/<tag>/<channel>.json`：`no-store`。channel 指针是仅有的可覆写对象，默认 latest 仍在原位置，任何一层缓存都不许存。
+- `blob/`、`index/`、`metadata/<tag>/releases/<id>.json` 及相邻签名：`public, max-age=31536000, immutable`。它们只增不改不删：块与块表按内容哈希寻址；release 清单不可变的前提是 publish 对已存在的 release_id 直接报错、从不改写已发布的内容，未来若允许改写某个 release，这一条必须同步收紧。
 - 缓存语义由对象种类决定，`ObjectKeys.cacheControl` 按键种类给出一个显式的「种类 → 头」映射：未列出的种类不带缓存头，不得默认 `immutable`；新增对象种类时必须显式决定缓存语义。
 - 这个头与对象一起进 SigV4 签名：`cache-control` 出现在 PUT 的 `SignedHeaders` 里，源站不会收到一个未签名却生效的缓存指令。
 
@@ -57,7 +57,7 @@ publish 在每个 PUT 上带 `Cache-Control`：
 
 ### 读取路径
 
-`Update` 的全部读取——latest、release 清单、块表、块——从按 `read_endpoint` 构造的读连接发出；本地状态（`current.json`、`releases/` 下的清单、`backup/`）不变。差集、复用、拼装、提交顺序都不动。
+`Update` 的全部读取——所选 channel 指针、release 清单及签名、块表、块——从按 `read_endpoint` 构造的读连接发出；本地状态（`current.json`、`releases/` 下的清单、`backup/`）不变。差集、复用、拼装、提交顺序都不动。
 
 实现上把原来 `S3Store` 里「对象键 → URI」与「请求怎么发」分开：`ObjectReader` 是读侧接口（`key`、`getBytes`、`download`）；`S3Connection` 抽象基类承担两者共用的部分——地址拼接、HTTP 客户端与超时、不跟随重定向、gzip 解压、错误映射、原子落盘；`S3Store` 成为写侧子类（`bucket`/`path_style` 寻址、签名、PUT 与 HEAD、缓存头），`S3ReadStore` 成为读侧子类（`read_endpoint` 加对象键、匿名 GET、`Accept-Encoding: identity`，不提供 HEAD 或 PUT）。`Update` 按 `readEndpoint` 是否为 `null` 选实现，写侧代码路径与请求逐字不变。
 
@@ -111,11 +111,11 @@ publish 在每个 PUT 上带 `Cache-Control`：
 
 ## 后果
 
-- 收益：CDN 挡在桶前的部署第一次能表达——读地址可以指向 CDN 的主机根或子路径，公开边（OAI/OAC 回源、桶仍私有）的订阅者不必也不需要源站凭证；不可变对象可以长缓存，源站流量随订阅者数量摊薄；latest 用 `no-store` 保证每次 update 都看到当前指针。
-- 代价：`no-store` 让每次 update 都向源站取一次 `latest.json`，这是为指针新鲜付的固定成本。
+- 收益：CDN 挡在桶前的部署第一次能表达——读地址可以指向 CDN 的主机根或子路径，公开边（OAI/OAC 回源、桶仍私有）的订阅者不必也不需要源站凭证；不可变对象可以长缓存，源站流量随订阅者数量摊薄；所有 channel 指针用 `no-store` 避免因缓存而看不到当前指针。
+- 代价：`no-store` 让每次未指定 `--id` 的 update 都向源站取一次所选 channel 指针，这是为指针新鲜付的固定成本。
 - CDN 不认 `no-store`、或部署方给 `metadata/` 前缀加了强制 TTL，订阅者会卡在旧 release，客户端无法发现或纠正。缓解：升级后清一次 `metadata/` 缓存，部署侧明确「不要覆盖源站 TTL」；最坏情况下，问题也从「每个部署自己发明规则」变成「别覆盖一个显式的头」。
 - 读 URL 匿名可读：拿到 URL 的人都能读 release 与块，访问控制全交给 CDN；私有桶加私有 CDN（需要 CDN 侧签名）不在支持范围。这与公开桶的既有取舍同向：把访问控制交给存储或部署方。
-- 改动前写入的不可变对象没有 `Cache-Control`，且内容去重不会重新 PUT 它们，CDN 对它们只能用默认策略；正确性不受影响。latest 在未指定 `--no-latest` 的发布中重写，升级后第一次正常发布就带上新头。
+- 改动前写入的不可变对象没有 `Cache-Control`，且内容去重不会重新 PUT 它们，CDN 对它们只能用默认策略；正确性不受影响。所选 channel 指针在未指定 `--no-latest` 的发布中重写，该指针在升级后首次发布时就带上新头，其他 channel 不受影响。
 - 块下载对 `Content-Encoding` 没有处理：CDN 若对 `blob/` 或 `index/` 做内容转码，读侧会明确报错（不会静默写坏文件），但订阅者会卡住；部署侧要禁止全部前缀的转码，而不只是 `metadata/`。
 - `read_endpoint` 与写侧必须指向同一个桶的同一个 `prefix`，工具无法验证。配错在启动时发现不了，表现为 404 或哈希校验失败；这是有意接受的代价，自动探测会引入额外读请求与新的失败模式。
 - 读侧沿用不跟随重定向的客户端：会重定向的 CDN（URL 规范化、http→https）让请求直接失败，而不是悄悄多一跳；部署侧要保证读地址无重定向。
