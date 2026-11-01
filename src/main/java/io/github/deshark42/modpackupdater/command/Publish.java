@@ -46,7 +46,7 @@ import org.slf4j.LoggerFactory;
  * Publish one complete release of a tag: merge the tag's base tree with its overlay, drop what
  * remove.txt takes out of base, split the files into content-defined chunks, upload the chunks and
  * chunk tables the bucket does not have yet, then write the release manifest, its Ed25519 signature,
- * and finally the latest pointer.
+ * and optionally the latest pointer.
  *
  * <p>The console shows the milestones of the run; the transcript keeps the per-file detail as well.
  */
@@ -69,6 +69,11 @@ public final class Publish {
     }
 
     public static void run(Path workspace, String tag, String releaseId, int cacheMaxAgeDays, Clock clock) {
+        run(workspace, tag, releaseId, cacheMaxAgeDays, true, clock);
+    }
+
+    public static void run(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
+            boolean updateLatest, Clock clock) {
         Names.requireTag(tag);
         Names.requireReleaseId(releaseId);
         if (cacheMaxAgeDays < 1) {
@@ -77,12 +82,12 @@ public final class Publish {
         long startedAt = System.nanoTime();
         LOG.info("publishing release {} of tag {}", releaseId, tag);
         try (BaseSource source = BaseSource.open(workspace, tag)) {
-            publish(workspace, tag, releaseId, cacheMaxAgeDays, source, startedAt, clock);
+            publish(workspace, tag, releaseId, cacheMaxAgeDays, updateLatest, source, startedAt, clock);
         }
     }
 
     private static void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
-            BaseSource source, long startedAt, Clock clock) {
+            boolean updateLatest, BaseSource source, long startedAt, Clock clock) {
         Path overlay = Layout.overlayDir(workspace, tag);
         String baseName = source.inputs().stream().map(input -> Text.relativeTo(workspace, input))
                 .collect(Collectors.joining(" + "));
@@ -241,9 +246,12 @@ public final class Publish {
         String signatureKey = ObjectKeys.signature(tag, releaseId);
         store.putBytes(signatureKey, signature);
         LOG.info("wrote {}: {}", signatureKey, Sizes.human(signature.length));
-        LOG.info("wrote {}: {}", latestKey, write(store, latestKey, new Pointer(releaseId).toJson()));
+        if (updateLatest) {
+            LOG.info("wrote {}: {}", latestKey, write(store, latestKey, new Pointer(releaseId).toJson()));
+        }
         LOG.info(uploadedSummary(uploading.size(), skipped, uploadedBytes.get(), uploadNanos, toUpload));
-        LOG.info("published release {} of tag {} as the latest in {}", releaseId, tag,
+        LOG.info("published release {} of tag {} {} in {}", releaseId, tag,
+                updateLatest ? "as the latest" : "without updating latest",
                 Text.elapsed(System.nanoTime() - startedAt));
     }
 

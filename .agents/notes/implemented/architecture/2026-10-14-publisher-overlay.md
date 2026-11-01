@@ -17,7 +17,7 @@ Status: implemented
 
 本记录中的 base 指由 base/ 与 base_pack/ 无冲突合成的逻辑路径空间，而非仅指物理 base/ 目录。`<tag>/` 下与它们并列的两个发布侧输入是 `overlay/`（发布者自己的文件：对 base/ 的新增或覆盖）与 `remove.txt`（从 base/ 中剔除的路径，一行一条）；它们在发布者工作区里的位置见[发布者工作区与发布命令](2026-10-13-publisher-workspace.md)。
 
-publish 在扫描阶段把三者合成一份**有效清单**，其余流程（块去重、上传、写 release 清单、覆写 latest）不变。有效清单 = base/ 的全部文件 + overlay/ 路径的文件（增加或覆盖），再去掉 remove.txt 命中的 base/ 文件。
+publish 在扫描阶段把三者合成一份**有效清单**，其余流程（块去重、上传、写 release 清单与签名、按发布选项决定是否覆写 latest）不变。有效清单 = base/ 的全部文件 + overlay/ 路径的文件（增加或覆盖），再去掉 remove.txt 命中的 base/ 文件。
 
 overlay/ 与 base/ 共用同一路径空间：`overlay/.minecraft/mods/example-mod.jar` 对应的清单路径是 `.minecraft/mods/example-mod.jar`，与 base/ 下的同名路径指同一个位置。overlay/ 与 remove.txt 自身可以不存在，缺失时按空处理。
 

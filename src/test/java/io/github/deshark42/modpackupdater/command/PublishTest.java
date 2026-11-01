@@ -142,7 +142,56 @@ class PublishTest {
     }
 
     @Test
+    void aPublishWithoutLatestDoesNotCreateAPointer(@TempDir Path workspace) throws IOException {
+        assertPublishWithoutLatest(workspace, false);
+    }
+
+    @Test
+    void aPublishWithoutLatestPreservesTheExistingPointer(@TempDir Path workspace) throws IOException {
+        assertPublishWithoutLatest(workspace, true);
+    }
+
+    private static void assertPublishWithoutLatest(Path workspace, boolean hasLatest) throws IOException {
+        try (FakeS3 s3 = new FakeS3(); TestLogs logs = new TestLogs()) {
+            TestWorkspace.configure(workspace, s3);
+            TestWorkspace.base(workspace, TAG, "mods/test.jar", "test content");
+            byte[] oldLatest = hasLatest ? TestFiles.bytes(new Pointer("previous").toJson()) : null;
+            if (hasLatest) {
+                s3.put(latestKey(), oldLatest);
+            }
+            s3.failPut(latestKey());
+            logs.begin(workspace, "publish-client", CLOCK);
+
+            Publish.run(workspace, TAG, RELEASE, 40, false, CLOCK);
+
+            assertArrayEquals(oldLatest, s3.object(latestKey()));
+            assertTrue(s3.requests().stream().noneMatch(request -> request.endsWith(" " + latestKey())),
+                    "publishing without latest neither reads nor writes the pointer");
+            Manifest manifest = Manifest.parse(s3.text(releaseKey()), "published manifest");
+            assertEquals(RELEASE, manifest.releaseId());
+            Set<String> writes = new TreeSet<>(assertPublishedContent(s3, manifest,
+                    Map.of("mods/test.jar", TestFiles.bytes("test content"))));
+            writes.add(releaseKey());
+            writes.add(signatureKey());
+            assertWrites(s3, writes);
+            assertEquals(64, s3.object(signatureKey()).length);
+            assertTrue(s3.requests().indexOf("PUT " + signatureKey()) > s3.requests().indexOf("PUT " + releaseKey()));
+            assertTrue(logs.outText().contains("without updating latest"), logs.outText());
+            assertFalse(logs.outText().contains("as the latest"), logs.outText());
+        }
+    }
+
+    @Test
     void aFailedSignatureUploadPreservesLatestAndReleasesItsInputs(@TempDir Path workspace) throws IOException {
+        assertFailedSignatureUpload(workspace, true);
+    }
+
+    @Test
+    void aPublishWithoutLatestStillFailsWhenItsSignatureUploadFails(@TempDir Path workspace) throws IOException {
+        assertFailedSignatureUpload(workspace, false);
+    }
+
+    private static void assertFailedSignatureUpload(Path workspace, boolean updateLatest) throws IOException {
         try (FakeS3 s3 = new FakeS3(); TestLogs logs = new TestLogs()) {
             TestWorkspace.configure(workspace, s3);
             Path zip = Layout.basePackDir(workspace, TAG).resolve("instance.zip");
@@ -155,7 +204,8 @@ class PublishTest {
             s3.failPut(signatureKey());
             logs.begin(workspace, "publish-client", CLOCK);
 
-            UserError error = assertThrows(UserError.class, () -> Publish.run(workspace, TAG, RELEASE, 40, CLOCK));
+            UserError error = assertThrows(UserError.class,
+                    () -> Publish.run(workspace, TAG, RELEASE, 40, updateLatest, CLOCK));
 
             assertTrue(error.getMessage().contains("HTTP 500"), error.getMessage());
             assertArrayEquals(oldLatest, s3.object(latestKey()), "latest does not advertise an unsigned release");

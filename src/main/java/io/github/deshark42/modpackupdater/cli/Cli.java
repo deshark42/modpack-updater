@@ -36,7 +36,8 @@ public final class Cli {
             "         --id <release-id>   update: apply this release (one distinct tag only)",
             "         --cache-max-age-days <days>",
             "                             how long the local blob cache stays usable (default "
-                    + Publish.DEFAULT_CACHE_MAX_AGE_DAYS + ")");
+                    + Publish.DEFAULT_CACHE_MAX_AGE_DAYS + ")",
+            "         --no-latest         publish: upload the release without updating latest.json");
 
     private Cli() {
     }
@@ -64,6 +65,12 @@ public final class Cli {
                     if (command.equals("update") && argument.equals("--tag")) {
                         updateTags.add(value);
                     }
+                }
+                case "--no-latest" -> {
+                    if (!command.equals("publish")) {
+                        return usage(err, command + " does not take --no-latest");
+                    }
+                    options.put("no-latest", "true");
                 }
                 default -> {
                     return usage(err, "unknown option: " + argument);
@@ -106,7 +113,7 @@ public final class Cli {
                     }
                     action = "publishing release " + releaseId + " of tag " + tag;
                     Logging.begin(workspace, "publish-" + tag, out, err, clock);
-                    Publish.run(workspace, tag, releaseId, cacheMaxAgeDays, clock);
+                    Publish.run(workspace, tag, releaseId, cacheMaxAgeDays, !options.containsKey("no-latest"), clock);
                     return OK;
                 }
                 case "update" -> {

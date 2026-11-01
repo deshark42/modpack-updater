@@ -83,7 +83,21 @@ one_path/
 java -jar modpack-updater.jar publish --tag client --id 1.0.0
 ```
 
-每个 tag 的版本号不可重复使用。发布自动签署清单，依次上传块、块表、清单、签名，最后更新 `latest.json`。签名上传失败时 latest 保持旧版本；若清单已经写入，重试需使用新的版本号。
+每个 tag 的版本号不可重复使用。发布自动签署清单，依次上传块、块表、清单、签名，默认最后更新 `latest.json`。签名上传失败时 latest 保持旧版本；若清单已经写入，重试需使用新的版本号。
+
+重大改动需要先测试时，发布命令加上 `--no-latest`，只上传本次 release，不创建或改写 `latest.json`：
+
+```sh
+java -jar modpack-updater.jar publish --tag client --id 1.1.0-RC1 --no-latest
+```
+
+普通订阅者执行 `update --tag client` 时仍获取原 latest；测试者可显式指定版本，照常验签并更新：
+
+```sh
+java -jar modpack-updater.jar update --tag client --id 1.1.0-RC1
+```
+
+`--no-latest` 只对本次 `publish` 生效，不接布尔值，也不根据版本号是否带 `RC` 等后缀自动判断。它不是私密发布：有读取权限的人仍可按版本号获取内容。首次发布若跳过 latest，普通更新没有 latest 可读，须使用 `--id`。测试版仍占用该 tag 的版本号，不能用相同 id 再发布来更新 latest；测试通过后需使用新版本号正常发布。
 
 ## 订阅者首次配置
 

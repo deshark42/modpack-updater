@@ -51,12 +51,12 @@ Usage:
 ```sh
 java -jar build/libs/modpack-updater.jar init [--tag <tag>]
 java -jar build/libs/modpack-updater.jar keygen
-java -jar build/libs/modpack-updater.jar publish --tag <tag> --id <release-id>
+java -jar build/libs/modpack-updater.jar publish --tag <tag> --id <release-id> [--no-latest]
 java -jar build/libs/modpack-updater.jar update --tag <tag> [--id <release-id>]
 java -jar build/libs/modpack-updater.jar update --tag <tag> --tag <tag> [--tag <tag> ...]
 ```
 
-All commands take `--workspace`; `--cache-max-age-days` belongs to `publish`. The version is not part of the artifact name: `./gradlew build -PappVersion=<version>` (default `0.1.0`) writes it into the jar manifest as `Implementation-Version`.
+All commands take `--workspace`; `--cache-max-age-days` and the valueless `--no-latest` flag belong to `publish`. Publishing updates latest by default; `--no-latest` uploads a complete signed release without creating or changing the pointer, for testing via `update --id`. The version is not part of the artifact name: `./gradlew build -PappVersion=<version>` (default `0.1.0`) writes it into the jar manifest as `Implementation-Version`.
 
 For `update`, repeated `--tag` values run sequentially in first-occurrence order, with duplicates skipped. The first failure stops the batch; earlier successful tags are not rolled back. `--id` is only allowed with one distinct tag. This is not a merged subscription or an overlay: tag payload paths must not conflict, including file/directory prefixes.
 

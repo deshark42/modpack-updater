@@ -102,6 +102,14 @@ class CliTest {
                 Arguments.of("keygen with --id", "keygen only takes --workspace", List.of("keygen", "--id", "1")),
                 Arguments.of("keygen with cache age", "keygen only takes --workspace",
                         List.of("keygen", "--cache-max-age-days", "1")),
+                Arguments.of("update with --no-latest", "update does not take --no-latest",
+                        List.of("update", "--tag", TAG, "--no-latest")),
+                Arguments.of("init with --no-latest", "init does not take --no-latest",
+                        List.of("init", "--no-latest")),
+                Arguments.of("keygen with --no-latest", "keygen does not take --no-latest",
+                        List.of("keygen", "--no-latest")),
+                Arguments.of("a boolean value after --no-latest", "unknown option: false",
+                        List.of("publish", "--tag", TAG, "--id", "test", "--no-latest", "false")),
                 Arguments.of("option without a value", "needs a value", List.of("update", "--tag")));
     }
 
@@ -312,6 +320,31 @@ class CliTest {
             assertNull(s3.object(TestWorkspace.bucketPath(ObjectKeys.latest("common"))));
             assertNull(s3.object(TestWorkspace.bucketPath(ObjectKeys.release(TAG, "old"))));
             assertFalse(Files.exists(ignored));
+        }
+    }
+
+    @Test
+    void aReleasePublishedWithoutLatestIsAvailableOnlyByItsExplicitId(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "stable", "client.txt", "stable content");
+            TestWorkspace.base(publisher, TAG, "client.txt", "test content");
+
+            assertEquals(Cli.OK, run(root, "publish", "--no-latest", "--tag", TAG, "--id", "test",
+                    "--workspace", publisher.toString()), logs.errText());
+
+            assertTrue(logs.outText().contains("without updating latest"), logs.outText());
+            assertEquals("", logs.errText());
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            assertEquals(Cli.OK, run(player, "update", "--tag", TAG), logs.errText());
+            assertEquals("stable", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
+            assertEquals("stable content", Files.readString(player.resolve("client.txt")));
+
+            assertEquals(Cli.OK, run(player, "update", "--tag", TAG, "--id", "test"), logs.errText());
+            assertEquals("test", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
+            assertEquals("test content", Files.readString(player.resolve("client.txt")));
         }
     }
 
