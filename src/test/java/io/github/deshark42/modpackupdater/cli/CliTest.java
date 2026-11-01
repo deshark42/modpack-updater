@@ -11,6 +11,7 @@ import io.github.deshark42.modpackupdater.TestLogs;
 import io.github.deshark42.modpackupdater.TestWorkspace;
 import io.github.deshark42.modpackupdater.command.Publish;
 import io.github.deshark42.modpackupdater.command.Update;
+import io.github.deshark42.modpackupdater.model.ChannelHistory;
 import io.github.deshark42.modpackupdater.model.Layout;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import io.github.deshark42.modpackupdater.model.Pointer;
@@ -44,7 +45,7 @@ class CliTest {
 
     private int run(Path cwd, String... args) {
         try (TestLogs capture = new TestLogs()) {
-            int exitCode = Cli.run(args, cwd, capture.out(), capture.err(), CLOCK);
+            int exitCode = Cli.run(args, cwd, capture.out(), capture.err(), CLOCK, null);
             logs = new Captured(capture.outText(), capture.errText());
             return exitCode;
         }
@@ -203,6 +204,10 @@ class CliTest {
             assertEquals("client-1", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
             assertEquals("common", Files.readString(player.resolve("common.txt")));
             assertEquals("client", Files.readString(player.resolve("client.txt")));
+            List<String> expectedChannels = channel.equals(ObjectKeys.DEFAULT_CHANNEL)
+                    ? List.of(ObjectKeys.DEFAULT_CHANNEL) : List.of(ObjectKeys.DEFAULT_CHANNEL, channel);
+            assertEquals(expectedChannels, ChannelHistory.channels(player, "common"));
+            assertEquals(expectedChannels, ChannelHistory.channels(player, TAG));
             assertEquals(List.of(get(ObjectKeys.channel("common", channel)), get(ObjectKeys.channel(TAG, channel))),
                     requestsSince(s3, before).stream()
                             .filter(request -> request.equals(get(ObjectKeys.channel("common", channel)))
@@ -217,17 +222,17 @@ class CliTest {
         try (FakeS3 s3 = new FakeS3()) {
             Path publisher = root.resolve("publisher");
             TestWorkspace.configure(publisher, s3);
-            publish(publisher, "common", "1", "common.txt", "common");
-            publish(publisher, TAG, "1", "client.txt", "old client");
-            publish(publisher, "server", "1", "server.txt", "server");
+            publish(publisher, "common", "1", "common.txt", "common", "beta");
+            publish(publisher, TAG, "1", "client.txt", "old client", "beta");
+            publish(publisher, "server", "1", "server.txt", "server", "beta");
             Path player = root.resolve("player");
             TestWorkspace.configure(player, s3);
-            Update.run(player, TAG, null, CLOCK);
-            publish(publisher, TAG, "2", "client.txt", "new client");
+            Update.run(player, TAG, null, "beta", CLOCK);
+            publish(publisher, TAG, "2", "client.txt", "new client", "beta");
             s3.fail("GET", TestWorkspace.bucketPath(ObjectKeys.signature(TAG, "2")), 403);
             int before = s3.requests().size();
 
-            assertEquals(Cli.FAILURE, run(player, "update", "--tag", "common", "--tag", TAG, "--tag", "server"),
+            assertEquals(Cli.FAILURE, run(player, "update", "--tag", "common", "--tag", TAG, "--tag", "server", "--channel", "beta"),
                     logs.errText());
 
             assertTrue(logs.errText().contains("updating tag client failed"), logs.errText());
@@ -242,12 +247,13 @@ class CliTest {
             assertFalse(Files.exists(Layout.fileTempDir(player)));
             assertFalse(Files.exists(Layout.currentFile(player, "server")));
             assertFalse(Files.exists(player.resolve("server.txt")));
-            assertEquals(List.of(get(ObjectKeys.latest("common")), get(ObjectKeys.latest(TAG))),
-                    latestRequests(s3, before));
+            assertEquals(List.of("latest", "beta"), ChannelHistory.channels(player, "common"));
+            assertFalse(Files.exists(Layout.channelHistoryFile(player, TAG)));
+            assertFalse(Files.exists(Layout.channelHistoryFile(player, "server")));
             List<String> requests = requestsSince(s3, before);
-            int failedTagStart = requests.indexOf(get(ObjectKeys.latest(TAG)));
+            int failedTagStart = requests.indexOf(get(ObjectKeys.channel(TAG, "beta")));
             assertTrue(failedTagStart >= 0, requests.toString());
-            assertEquals(List.of(get(ObjectKeys.latest(TAG)), get(ObjectKeys.release(TAG, "2")),
+            assertEquals(List.of(get(ObjectKeys.channel(TAG, "beta")), get(ObjectKeys.release(TAG, "2")),
                     get(ObjectKeys.signature(TAG, "2"))), requests.subList(failedTagStart, requests.size()),
                     "the failed tag downloads no content and the next tag is never contacted");
         }
@@ -292,6 +298,7 @@ class CliTest {
             assertFalse(requestsSince(s3, before).contains(get(ObjectKeys.channel(TAG, "missing"))),
                     "an explicit id bypasses even a nonexistent selected channel");
             assertEquals(List.of(), latestRequests(s3, before), "a pinned update never reads latest");
+            assertFalse(Files.exists(Layout.channelHistoryFile(player, TAG)), "a pinned update never uses its channel");
         }
     }
 
@@ -357,6 +364,7 @@ class CliTest {
                     "--workspace", publisher.toString()), logs.errText());
 
             assertTrue(logs.outText().contains("without updating latest"), logs.outText());
+            assertFalse(Files.exists(Layout.channelHistoryFile(publisher, TAG)));
             assertEquals("", logs.errText());
             Path player = root.resolve("player");
             TestWorkspace.configure(player, s3);
@@ -385,6 +393,7 @@ class CliTest {
                     "beta").releaseId());
             assertNull(s3.object(TestWorkspace.bucketPath(ObjectKeys.channel(TAG, "nightly"))),
                     "the last scalar channel option wins");
+            assertEquals(List.of("latest", "beta"), ChannelHistory.channels(publisher, TAG));
             Path player = root.resolve("player");
             TestWorkspace.configure(player, s3);
             int before = s3.requests().size();
@@ -396,6 +405,28 @@ class CliTest {
             assertFalse(requestsSince(s3, before).contains(get(ObjectKeys.latest(TAG))),
                     "the selected channel does not consult latest");
             assertTrue(logs.outText().contains("verified the release signature"), logs.outText());
+            assertEquals(List.of("latest", "beta"), ChannelHistory.channels(player, TAG));
+        }
+    }
+
+    @Test
+    void aHistoryWriteFailureWarnsWithoutTurningASuccessfulPublishIntoAFailure(@TempDir Path publisher)
+            throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(publisher, s3);
+            TestWorkspace.base(publisher, TAG, "client.txt", "beta content");
+            Path history = Layout.channelHistoryFile(publisher, TAG);
+            Files.createDirectories(history);
+            TestFiles.write(history, "keep.txt", "history is obstructed");
+
+            assertEquals(Cli.OK, run(publisher, "publish", "--tag", TAG, "--id", "candidate",
+                    "--channel", "beta"), logs.errText());
+
+            assertEquals(new Pointer("candidate"), Pointer.parse(
+                    s3.text(TestWorkspace.bucketPath(ObjectKeys.channel(TAG, "beta"))), "beta"));
+            assertTrue((logs.outText() + logs.errText()).contains("could not remember channel"));
+            assertEquals("history is obstructed", Files.readString(history.resolve("keep.txt")));
+            assertTrue(Files.isDirectory(history));
         }
     }
 
@@ -413,6 +444,7 @@ class CliTest {
             assertEquals(Cli.FAILURE, run(player, "update", "--tag", TAG, "--channel", "beta"), logs.errText());
 
             assertTrue(logs.errText().contains("beta.json"), logs.errText());
+            assertFalse(Files.exists(Layout.channelHistoryFile(player, TAG)));
             assertEquals(List.of(get(ObjectKeys.channel(TAG, "beta"))), requestsSince(s3, before));
             assertEquals("local content", Files.readString(player.resolve("client.txt")));
             assertFalse(Files.exists(Layout.currentFile(player, TAG)));
@@ -437,7 +469,7 @@ class CliTest {
             int objectsBefore = s3.objectCount();
             String cacheBefore = Files.readString(Layout.knownBlobsFile(publisher));
 
-            assertEquals(Cli.FAILURE, run(publisher, "publish", "--tag", TAG, "--id", "2.9.1"),
+            assertEquals(Cli.FAILURE, run(publisher, "publish", "--tag", TAG, "--id", "2.9.1", "--channel", "beta"),
                     logs.errText());
 
             assertTrue(logs.errText().contains(
@@ -449,6 +481,7 @@ class CliTest {
             assertEquals(objectsBefore, s3.objectCount());
             assertEquals(cacheBefore, Files.readString(Layout.knownBlobsFile(publisher)));
             assertNull(s3.object(TestWorkspace.bucketPath(ObjectKeys.release(TAG, "2.9.1"))));
+            assertFalse(Files.exists(Layout.channelHistoryFile(publisher, TAG)));
             assertFalse(Files.exists(Layout.blobTempDir(publisher)));
             assertFalse(Files.exists(Layout.fileTempDir(publisher)));
         }

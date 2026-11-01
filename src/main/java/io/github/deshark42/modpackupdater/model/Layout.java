@@ -10,6 +10,7 @@ public final class Layout {
     public static final String CONFIG = "config.json";
     public static final String KNOWN_BLOBS = "known-blobs.jsonl";
     public static final String CURRENT = "current.json";
+    public static final String CHANNEL_HISTORY = "channels.json";
     public static final String RELEASES = "releases";
     public static final String BACKUP = "backup";
     public static final String BACKUP_ORDER = "backup-order.txt";
@@ -80,6 +81,10 @@ public final class Layout {
 
     public static Path currentFile(Path workspaceRoot, String tag) {
         return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), CURRENT);
+    }
+
+    public static Path channelHistoryFile(Path workspaceRoot, String tag) {
+        return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), CHANNEL_HISTORY);
     }
 
     public static Path releasesDir(Path workspaceRoot, String tag) {

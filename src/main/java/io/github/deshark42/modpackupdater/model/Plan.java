@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
 /**
@@ -21,11 +22,15 @@ public record Plan(List<String> added, List<String> replaced, List<String> delet
     }
 
     public static Plan between(Manifest local, Manifest target) {
+        return between(local == null ? null : local.files(), target.files());
+    }
+
+    public static Plan between(Map<String, FileEntry> local, Map<String, FileEntry> target) {
         List<String> added = new ArrayList<>();
         List<String> replaced = new ArrayList<>();
         long downloadSize = 0;
-        for (Map.Entry<String, FileEntry> entry : target.files().entrySet()) {
-            FileEntry mine = local == null ? null : local.files().get(entry.getKey());
+        for (Map.Entry<String, FileEntry> entry : new TreeMap<>(target).entrySet()) {
+            FileEntry mine = local == null ? null : local.get(entry.getKey());
             if (mine == null) {
                 added.add(entry.getKey());
                 downloadSize += entry.getValue().size();
@@ -36,8 +41,8 @@ public record Plan(List<String> added, List<String> replaced, List<String> delet
         }
         List<String> deleted = new ArrayList<>();
         if (local != null) {
-            for (String path : local.files().keySet()) {
-                if (!target.files().containsKey(path)) {
+            for (String path : new TreeSet<>(local.keySet())) {
+                if (!target.containsKey(path)) {
                     deleted.add(path);
                 }
             }

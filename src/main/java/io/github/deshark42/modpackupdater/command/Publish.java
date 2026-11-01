@@ -2,6 +2,7 @@ package io.github.deshark42.modpackupdater.command;
 
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.fs.Chunker;
+import io.github.deshark42.modpackupdater.fs.PathGuard;
 import io.github.deshark42.modpackupdater.fs.Sha256;
 import io.github.deshark42.modpackupdater.fs.Sizes;
 import io.github.deshark42.modpackupdater.fs.Tree;
@@ -15,6 +16,7 @@ import io.github.deshark42.modpackupdater.model.Manifest;
 import io.github.deshark42.modpackupdater.model.Names;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
 import io.github.deshark42.modpackupdater.model.Pointer;
+import io.github.deshark42.modpackupdater.model.ReleaseIdentity;
 import io.github.deshark42.modpackupdater.model.RemoveRules;
 import io.github.deshark42.modpackupdater.model.SafePath;
 import io.github.deshark42.modpackupdater.s3.BlobCache;
@@ -22,14 +24,17 @@ import io.github.deshark42.modpackupdater.s3.PublishStore;
 import io.github.deshark42.modpackupdater.s3.S3Store;
 import io.github.deshark42.modpackupdater.security.ReleaseSigning;
 import io.github.deshark42.modpackupdater.util.Parallel;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.PrivateKey;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -79,23 +84,142 @@ public final class Publish {
 
     public static void run(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
             String channel, Clock clock) {
-        Names.requireTag(tag);
+        validate(tag, channel, cacheMaxAgeDays);
         Names.requireReleaseId(releaseId);
+        long startedAt = System.nanoTime();
+        LOG.info("publishing release {} of tag {}", releaseId, tag);
+        try (BaseSource source = BaseSource.open(workspace, tag)) {
+            Map<String, Path> files = merge(workspace, tag, source);
+            Config config = Workspace.load(workspace);
+            PrivateKey signingKey = ReleaseSigning.privateKey(config.privateKeyFile(workspace));
+            S3Store store = new S3Store(config, clock);
+            PublishStore.requireNewRelease(store, tag, releaseId);
+            Payload payload = split(files, config);
+            publish(workspace, tag, releaseId, cacheMaxAgeDays, channel, config, store, signingKey,
+                    payload, startedAt, clock);
+        }
+    }
+
+    /** Prepares the exact merged payload and a verified snapshot of the selected channel. */
+    public static Prepared prepare(Path workspace, String tag, String channel, Clock clock) {
+        validate(tag, channel, DEFAULT_CACHE_MAX_AGE_DAYS);
+        Config config = Config.load(workspace);
+        S3Store store = new S3Store(config, clock);
+        String baselineId = channel == null ? null : channelRelease(store, tag, channel);
+        Manifest baseline = null;
+        if (baselineId != null) {
+            var trustedKey = ReleaseSigning.publicKey(config.publicKeyFile(workspace));
+            String releaseKey = ObjectKeys.release(tag, baselineId);
+            byte[] manifestBytes = store.getBytes(releaseKey);
+            byte[] signature = store.getBytes(ObjectKeys.signature(tag, baselineId));
+            ReleaseSigning.verify(manifestBytes, signature, trustedKey);
+            baseline = Manifest.parse(new String(manifestBytes, StandardCharsets.UTF_8), store.key(releaseKey));
+            ReleaseIdentity.require(baseline, tag, baselineId);
+        }
+        BaseSource source = BaseSource.open(workspace, tag);
+        try {
+            return new Prepared(workspace, tag, channel, clock, config, store, source, baseline,
+                    split(merge(workspace, tag, source), config));
+        } catch (RuntimeException | Error failure) {
+            try {
+                source.close();
+            } catch (RuntimeException | Error cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
+        }
+    }
+
+    /** Owns archive staging and the payload shown in the preview until it is published or closed. */
+    public static final class Prepared implements AutoCloseable {
+        private final Path workspace;
+        private final String tag;
+        private final String channel;
+        private final Clock clock;
+        private final Config config;
+        private final S3Store store;
+        private final BaseSource source;
+        private final Manifest baseline;
+        private final Payload payload;
+        private boolean closed;
+        private boolean attempted;
+
+        private Prepared(Path workspace, String tag, String channel, Clock clock, Config config, S3Store store,
+                BaseSource source, Manifest baseline, Payload payload) {
+            this.workspace = workspace;
+            this.tag = tag;
+            this.channel = channel;
+            this.clock = clock;
+            this.config = config;
+            this.store = store;
+            this.source = source;
+            this.baseline = baseline;
+            this.payload = payload;
+        }
+
+        public Manifest baseline() {
+            return baseline;
+        }
+
+        public Map<String, FileEntry> files() {
+            return payload.entries();
+        }
+
+        public void publish(String releaseId, int cacheMaxAgeDays) {
+            if (closed || attempted) {
+                throw new UserError("prepared publication is already closed or used");
+            }
+            Names.requireReleaseId(releaseId);
+            validate(tag, channel, cacheMaxAgeDays);
+            PublishStore.requireNewRelease(store, tag, releaseId);
+            if (!config.equals(Config.load(workspace))) {
+                throw new UserError("workspace configuration changed after the publish preview; prepare it again");
+            }
+            if (channel != null) {
+                String current = channelRelease(store, tag, channel);
+                String expected = baseline == null ? null : baseline.releaseId();
+                if (!java.util.Objects.equals(expected, current)) {
+                    throw new UserError("channel " + channel + " changed after the publish preview; prepare it again");
+                }
+            }
+            verifyFiles(workspace, payload);
+            PrivateKey signingKey = ReleaseSigning.privateKey(config.privateKeyFile(workspace));
+            attempted = true;
+            Workspace.fillIn(workspace);
+            long startedAt = System.nanoTime();
+            LOG.info("publishing release {} of tag {}", releaseId, tag);
+            Publish.publish(workspace, tag, releaseId, cacheMaxAgeDays, channel, config, store, signingKey,
+                    payload, startedAt, clock);
+        }
+
+        @Override
+        public void close() {
+            if (!closed) {
+                closed = true;
+                source.close();
+            }
+        }
+    }
+
+    private static void validate(String tag, String channel, int cacheMaxAgeDays) {
+        Names.requireTag(tag);
         if (channel != null) {
             Names.requireChannel(channel);
         }
         if (cacheMaxAgeDays < 1) {
             throw new UserError("cache max age must be at least 1 day: " + cacheMaxAgeDays);
         }
-        long startedAt = System.nanoTime();
-        LOG.info("publishing release {} of tag {}", releaseId, tag);
-        try (BaseSource source = BaseSource.open(workspace, tag)) {
-            publish(workspace, tag, releaseId, cacheMaxAgeDays, channel, source, startedAt, clock);
-        }
     }
 
-    private static void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
-            String channel, BaseSource source, long startedAt, Clock clock) {
+    private static String channelRelease(S3Store store, String tag, String channel) {
+        String key = ObjectKeys.channel(tag, channel);
+        if (!store.exists(key)) {
+            return null;
+        }
+        return Pointer.parse(new String(store.getBytes(key), StandardCharsets.UTF_8), store.key(key)).releaseId();
+    }
+
+    private static Map<String, Path> merge(Path workspace, String tag, BaseSource source) {
         Path overlay = Layout.overlayDir(workspace, tag);
         String baseName = source.inputs().stream().map(input -> Text.relativeTo(workspace, input))
                 .collect(Collectors.joining(" + "));
@@ -148,22 +272,20 @@ public final class Publish {
         }
         // Reject reserved paths before any content or metadata can reach the bucket.
         files.keySet().forEach(SafePath::require);
-        String releaseKey = ObjectKeys.release(tag, releaseId);
-        String channelKey = channel == null ? null : ObjectKeys.channel(tag, channel);
+        Map<String, Path> paths = new TreeMap<>();
+        for (String path : files.keySet()) {
+            paths.put(path, overlaid.contains(path) ? SafePath.resolve(overlay, path) : source.file(path));
+        }
+        return paths;
+    }
 
-        Config config = Workspace.load(workspace);
-        PrivateKey signingKey = ReleaseSigning.privateKey(config.privateKeyFile(workspace));
-        S3Store store = new S3Store(config, clock);
-        PublishStore.requireNewRelease(store, tag, releaseId);
-        BlobCache cache = BlobCache.open(workspace, config, Duration.ofDays(cacheMaxAgeDays), clock);
-        PublishStore uploads = new PublishStore(store, cache);
-
+    private static Payload split(Map<String, Path> files, Config config) {
         // Splitting every file also hashes it, so the manifest is complete before anything moves.
         Map<String, FileEntry> entries = new ConcurrentHashMap<>();
         Map<String, Placement> placements = new ConcurrentHashMap<>();
         Map<String, byte[]> tables = new ConcurrentHashMap<>();
         Parallel.forEach(files.keySet(), config.concurrency(), path -> {
-            Path file = overlaid.contains(path) ? SafePath.resolve(overlay, path) : source.file(path);
+            Path file = files.get(path);
             Chunker.Result split = Chunker.split(file, Chunking.DEFAULT,
                     cut -> placements.putIfAbsent(cut.hash(), new Placement(file, path, cut)));
             entries.put(path, new FileEntry(split.hash(), split.table().size(), split.table().indexId()));
@@ -172,6 +294,35 @@ public final class Publish {
         LOG.info("split {} into {}", Text.count(entries.size(), "file"),
                 Text.count(placements.size(), "chunk"));
 
+        return new Payload(Collections.unmodifiableMap(new TreeMap<>(entries)), Map.copyOf(files),
+                Map.copyOf(placements), Map.copyOf(tables));
+    }
+
+    private static void verifyFiles(Path workspace, Payload payload) {
+        for (Map.Entry<String, Path> file : payload.files().entrySet()) {
+            Path path = PathGuard.require(workspace, file.getValue());
+            FileEntry expected = payload.entries().get(file.getKey());
+            try {
+                if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                        || Files.size(path) != expected.size() || !Sha256.ofFile(path).equals(expected.hash())) {
+                    throw new UserError(file.getKey() + " changed after the publish preview; prepare it again");
+                }
+            } catch (IOException e) {
+                throw new UserError("cannot validate " + file.getKey() + " after the publish preview", e);
+            }
+        }
+    }
+
+    private static void publish(Path workspace, String tag, String releaseId, int cacheMaxAgeDays,
+            String channel, Config config, S3Store store, PrivateKey signingKey, Payload payload,
+            long startedAt, Clock clock) {
+        String releaseKey = ObjectKeys.release(tag, releaseId);
+        String channelKey = channel == null ? null : ObjectKeys.channel(tag, channel);
+        Map<String, FileEntry> entries = payload.entries();
+        Map<String, Placement> placements = payload.placements();
+        Map<String, byte[]> tables = payload.tables();
+        BlobCache cache = BlobCache.open(workspace, config, Duration.ofDays(cacheMaxAgeDays), clock);
+        PublishStore uploads = new PublishStore(store, cache);
         Manifest manifest = new Manifest(tag, releaseId, Instant.now(clock).truncatedTo(ChronoUnit.SECONDS),
                 Manifest.SHA256, new TreeMap<>(entries));
         byte[] manifestBytes = manifest.toJson().getBytes(StandardCharsets.UTF_8);
@@ -279,6 +430,10 @@ public final class Publish {
         byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
         store.putBytes(key, bytes);
         return Sizes.human(bytes.length);
+    }
+
+    private record Payload(Map<String, FileEntry> entries, Map<String, Path> files,
+            Map<String, Placement> placements, Map<String, byte[]> tables) {
     }
 
     /** Where one chunk's bytes can be read back from, and the path it belongs to in the release. */

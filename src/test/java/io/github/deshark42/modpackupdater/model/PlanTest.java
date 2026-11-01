@@ -73,6 +73,27 @@ class PlanTest {
     }
 
     @Test
+    void fileMapDiffsSortPathsAndIgnoreChunkTableChangesForUnchangedHashes() {
+        Map<String, FileEntry> local = new LinkedHashMap<>();
+        local.put("z-deleted", new FileEntry(A, 10, CHUNKS));
+        local.put("a-deleted", new FileEntry(A, 10, CHUNKS));
+        local.put("same", new FileEntry(A, 10, CHUNKS));
+        local.put("changed", new FileEntry(A, 10, CHUNKS));
+        Map<String, FileEntry> target = new LinkedHashMap<>();
+        target.put("z-added", new FileEntry(A, 3, CHUNKS));
+        target.put("same", new FileEntry(A, 10, B));
+        target.put("a-added", new FileEntry(B, 5, CHUNKS));
+        target.put("changed", new FileEntry(B, 7, CHUNKS));
+
+        Plan plan = Plan.between(local, target);
+
+        assertEquals(List.of("a-added", "z-added"), plan.added());
+        assertEquals(List.of("changed"), plan.replaced());
+        assertEquals(List.of("a-deleted", "z-deleted"), plan.deleted());
+        assertEquals(15, plan.downloadSize());
+    }
+
+    @Test
     void describesEachKindOfChangeWithItsOwnCount() {
         Plan plan = new Plan(List.of("added"), List.of("replaced-a", "replaced-b"),
                 List.of("deleted-a", "deleted-b", "deleted-c"), 0);

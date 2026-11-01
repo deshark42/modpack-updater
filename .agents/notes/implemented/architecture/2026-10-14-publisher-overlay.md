@@ -23,7 +23,7 @@ overlay/ 与 base/ 共用同一路径空间：`overlay/.minecraft/mods/example-m
 
 overlay/ 与 base 生命周期无关：官方更新只替换 base/ 文件或 base_pack/ 内的压缩包，发布者不必在每次官方更新后重做自己的改动。[可组合 base 输入](../feature/2026-10-25-composable-base-inputs.md)持有来源组合及冲突拒绝，不取代本记录的合并与删除语义；remove 作用于合并后的 base，overlay 再新增或覆盖。来源间的冲突在本记录的规则生效前就失败，不能由 remove 或 overlay 消解。
 
-删除是**显式意图**，不是推断：publish 仍然不与上一次 release 的清单比较，某个路径不再发布只有两种可能——它已不在 base/ 里，或被 remove.txt 命中。
+删除是**显式意图**，不是从旧 release 推断发布内容：某个路径不再发布由当前 base、remove 与 overlay 合成结果决定。[交互发布基线预览](../feature/2026-11-01-publish-baseline-preview.md)只展示最终载荷相对所选 channel 的差异，不改写本记录的输入或删除规则。
 
 发布日志报告合并结果：扫描 base/ 与 overlay/ 各一行 INFO、remove 命中多少文件（来自多少条规则）一行 INFO、未命中的规则一行 WARN、overlay 有新增或覆盖时 merge 一行 INFO；逐文件的 add/replace 是 DEBUG，只进日志文件、不在终端显示。release 清单不记录某个文件来自 base/ 还是 overlay/；存储布局、channel 指针、config.json、`update` 命令与订阅者工作区都不需要知道来源。
 
@@ -58,7 +58,7 @@ remove.txt 只作用于 base/：同路径以 overlay/ 为准，规则命中 over
 - remove.txt 命中的 base/ 文件不进清单；`dir/` 剔除该目录下全部文件，`example-mod-*.jar` 剔除任意深度下同名的文件；未命中的规则出现在日志里，不改变退出码。
 - scan/remove/stale/merge 四行日志与最终清单来自同一次合并：清单在合并完全结束之后才写出，不会出现日志与内容各说各话。
 - 清单不携带来源：订阅者无法区分一个路径来自官方包还是发布者自己，排查内容问题时少一条线索。
-- **remove.txt 直接驱动订阅者删除。** 清单里消失的路径在订阅者侧就是删除（旧文件移入 backup/，见[订阅者工作区与更新流程](2026-10-14-subscriber-workspace.md)）。写错或过期的规则会把玩家实例里的文件搬走，影响面是全体订阅者，发布侧不做二次确认。
+- **remove.txt 直接驱动订阅者删除。** 清单里消失的路径在订阅者侧就是删除（旧文件移入 backup/，见[订阅者工作区与更新流程](2026-10-14-subscriber-workspace.md)）。写错或过期的规则会把玩家实例里的文件搬走，影响面是全体订阅者。完整参数发布不做二次确认；交互入口显示差异后以新 release id 确认，不单独确认每条删除。
 - **remove.txt 会腐化。** 未命中的规则只报告不报错，长期不清理会积累已无作用的条目。
 - 两份输入都要发布者自己维护：工具不校验 overlay/ 里的文件是否真的该覆盖 base/，也不校验 remove.txt 的规则是否仍然表达意图。
 - publish 的终端输出多了 scan/remove/stale/merge 各一行（INFO 或 WARN），逐文件 add/replace 只在日志文件里（DEBUG）：日志更完整；没有只压掉这几行的开关，终端固定显示 INFO 及以上。

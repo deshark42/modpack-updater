@@ -6,9 +6,12 @@ import io.github.deshark42.modpackupdater.command.Keygen;
 import io.github.deshark42.modpackupdater.command.Publish;
 import io.github.deshark42.modpackupdater.command.Update;
 import io.github.deshark42.modpackupdater.log.Logging;
+import io.github.deshark42.modpackupdater.model.ChannelHistory;
 import io.github.deshark42.modpackupdater.model.Names;
 import io.github.deshark42.modpackupdater.model.ObjectKeys;
+import java.io.BufferedReader;
 import java.io.PrintStream;
+import java.io.Reader;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.HashMap;
@@ -28,7 +31,8 @@ public final class Cli {
     private static final Logger LOG = LoggerFactory.getLogger(Cli.class);
 
     private static final String USAGE = String.join(System.lineSeparator(),
-            "usage: modpack-updater publish --tag <tag> --id <release-id> [options]",
+            "usage: modpack-updater publish [--tag <tag>] [--id <release-id>] [options]",
+            "       publish: missing tag or id starts a wizard when a terminal is available",
             "       modpack-updater update --tag <tag> [--tag <tag> ...] [--id <release-id>] [options]",
             "       modpack-updater init [--tag <tag>] [options]",
             "       modpack-updater keygen [--workspace <dir>]",
@@ -49,6 +53,11 @@ public final class Cli {
     }
 
     public static int run(String[] args, Path cwd, PrintStream out, PrintStream err, Clock clock) {
+        var console = System.console();
+        return run(args, cwd, out, err, clock, console == null ? null : console.reader());
+    }
+
+    static int run(String[] args, Path cwd, PrintStream out, PrintStream err, Clock clock, Reader input) {
         if (args.length == 0) {
             return usage(err, "no command");
         }
@@ -79,6 +88,26 @@ public final class Cli {
                 }
             }
         }
+        if (command.equals("publish") && options.containsKey("channel") && options.containsKey("no-latest")) {
+            return usage(err, "publish cannot combine --channel with --no-latest");
+        }
+        if (command.equals("publish") && input != null
+                && (!options.containsKey("tag") || !options.containsKey("id"))) {
+            try {
+                PublishWizard.collect(cwd, options, new BufferedReader(input), out, clock, (selection, prepared) -> {
+                    Logging.begin(selection.workspace(), "publish-" + selection.tag(), out, err, clock);
+                    prepared.publish(selection.releaseId(), selection.cacheMaxAgeDays());
+                    rememberChannel(selection.workspace(), selection.tag(), selection.channel());
+                });
+                return OK;
+            } catch (UserError e) {
+                Logging.clearProgress();
+                err.println("publish failed: " + e.getMessage());
+                return FAILURE;
+            } finally {
+                Logging.finish();
+            }
+        }
         Path workspace = cwd.resolve(options.getOrDefault("workspace", ".")).toAbsolutePath().normalize();
         String tag = options.get("tag");
         String channel = options.getOrDefault("channel", ObjectKeys.DEFAULT_CHANNEL);
@@ -96,14 +125,11 @@ public final class Cli {
                 }
                 case "publish" -> {
                     if (tag == null) {
-                        return usage(err, "publish needs --tag <tag>");
+                        return usage(err, "publish needs --tag <tag> without a terminal; run publish in a terminal for the wizard");
                     }
                     String releaseId = options.get("id");
                     if (releaseId == null) {
-                        return usage(err, "publish needs --id <release-id>");
-                    }
-                    if (options.containsKey("channel") && options.containsKey("no-latest")) {
-                        return usage(err, "publish cannot combine --channel with --no-latest");
+                        return usage(err, "publish needs --id <release-id> without a terminal; run publish in a terminal for the wizard");
                     }
                     int cacheMaxAgeDays = Publish.DEFAULT_CACHE_MAX_AGE_DAYS;
                     if (options.containsKey("cache-max-age-days")) {
@@ -121,6 +147,7 @@ public final class Cli {
                     Logging.begin(workspace, "publish-" + tag, out, err, clock);
                     Publish.run(workspace, tag, releaseId, cacheMaxAgeDays,
                             options.containsKey("no-latest") ? null : channel, clock);
+                    rememberChannel(workspace, tag, options.containsKey("no-latest") ? null : channel);
                     return OK;
                 }
                 case "update" -> {
@@ -148,6 +175,9 @@ public final class Cli {
                         action = "updating tag " + updateTag;
                         Logging.resetProgress();
                         Update.run(workspace, updateTag, releaseId, channel, clock);
+                        if (releaseId == null) {
+                            rememberChannel(workspace, updateTag, channel);
+                        }
                     }
                     return OK;
                 }
@@ -176,6 +206,14 @@ public final class Cli {
             return FAILURE;
         } finally {
             Logging.finish();
+        }
+    }
+
+    private static void rememberChannel(Path workspace, String tag, String channel) {
+        try {
+            ChannelHistory.remember(workspace, tag, channel);
+        } catch (UserError e) {
+            LOG.warn("Command succeeded, but could not remember channel {} for tag {}: {}", channel, tag, e.getMessage());
         }
     }
 
