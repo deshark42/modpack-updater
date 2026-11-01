@@ -8,7 +8,7 @@ Status: implemented
 
 ## 决策
 
-真实终端中缺少 tag 或 id 的 publish 向导，先选择工作区、编号 tag 和 channel，再读取该 channel 指向的 release_id，显示其清单到本次完整载荷的哈希差异，最后以输入新 release_id 作为发布确认。完整 tag/id 参数仍走直接发布入口，不新增历史清单或公钥依赖，不维护本地 release 发布历史。channel 菜单使用当前工作区和 tag 的本地通道名历史，latest 固定第一且默认；可按编号选已有名称或填写新名称。历史只在 CLI 发布或按通道更新成功后尽力记住，不是远端清单、当前选择或发布基线，具体布局见[发布者工作区](../architecture/2026-10-13-publisher-workspace.md)。
+真实终端中缺少 tag 或 id 的 publish 向导，先选择工作区、编号 tag 和 channel，再读取该 channel 指向的 release_id，显示其清单到本次完整载荷的哈希差异，最后以输入新 release_id 作为发布确认。完整 tag/id 参数仍走直接发布入口，不新增历史清单或公钥依赖，不维护本地 release 发布历史。channel 菜单使用当前工作区和 tag 的本地通道名历史，latest 固定第一且默认；可按编号选已有名称或填写新名称。历史只在 CLI 发布、promote 或按通道更新成功后尽力记住，不是远端清单、当前选择或发布基线，具体布局见[发布者工作区](../architecture/2026-10-13-publisher-workspace.md)。
 
 预览直连配置的对象存储 endpoint，不经过订阅者的 read_endpoint；使用本地 trusted_public_key 对清单原字节验签后才解析，并核对 tag 与 release_id。只有所选指针不存在才能视为首次发布；损坏指针、缺失目标或签名、验签失败、身份不符和网络错误均失败关闭。无指针选择明确没有比较基线，不回退到 latest。channel 指针本身仍未签名，这不提供新鲜度或防回退保证。
 

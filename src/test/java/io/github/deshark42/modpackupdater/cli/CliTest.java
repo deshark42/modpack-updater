@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.github.deshark42.modpackupdater.FakeS3;
 import io.github.deshark42.modpackupdater.TestFiles;
 import io.github.deshark42.modpackupdater.TestLogs;
+import io.github.deshark42.modpackupdater.TestSigning;
 import io.github.deshark42.modpackupdater.TestWorkspace;
 import io.github.deshark42.modpackupdater.command.Publish;
 import io.github.deshark42.modpackupdater.command.Update;
@@ -103,6 +104,12 @@ class CliTest {
     private static Stream<Arguments> optionUsageErrors() {
         return Stream.of(
                 Arguments.of("update without --tag", "needs --tag", List.of("update")),
+                Arguments.of("promote without --tag", "promote needs --tag", List.of("promote", "--id", "1")),
+                Arguments.of("promote without --id", "promote needs --id", List.of("promote", "--tag", TAG)),
+                Arguments.of("promote with --no-latest", "promote does not take --no-latest",
+                        List.of("promote", "--tag", TAG, "--id", "1", "--no-latest")),
+                Arguments.of("promote with cache age", "promote does not take --cache-max-age-days",
+                        List.of("promote", "--tag", TAG, "--id", "1", "--cache-max-age-days", "7")),
                 Arguments.of("publish without --id", "needs --id", List.of("publish", "--tag", TAG)),
                 Arguments.of("init with --id", "init does not take --id",
                         List.of("init", "--tag", TAG, "--id", "1.0")),
@@ -349,6 +356,95 @@ class CliTest {
             assertNull(s3.object(TestWorkspace.bucketPath(ObjectKeys.latest("common"))));
             assertNull(s3.object(TestWorkspace.bucketPath(ObjectKeys.release(TAG, "old"))));
             assertFalse(Files.exists(ignored));
+        }
+    }
+
+    @ParameterizedTest(name = "promotion target {0}")
+    @ValueSource(strings = {"latest", "beta", "nightly"})
+    void promotionUsesTheSelectedWorkspaceAndRemembersItsTargetChannel(String channel, @TempDir Path root)
+            throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, TAG, "candidate", "client.txt", "tested content", null);
+            Path operator = root.resolve("operator");
+            TestWorkspace.configure(operator, s3);
+            Files.delete(operator.resolve(Layout.DEFAULT_PRIVATE_KEY));
+            String configBefore = Files.readString(Layout.configFile(operator));
+            int before = s3.requests().size();
+            List<String> args = new java.util.ArrayList<>(List.of("promote", "--tag", TAG, "--id", "candidate",
+                    "--workspace", operator.toString()));
+            if (!channel.equals("latest")) {
+                args.addAll(List.of("--channel", channel));
+            }
+
+            assertEquals(Cli.OK, run(root, args.toArray(String[]::new)), logs.errText());
+
+            assertEquals(new Pointer("candidate"), Pointer.parse(
+                    s3.text(TestWorkspace.bucketPath(ObjectKeys.channel(TAG, channel))), channel));
+            assertEquals(List.of(get(ObjectKeys.release(TAG, "candidate")), get(ObjectKeys.signature(TAG, "candidate")),
+                    "PUT " + TestWorkspace.bucketPath(ObjectKeys.channel(TAG, channel))), requestsSince(s3, before));
+            assertEquals(channel.equals("latest") ? List.of("latest") : List.of("latest", channel),
+                    ChannelHistory.channels(operator, TAG));
+            assertEquals(configBefore, Files.readString(Layout.configFile(operator)));
+            assertFalse(Files.exists(Layout.currentFile(operator, TAG)));
+            assertFalse(Files.exists(Layout.knownBlobsFile(operator)));
+            assertFalse(Files.exists(Layout.baseDir(operator, TAG)));
+            assertFalse(Files.exists(Layout.stateDir(root)), "the current directory is not the selected workspace");
+            assertTrue(logs.outText().contains("promoted tag client release candidate to channel " + channel), logs.outText());
+            assertTrue(Files.isRegularFile(Layout.logsDir(operator).resolve("promote-client-2024-01-02.log")));
+            assertEquals("", logs.errText());
+        }
+    }
+
+    @ParameterizedTest(name = "promotion failure {0}")
+    @ValueSource(strings = {"missing", "invalid-json", "invalid-signature"})
+    void aFailedPromotionReportsItsTargetWithoutRememberingTheChannel(String problem, @TempDir Path operator)
+            throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(operator, s3);
+            if (!problem.equals("missing")) {
+                byte[] malformed = TestFiles.bytes("{");
+                s3.put(TestWorkspace.bucketPath(ObjectKeys.release(TAG, "candidate")), malformed);
+                s3.put(TestWorkspace.bucketPath(ObjectKeys.signature(TAG, "candidate")),
+                        TestSigning.sign(problem.equals("invalid-signature") ? TestFiles.bytes("other") : malformed));
+            }
+            int before = s3.requests().size();
+
+            assertEquals(Cli.FAILURE, run(operator, "promote", "--tag", TAG, "--id", "candidate", "--channel", "beta"),
+                    logs.errText());
+
+            assertTrue(logs.errText().contains("promoting release candidate of tag client to channel beta failed"), logs.errText());
+            assertTrue(logs.errText().contains(switch (problem) {
+                case "missing" -> "not found";
+                case "invalid-json" -> "malformed json";
+                default -> "signature";
+            }), logs.errText());
+            assertEquals(problem.equals("missing") ? List.of(get(ObjectKeys.release(TAG, "candidate")))
+                    : List.of(get(ObjectKeys.release(TAG, "candidate")), get(ObjectKeys.signature(TAG, "candidate"))),
+                    requestsSince(s3, before));
+            assertFalse(Files.exists(Layout.channelHistoryFile(operator, TAG)));
+            assertNull(s3.object(TestWorkspace.bucketPath(ObjectKeys.channel(TAG, "beta"))));
+            assertTrue(Files.isRegularFile(Layout.logsDir(operator).resolve("promote-client-2024-01-02.log")));
+        }
+    }
+
+    @Test
+    void aHistoryFailureDoesNotUndoASuccessfulPromotion(@TempDir Path operator) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            TestWorkspace.configure(operator, s3);
+            publish(operator, TAG, "candidate", "client.txt", "tested content", null);
+            Path history = Layout.channelHistoryFile(operator, TAG);
+            Files.createDirectories(history);
+            TestFiles.write(history, "keep.txt", "history is obstructed");
+
+            assertEquals(Cli.OK, run(operator, "promote", "--tag", TAG, "--id", "candidate", "--channel", "beta"),
+                    logs.errText());
+
+            assertEquals(new Pointer("candidate"), Pointer.parse(
+                    s3.text(TestWorkspace.bucketPath(ObjectKeys.channel(TAG, "beta"))), "beta"));
+            assertTrue((logs.outText() + logs.errText()).contains("could not remember channel"));
+            assertEquals("history is obstructed", Files.readString(history.resolve("keep.txt")));
         }
     }
 

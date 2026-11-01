@@ -3,6 +3,7 @@ package io.github.deshark42.modpackupdater.cli;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.command.Init;
 import io.github.deshark42.modpackupdater.command.Keygen;
+import io.github.deshark42.modpackupdater.command.Promote;
 import io.github.deshark42.modpackupdater.command.Publish;
 import io.github.deshark42.modpackupdater.command.Update;
 import io.github.deshark42.modpackupdater.log.Logging;
@@ -33,13 +34,14 @@ public final class Cli {
     private static final String USAGE = String.join(System.lineSeparator(),
             "usage: modpack-updater publish [--tag <tag>] [--id <release-id>] [options]",
             "       publish: missing tag or id starts a wizard when a terminal is available",
+            "       modpack-updater promote --tag <tag> --id <release-id> [options]",
             "       modpack-updater update --tag <tag> [--tag <tag> ...] [--id <release-id>] [options]",
             "       modpack-updater init [--tag <tag>] [options]",
             "       modpack-updater keygen [--workspace <dir>]",
             "options: --workspace <dir>   work in this directory instead of the current one",
             "         --tag <tag>         update: repeat to update tags in order; stop on the first failure",
             "         --id <release-id>   update: apply this release (one distinct tag only)",
-            "         --channel <name>    publish/update: select a channel (default latest)",
+            "         --channel <name>    publish/promote/update: select a channel (default latest)",
             "         --cache-max-age-days <days>",
             "                             how long the local blob cache stays usable (default "
                     + Publish.DEFAULT_CACHE_MAX_AGE_DAYS + ")",
@@ -148,6 +150,23 @@ public final class Cli {
                     Publish.run(workspace, tag, releaseId, cacheMaxAgeDays,
                             options.containsKey("no-latest") ? null : channel, clock);
                     rememberChannel(workspace, tag, options.containsKey("no-latest") ? null : channel);
+                    return OK;
+                }
+                case "promote" -> {
+                    if (tag == null) {
+                        return usage(err, "promote needs --tag <tag>");
+                    }
+                    String releaseId = options.get("id");
+                    if (releaseId == null) {
+                        return usage(err, "promote needs --id <release-id>");
+                    }
+                    if (options.containsKey("cache-max-age-days")) {
+                        return usage(err, "promote does not take --cache-max-age-days");
+                    }
+                    action = "promoting release " + releaseId + " of tag " + tag + " to channel " + channel;
+                    Logging.begin(workspace, "promote-" + tag, out, err, clock);
+                    Promote.run(workspace, tag, releaseId, channel, clock);
+                    rememberChannel(workspace, tag, channel);
                     return OK;
                 }
                 case "update" -> {

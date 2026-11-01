@@ -95,7 +95,7 @@ java -jar modpack-updater.jar publish
 
 channel 指针不存在时会明确提示首次发布，所有文件显示为新增；选择 `-` 时没有远端比较基线，也将全部文件显示为新增，不回退到 latest。已有指针损坏、目标清单或签名缺失、验签失败、身份不符或读取失败都会停止，不当作空版本继续。已有基线的预览需要配置的本地 `trusted_public_key`；换钥后不能验证的旧 release 也会使预览失败。
 
-通道菜单是本地使用历史，不会枚举服务器上的所有通道，也不代表这些指针现在仍存在。通过 CLI 成功发布或按通道更新后（包括完整参数调用），才把通道名称记到当前工作区的 `.modpack-updater/<tag>/channels.json`；`latest` 始终内置，其他名称去重后按名称排序。取消、失败、无指针发布和显式 `update --id` 不新增记录；多 tag 更新逐个记录已成功的 tag，后续失败不会撤销此前记录。历史只提供菜单候选，不保存默认选择或版本基线；损坏或无法读写时会警告，不覆盖损坏内容，也不会把已经成功的发布或更新变成失败。
+通道菜单是本地使用历史，不会枚举服务器上的所有通道，也不代表这些指针现在仍存在。通过 CLI 成功发布、promote 或按通道更新后（包括完整参数调用），才把通道名称记到当前工作区的 `.modpack-updater/<tag>/channels.json`；`latest` 始终内置，其他名称去重后按名称排序。取消、失败、无指针发布和显式 `update --id` 不新增记录；多 tag 更新逐个记录已成功的 tag，后续失败不会撤销此前记录。历史只提供菜单候选，不保存默认选择或版本基线；损坏或无法读写时会警告，不覆盖损坏内容，也不会把已经成功的发布或更新变成失败。
 
 任意提示处输入 `:q`，或结束输入（EOF），都会取消并以退出码 0 结束。输入新版本号前允许读取存储配置、查询远端基线、扫描和分块文件；有压缩包时会临时展开并保留到本次操作结束。取消、失败或成功均清理本次解包目录（临时父目录可能保留），不改写原始输入；确认前不上传、不补写配置、不创建日志、blob 缓存或通道历史。发布直接复用预览准备的内容，不重新扫描或解包；确认后会复核配置、channel 指针及保留文件的内容，发现变化就拒绝发布并要求重新预览。这不是并发锁、上传事务或回滚保证，确认后仍可能因不可重用版本号、私钥或上传失败而终止。
 
@@ -138,7 +138,21 @@ java -jar modpack-updater.jar publish --tag client --id 1.1.0-RC1 --no-latest
 java -jar modpack-updater.jar update --tag client --id 1.1.0-RC1
 ```
 
-`--no-latest` 只对本次 `publish` 生效，不接布尔值，也不根据版本号是否带 `RC` 等后缀自动判断。首次发布若未创建任何指针，须使用 `--id` 更新。测试版仍占用该 tag 的版本号，不能用相同 id 再发布来推进 latest；工具没有 promote 命令，测试通过后需使用新版本号正常发布。
+`--no-latest` 只对本次 `publish` 生效，不接布尔值，也不根据版本号是否带 `RC` 等后缀自动判断。首次发布若未创建任何指针，须使用 `--id` 更新。测试版仍占用该 tag 的版本号，不能用相同 id 再次 publish；内容不变时用下面的 promote 复用它。
+
+### 将已测试的 release 推进到正式 channel
+
+测试通过后，直接让 latest 指向同一个 release，不需要重新发布，也不用换版本号：
+
+```sh
+java -jar modpack-updater.jar promote --tag client --id 1.1.0-RC1
+# 等价于显式指定 --channel latest；也可选择其他目标 channel
+java -jar modpack-updater.jar promote --tag client --id 1.1.0-RC1 --channel latest
+```
+
+`promote --tag <tag> --id <release-id> [--channel <name>]` 从配置的对象存储源站 `endpoint` 读取该 release 的清单与签名，不经过 `read_endpoint`。使用本地 `trusted_public_key` 验签，并核对签署的 tag、release_id 与请求一致后，才创建或覆写目标 channel 的指针。它不需要源 channel；beta 或无指针发布的 release 都能使用。清单、签名、块和块表保持原样，不扫描本地 base、解包或重新签名；不需要发布私钥，但需要源站读取与目标指针写入权限。CLI 会写运行日志，并在成功后尽力记住目标通道名称，不补写配置或改动本地实例版本与 blob 缓存。
+
+目标指针可不存在，也可指向其他版本；重复执行仍指向同一 id，也允许指定旧 id 回退。版本号后缀只是名称：推广 `1.1.0-RC1` 后 latest 的 id 仍是 `1.1.0-RC1`，不会重命名为 `1.1.0`。目标清单或签名缺失、损坏、验签失败、身份不符或读取失败时都不写指针。promote 不逐一审计块和块表是否存在，也不提供并发锁、compare-and-swap、防回退或签名的新鲜度保证。它只接受显式 tag/id，不启动发布向导，不能使用 `--no-latest` 或 `--cache-max-age-days`。
 
 ## 订阅者首次配置
 
@@ -149,7 +163,7 @@ java -jar modpack-updater.jar init
 java -jar modpack-updater.jar update --tag client
 ```
 
-所有命令可带 `--workspace <目录>`。配置了 `read_endpoint` 后，订阅者经该 CDN 基址匿名读取，地址直接追加 `prefix` 与对象键，不再插入 bucket；发布始终使用 `endpoint`。CDN 不应重定向请求、改写对象内容或覆盖源站缓存规则。
+所有命令可带 `--workspace <目录>`。配置了 `read_endpoint` 后，订阅者经该 CDN 基址匿名读取，地址直接追加 `prefix` 与对象键，不再插入 bucket；发布与 promote 始终使用 `endpoint`。CDN 不应重定向请求、改写对象内容或覆盖源站缓存规则。
 
 ### 备份保留
 

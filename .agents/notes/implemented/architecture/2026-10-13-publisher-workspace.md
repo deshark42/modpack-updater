@@ -30,13 +30,14 @@ Status: implemented
 - config.json 放连接、桶位置与本地签名密钥路径，字段定义见[发布内容格式与连接配置](2026-10-14-release-manifest-and-config.md)：不放 tag 列表，也不放发布状态。订阅者的读地址（read_endpoint）也在这里，见[经 CDN 读取对象存储](../../implemented/architecture/2026-10-25-cdn-read-endpoint.md)。
 - `.modpack-updater/known-blobs.jsonl` 是发布侧的 blob 存在性缓存：只追加已确认存在于桶中的块哈希与块表 id，可整份删除，不参与发布内容。用途、格式与失效规则见[降低发布时的 blob 存在性检查成本](2026-10-20-cheap-blob-existence-checks.md)。
 - tag 的发布内容由逻辑 base、`<tag>/overlay/` 与 `<tag>/remove.txt` 三者合成：逻辑 base 是 `<tag>/base/` 原样文件与 `<tag>/base_pack/` 内 ZIP / 7z 输出的无冲突并集，包内路径挂到各包的相对父目录。overlay/ 承载发布者自己的新增与覆盖，remove.txt 从逻辑 base 中剔除路径。合并规则与 remove.txt 语法见[发布者 overlay 目录与 base 删除清单](2026-10-14-publisher-overlay.md)。官方包版本仍由发布者选择和替换；输入组合、临时展开、冲突拒绝与清理见[可组合 base 输入](../feature/2026-10-25-composable-base-inputs.md)，本记录继续持有工作区、配置与发布命令的约定。
-- `.modpack-updater/<tag>/channels.json` 只保存通过 CLI 成功发布或按通道更新后用过的非默认 channel 名，去重排序供向导编号选择；latest 内置且仍是默认值，不枚举服务器、不记录 release 基线或当前选择。取消、失败、无指针发布和 `update --id` 不新增记录；历史读写失败只警告，损坏内容不被覆盖。
+- `.modpack-updater/<tag>/channels.json` 只保存通过 CLI 成功发布、promote 或按通道更新后用过的非默认 channel 名，去重排序供向导编号选择；latest 内置且仍是默认值，不枚举服务器、不记录 release 基线或当前选择。取消、失败、无指针发布和 `update --id` 不新增记录；历史读写失败只警告，损坏内容不被覆盖。
 - tag、release_id 与 channel 都只在本次调用选择，不写入配置。完整参数仍可直接发布：publish --tag <tag> --id <release_id> [--channel <name>]，例如 --id 2.9.0-RC1 --channel beta；真实终端中缺少 tag 或 id 时，publish 启动向导，选择工作区、编号 tag 与 channel 后展示已验证基线和实际载荷的差异，最后输入新 id 即确认发布；预填 id 须重输，缓存有效期取默认值或参数，不再询问。无终端时缺参仍是用法错误，不等待标准输入，避免自动化任务挂起。
 - 发布还需要本地私钥，默认由 keygen 写入 `.modpack-updater/keys/`；只把公钥交给订阅者，密钥路径与签名提交顺序见[发布清单签名](../feature/2026-10-25-ed25519-release-signatures.md)。
 - publish --tag <tag> --id <release_id> 发布，完整上传清单与签名后只更新所选 channel 指针，默认 latest；加无值开关 `--no-latest` 时只上传完整签名 release，不创建或改写任何指针，测试者通过 `update --id` 获取。`--no-latest` 不能与显式 `--channel` 并用。两种选择只对本次调用生效，不写入配置，也不根据版本号后缀推断，避免测试策略意外影响后续正常发布。
 - 向导确认前会读取配置和 S3 基线、合并与分块载荷，压缩包可在专属临时目录展开；不上传、不补写配置、不创建日志、blob 缓存或通道历史，结束时清理本次解包目录（临时父目录可能保留）。`:q`、EOF 或最终 id 留空均取消本次调用；预览的信任边界和复用语义见[交互发布基线预览](../feature/2026-11-01-publish-baseline-preview.md)。真正开始的 publish 在 .modpack-updater/logs/ 下留一份运行日志：按天一个文件，名字带命令、tag 与日期（例如 publish-client-2026-10-14.log），同一天的多次运行追加进同一份。终端只显示 INFO 及以上的里程碑，日志文件还记下 DEBUG 级的逐文件过程，比终端显示的多，但只在终端上原地重画的上传进度条不进日志；日志在开始工作之前就打开，失败的发布也留文件。
 - 本次合成出的有效清单仍是发布的全部内容，不根据旧 release 推导发布内容。原先不做发布侧比较的选择由[交互发布基线预览](../feature/2026-11-01-publish-baseline-preview.md)部分取代：向导展示相对所选 channel 的增删改，但完整参数发布仍不读取旧清单。订阅者仍拿自己的清单与本次完整清单比较，见[订阅者工作区与更新流程](2026-10-14-subscriber-workspace.md)。
 - 同一 tag 内的 --id 跨 channel 不可重用，已经存在时 publish 直接报错退出：releases/ 只增不改，清单与签名由所有 channel 共享，修正内容必须换一个 release_id。
+- promote --tag <tag> --id <release_id> [--channel <name>] 从源站读取已有清单与签名，使用本地可信公钥先验签再解析并核对身份，随后只写目标指针（默认 latest）；不需要私钥或本地发布输入，不改写任何不可变对象、配置、blob 缓存或实例当前版本。无需源 channel，也接受无指针 release；重复执行和指向旧 id 都允许，不提供块完整性审计或并发锁。CLI 记录日志及成功后的目标通道历史；详细用法与边界见 [README](../../../../README.md#将已测试的-release-推进到正式-channel)。
 - publish --cache-max-age-days <天数> 只调整 known-blobs.jsonl 的有效期（默认 30 天，至少 1 天），不影响发布内容或桶中的对象。
 
 ## 曾考虑的替代方案
