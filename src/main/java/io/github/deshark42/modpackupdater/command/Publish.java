@@ -109,12 +109,15 @@ public final class Publish {
         Manifest baseline = null;
         if (baselineId != null) {
             var trustedKey = ReleaseSigning.publicKey(config.publicKeyFile(workspace));
-            String releaseKey = ObjectKeys.release(tag, baselineId);
-            byte[] manifestBytes = store.getBytes(releaseKey);
-            byte[] signature = store.getBytes(ObjectKeys.signature(tag, baselineId));
-            ReleaseSigning.verify(manifestBytes, signature, trustedKey);
-            baseline = Manifest.parse(new String(manifestBytes, StandardCharsets.UTF_8), store.key(releaseKey));
-            ReleaseIdentity.require(baseline, tag, baselineId);
+            baseline = PublishedReleaseCache.read(workspace, config, tag, baselineId, trustedKey);
+            if (baseline == null) {
+                String releaseKey = ObjectKeys.release(tag, baselineId);
+                byte[] manifestBytes = store.getBytes(releaseKey);
+                byte[] signature = store.getBytes(ObjectKeys.signature(tag, baselineId));
+                ReleaseSigning.verify(manifestBytes, signature, trustedKey);
+                baseline = Manifest.parse(new String(manifestBytes, StandardCharsets.UTF_8), store.key(releaseKey));
+                ReleaseIdentity.require(baseline, tag, baselineId);
+            }
         }
         BaseSource source = BaseSource.open(workspace, tag);
         try {
@@ -408,6 +411,7 @@ public final class Publish {
         if (channel != null) {
             LOG.info("wrote {}: {}", channelKey, write(store, channelKey, new Pointer(releaseId).toJson()));
         }
+        PublishedReleaseCache.remember(workspace, config, tag, releaseId, manifestBytes, signature);
         LOG.info(uploadedSummary(uploading.size(), skipped, uploadedBytes.get(), uploadNanos, toUpload));
         LOG.info("published release {} of tag {} {} in {}", releaseId, tag,
                 channel == null ? "without updating latest or any other channel" : "to channel " + channel,

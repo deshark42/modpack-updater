@@ -12,6 +12,7 @@ public final class Layout {
     public static final String CURRENT = "current.json";
     public static final String CHANNEL_HISTORY = "channels.json";
     public static final String RELEASES = "releases";
+    public static final String PUBLISHED_RELEASES = "published-releases";
     public static final String BACKUP = "backup";
     public static final String BACKUP_ORDER = "backup-order.txt";
     public static final String LOGS = "logs";
@@ -94,6 +95,16 @@ public final class Layout {
     public static Path releaseFile(Path workspaceRoot, String tag, String releaseId) {
         return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), RELEASES,
                 Names.requireReleaseId(releaseId) + ".json");
+    }
+
+    public static Path publishedReleaseFile(Path workspaceRoot, String location, String tag, String releaseId) {
+        return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), PUBLISHED_RELEASES,
+                Names.requireReleaseId(location), Names.requireReleaseId(releaseId) + ".json");
+    }
+
+    public static Path publishedReleaseSignatureFile(Path workspaceRoot, String location, String tag, String releaseId) {
+        return checked(workspaceRoot, STATE_DIR, Names.requireTag(tag), PUBLISHED_RELEASES,
+                Names.requireReleaseId(location), Names.requireReleaseId(releaseId) + ".json.sig");
     }
 
     /** The directory every release's moved-away files are kept under. */

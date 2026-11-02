@@ -43,6 +43,12 @@ class LayoutTest {
                         tag.resolve(Layout.RELEASES)),
                 Arguments.of("release", (Function<Path, Path>) root -> Layout.releaseFile(root, "client", "2.9.0"),
                         tag.resolve(Layout.RELEASES).resolve("2.9.0.json")),
+                Arguments.of("published release", (Function<Path, Path>) root ->
+                        Layout.publishedReleaseFile(root, "location", "client", "2.9.0"),
+                        tag.resolve(Layout.PUBLISHED_RELEASES).resolve("location/2.9.0.json")),
+                Arguments.of("published signature", (Function<Path, Path>) root ->
+                        Layout.publishedReleaseSignatureFile(root, "location", "client", "2.9.0"),
+                        tag.resolve(Layout.PUBLISHED_RELEASES).resolve("location/2.9.0.json.sig")),
                 Arguments.of("backups", (Function<Path, Path>) root -> Layout.backupsDir(root, "client"),
                         tag.resolve(Layout.BACKUP)),
                 Arguments.of("backup order", (Function<Path, Path>) root -> Layout.backupOrderFile(root, "client"),
@@ -76,6 +82,18 @@ class LayoutTest {
                 Arguments.of("tag state", (Function<Path, Path>) root -> Layout.tagDir(root, "../client"), "invalid tag"),
                 Arguments.of("release", (Function<Path, Path>) root -> Layout.releaseFile(root, "client", "../2.9.0"),
                         "invalid release id"),
+                Arguments.of("published location", (Function<Path, Path>) root ->
+                        Layout.publishedReleaseFile(root, "../location", "client", "2.9.0"), "invalid release id"),
+                Arguments.of("published tag", (Function<Path, Path>) root ->
+                        Layout.publishedReleaseFile(root, "location", "../client", "2.9.0"), "invalid tag"),
+                Arguments.of("published id", (Function<Path, Path>) root ->
+                        Layout.publishedReleaseFile(root, "location", "client", "../2.9.0"), "invalid release id"),
+                Arguments.of("published signature location", (Function<Path, Path>) root ->
+                        Layout.publishedReleaseSignatureFile(root, "../location", "client", "2.9.0"), "invalid release id"),
+                Arguments.of("published signature tag", (Function<Path, Path>) root ->
+                        Layout.publishedReleaseSignatureFile(root, "location", "../client", "2.9.0"), "invalid tag"),
+                Arguments.of("published signature id", (Function<Path, Path>) root ->
+                        Layout.publishedReleaseSignatureFile(root, "location", "client", "../2.9.0"), "invalid release id"),
                 Arguments.of("publish root", (Function<Path, Path>) root -> Layout.tagRoot(root, "a/b"), "invalid tag"));
     }
 }
