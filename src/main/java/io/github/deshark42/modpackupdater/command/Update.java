@@ -242,15 +242,15 @@ public final class Update {
                 try {
                     LOG.debug("tag {}: fetching chunk tables", tag);
                     Map<String, ChunkTable> tables = chunkTables(store, target, toFetch, config.concurrency());
-                    LOG.debug("tag {}: finding reusable local chunks", tag);
-                    Reuse reuse = LocalContent.localChunks(workspace, backup, plan, toFetch, tag, targetId, target, tables,
-                            config.concurrency());
-                    LOG.debug("tag {}: planning missing chunks", tag);
-                    Map<String, Local> existing = reuse.chunks();
                     Set<String> needed = new LinkedHashSet<>();
                     for (String path : toFetch) {
                         needed.addAll(tables.get(target.files().get(path).indexId()).chunks());
                     }
+                    LOG.debug("tag {}: finding reusable local chunks", tag);
+                    Reuse reuse = LocalContent.localChunks(workspace, backup, plan, toFetch, tag, targetId, target,
+                            tables, needed, config.concurrency());
+                    LOG.debug("tag {}: planning missing chunks", tag);
+                    Map<String, Local> existing = reuse.chunks();
                     List<String> missing = new ArrayList<>();
                     for (String hash : needed) {
                         if (!existing.containsKey(hash)) {

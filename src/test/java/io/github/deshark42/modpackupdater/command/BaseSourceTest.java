@@ -11,6 +11,8 @@ import io.github.deshark42.modpackupdater.TestArchives;
 import io.github.deshark42.modpackupdater.TestFiles;
 import io.github.deshark42.modpackupdater.TestLogs;
 import io.github.deshark42.modpackupdater.UserError;
+import io.github.deshark42.modpackupdater.fs.Sizes;
+import io.github.deshark42.modpackupdater.log.Text;
 import io.github.deshark42.modpackupdater.model.Layout;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -170,6 +172,28 @@ class BaseSourceTest {
         assertTrue(error.getMessage().contains("ZIP or 7z"), error.getMessage());
         assertTrue(error.getMessage().contains(name.substring(name.lastIndexOf('/') + 1)), error.getMessage());
         assertFalse(Files.exists(Layout.tempDir(workspace)), "all package filenames are validated before extraction");
+    }
+
+    @Test
+    void reportsEachArchiveSeparatelyFromTheMergedTotal(@TempDir Path workspace) throws IOException {
+        Path base = Layout.baseDir(workspace, TAG);
+        TestFiles.write(base, "raw.txt", "raw file");
+        archive(workspace, "a.zip", Map.of("first.txt", "first"));
+        archive(workspace, "b.zip", Map.of("second.txt", "second", "third.txt", "third"));
+        Path packs = Layout.basePackDir(workspace, TAG);
+
+        try (TestLogs logs = new TestLogs()) {
+            logs.begin(workspace);
+            try (BaseSource source = BaseSource.open(workspace, TAG)) {
+                assertEquals(24L, source.totalBytes());
+            }
+            String output = logs.outText();
+            assertTrue(output.contains("extracted " + Text.relativeTo(workspace, packs.resolve("a.zip"))
+                    + ": " + Text.count(1, "file") + ", " + Sizes.human(5)), output);
+            assertTrue(output.contains("extracted " + Text.relativeTo(workspace, packs.resolve("b.zip"))
+                    + ": " + Text.count(2, "file") + ", " + Sizes.human(11)), output);
+        }
+        assertNoStages(workspace);
     }
 
     @Test

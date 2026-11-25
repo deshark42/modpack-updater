@@ -36,6 +36,7 @@ final class BaseSource implements AutoCloseable {
     private final Map<String, Long> sizes = new TreeMap<>();
     private final Map<Path, Path> directories = new HashMap<>();
     private List<Path> inputs;
+    private long totalBytes;
 
     private BaseSource(Path workspace) {
         this.workspace = workspace;
@@ -63,7 +64,7 @@ final class BaseSource implements AutoCloseable {
             for (Map.Entry<String, Path> entry : packed.entrySet()) {
                 String shown = Text.relativeTo(workspace, entry.getValue());
                 int filesBefore = result.sizes.size();
-                long bytesBefore = Sizes.total(result.sizes.values());
+                long bytesBefore = result.totalBytes;
                 long startedAt = System.nanoTime();
                 LOG.info("extracting {}", shown);
                 BaseArchive archive = BaseArchive.open(workspace, entry.getValue());
@@ -73,7 +74,7 @@ final class BaseSource implements AutoCloseable {
                 result.scan(archive.root(), prefix, null, false);
                 LOG.info("extracted {}: {}, {} in {}", shown,
                         Text.count(result.sizes.size() - filesBefore, "file"),
-                        Sizes.human(Sizes.total(result.sizes.values()) - bytesBefore),
+                        Sizes.human(result.totalBytes - bytesBefore),
                         Text.duration(System.nanoTime() - startedAt));
             }
             result.inputs = hasBase
@@ -96,6 +97,10 @@ final class BaseSource implements AutoCloseable {
 
     Map<String, Long> files() {
         return Collections.unmodifiableMap(sizes);
+    }
+
+    long totalBytes() {
+        return totalBytes;
     }
 
     Path file(String path) {
@@ -142,7 +147,9 @@ final class BaseSource implements AutoCloseable {
                         packed.put(path, file);
                     } else {
                         register(path, file, false);
-                        sizes.put(path, attributes.size());
+                        long size = attributes.size();
+                        sizes.put(path, size);
+                        totalBytes += size;
                     }
                     return FileVisitResult.CONTINUE;
                 }

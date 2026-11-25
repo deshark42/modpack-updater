@@ -228,7 +228,7 @@ public final class Publish {
                 .collect(Collectors.joining(" + "));
         Map<String, Long> baseFiles = source.files();
         LOG.info("scanned {}: {}, {}", baseName, Text.count(baseFiles.size(), "file"),
-                Sizes.human(Sizes.total(baseFiles.values())));
+                Sizes.human(source.totalBytes()));
         boolean hasOverlay = Files.isDirectory(overlay);
         Map<String, Long> overlayFiles = hasOverlay ? Tree.list(overlay) : Map.of();
         if (hasOverlay) {
@@ -291,8 +291,10 @@ public final class Publish {
             Path file = files.get(path);
             Chunker.Result split = Chunker.split(file, Chunking.DEFAULT,
                     cut -> placements.putIfAbsent(cut.hash(), new Placement(file, path, cut)));
-            entries.put(path, new FileEntry(split.hash(), split.table().size(), split.table().indexId()));
-            tables.putIfAbsent(split.table().indexId(), split.table().bytes());
+            byte[] tableBytes = split.table().bytes();
+            String indexId = Sha256.ofBytes(tableBytes);
+            entries.put(path, new FileEntry(split.hash(), split.table().size(), indexId));
+            tables.putIfAbsent(indexId, tableBytes);
         });
         LOG.info("split {} into {}", Text.count(entries.size(), "file"),
                 Text.count(placements.size(), "chunk"));

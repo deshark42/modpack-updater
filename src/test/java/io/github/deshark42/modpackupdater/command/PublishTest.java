@@ -25,6 +25,7 @@ import io.github.deshark42.modpackupdater.s3.BlobCache;
 import io.github.deshark42.modpackupdater.security.ReleaseSigning;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Signature;
@@ -310,7 +311,9 @@ class PublishTest {
             assertEquals(Sha256.ofBytes(file.getValue()), entry.hash(), file.getKey());
             String index = key(ObjectKeys.index(entry.indexId()));
             objects.add(index);
-            ChunkTable table = ChunkTable.parse(s3.text(index), "uploaded chunk table");
+            byte[] tableBytes = s3.object(index);
+            assertEquals(entry.indexId(), Sha256.ofBytes(tableBytes), file.getKey());
+            ChunkTable table = ChunkTable.parse(new String(tableBytes, StandardCharsets.UTF_8), "uploaded chunk table");
             ByteArrayOutputStream restored = new ByteArrayOutputStream();
             for (String chunk : table.chunks()) {
                 String blob = key(ObjectKeys.blob(chunk));
