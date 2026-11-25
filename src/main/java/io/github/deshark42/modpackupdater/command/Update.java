@@ -32,6 +32,7 @@ import io.github.deshark42.modpackupdater.util.Parallel;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
@@ -46,6 +47,7 @@ import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -228,6 +230,7 @@ public final class Update {
                 LOG.info("skipped {}: already at the target content", Text.count(skipped.size(), "file"));
             }
 
+            Map<String, BackupMove> backups = planBackups(workspace, backup, plan.deleted(), toFetch);
             Map<String, Path> assembled = Map.of();
             if (!toFetch.isEmpty()) {
                 long neededBytes = 0;
@@ -279,22 +282,18 @@ public final class Update {
                 }
             }
 
-            // Deletions go first, so a path that becomes a file can replace a directory that shrank
-            // out of the manifest. A target that already exists is moved aside before its new
-            // content goes in, which is what makes the old file recoverable.
-            boolean willBackUp = plan.deleted().stream().anyMatch(path -> exists(SafePath.resolve(workspace, path)))
-                    || toFetch.stream().anyMatch(path -> exists(SafePath.resolve(workspace, path)));
-            if (willBackUp) {
+            if (!backups.isEmpty()) {
                 BackupRetention.record(workspace, tag, applied);
             }
             LOG.debug("tag {}: applying files and moving backups", tag);
             for (String path : plan.deleted()) {
-                moved += moveAside(workspace, backup, path) ? 1 : 0;
+                moved += moveAside(workspace, backups.get(path)) ? 1 : 0;
             }
             for (String path : toFetch) {
                 Path targetPath = SafePath.resolve(workspace, path);
+                moved += moveAside(workspace, backups.get(path)) ? 1 : 0;
                 if (exists(targetPath)) {
-                    moved += moveAside(workspace, backup, path) ? 1 : 0;
+                    throw new UserError("target path changed before writing " + targetPath + "; retry the update");
                 }
                 Path staged = assembled.get(path);
                 if (staged == null) {
@@ -489,22 +488,111 @@ public final class Update {
         return Files.exists(path, LinkOption.NOFOLLOW_LINKS);
     }
 
-    private static boolean moveAside(Path workspace, Path backup, String path) {
-        Path source = SafePath.resolve(workspace, path);
-        if (!exists(source)) {
+    private static Map<String, BackupMove> planBackups(Path workspace, Path backup, List<String> deleted,
+            List<String> replacing) {
+        List<String> changing = new ArrayList<>(deleted);
+        changing.addAll(replacing);
+        Map<Path, String> sources = new LinkedHashMap<>();
+        for (String path : changing) {
+            Path source = workspace.resolve(SafePath.require(path)).normalize();
+            if (exists(source)) {
+                sources.putIfAbsent(source, path);
+            }
+        }
+        Map<String, BackupMove> backups = new HashMap<>();
+        for (var source : sources.entrySet()) {
+            Path path = source.getKey();
+            // An ancestor already carries these bytes. Moving the child first would create the
+            // very backup directory the ancestor then needs to move into.
+            if (hasBackupAncestor(path, sources.keySet())) {
+                continue;
+            }
+            Path target = backup.resolve(SafePath.require(source.getValue())).normalize();
+            try {
+                for (Path parent = target.getParent(); parent != null; parent = parent.getParent()) {
+                    if (exists(parent)) {
+                        if (!Files.isDirectory(parent)) {
+                            throw new UserError("backup path conflict: " + parent + " is not a directory");
+                        }
+                        break;
+                    }
+                }
+                backups.put(source.getValue(), BackupMove.plan(workspace, path, target));
+            } catch (IOException | UncheckedIOException e) {
+                throw new UserError("cannot prepare backup for " + path + ": " + e.getMessage(), e);
+            }
+        }
+        return backups;
+    }
+
+    private static boolean hasBackupAncestor(Path path, Set<Path> sources) {
+        for (Path parent = path.getParent(); parent != null; parent = parent.getParent()) {
+            if (sources.contains(parent)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean moveAside(Path workspace, BackupMove backup) {
+        if (backup == null || !exists(backup.source())) {
             return false;
         }
-        Path target = SafePath.resolve(backup, path);
         try {
-            Path parent = target.getParent();
-            if (parent != null) {
-                Files.createDirectories(parent);
-            }
-            AtomicFile.move(source, target);
+            backup.apply(workspace);
         } catch (IOException e) {
-            throw new UserError("cannot move " + source + " to " + target + ": " + e.getMessage(), e);
+            throw new UserError("cannot move " + backup.source() + " to " + backup.target() + ": "
+                    + e.getMessage(), e);
         }
         return true;
+    }
+
+    private record BackupMove(Path source, Path target, List<BackupMove> merge) {
+        static BackupMove plan(Path workspace, Path source, Path target) throws IOException {
+            if (!mergesDirectories(source, target)) {
+                return new BackupMove(source, target, null);
+            }
+            List<Path> children;
+            try (var entries = Files.list(source)) {
+                children = entries.toList();
+            }
+            List<BackupMove> merge = new ArrayList<>();
+            for (Path child : children) {
+                Path childTarget = target.resolve(child.getFileName());
+                PathGuard.require(workspace, child);
+                PathGuard.require(workspace, childTarget);
+                merge.add(plan(workspace, child, childTarget));
+            }
+            return new BackupMove(source, target, merge);
+        }
+
+        private static boolean mergesDirectories(Path source, Path target) {
+            if (!exists(target)) {
+                return false;
+            }
+            boolean directory = Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS);
+            if (directory != Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
+                throw new UserError("backup path conflict: " + source + " and " + target + " have different types");
+            }
+            return directory;
+        }
+
+        void apply(Path workspace) throws IOException {
+            PathGuard.require(workspace, source);
+            PathGuard.require(workspace, target);
+            if ((merge != null) != mergesDirectories(source, target)) {
+                throw new UserError("backup directory changed before moving " + source + " to " + target);
+            }
+            if (merge == null) {
+                Files.createDirectories(target.getParent());
+                AtomicFile.move(source, target);
+                return;
+            }
+            for (BackupMove child : merge) {
+                child.apply(workspace);
+            }
+            Files.delete(source);
+        }
     }
 
     private static void deleteTree(Path workspace, Path dir) {

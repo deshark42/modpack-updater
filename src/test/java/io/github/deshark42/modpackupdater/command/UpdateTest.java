@@ -311,6 +311,96 @@ class UpdateTest {
     }
 
     @Test
+    void aTrackedDirectoryCanBecomeAFileWithoutLosingItsContents(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, "1", Map.of(
+                    "config/nested/tracked.cfg", TestFiles.bytes("release settings"),
+                    "config-extra/removed.cfg", TestFiles.bytes("other removed file")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, "1");
+            TestFiles.write(player, "config/nested/tracked.cfg", "player settings");
+            TestFiles.write(player, "config/notes.txt", "untracked notes");
+            publish(publisher, "2", Map.of("config", TestFiles.bytes("now a file")));
+
+            update(player, "2");
+
+            Path backup = Layout.backupDir(player, TAG, "1");
+            assertEquals("now a file", Files.readString(player.resolve("config")));
+            assertEquals("player settings", Files.readString(backup.resolve("config/nested/tracked.cfg")));
+            assertEquals("untracked notes", Files.readString(backup.resolve("config/notes.txt")));
+            assertEquals("other removed file", Files.readString(backup.resolve("config-extra/removed.cfg")));
+            assertFalse(Files.exists(player.resolve("config-extra/removed.cfg")));
+            assertEquals("2", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
+            assertNothingStaged(player);
+        }
+    }
+
+    @Test
+    void aDirectoryReplacementResumesWithFilesAlreadyInTheBackup(@TempDir Path root) throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, "1", Map.of("config/nested/tracked.cfg", TestFiles.bytes("release settings")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, "1");
+            Path backup = Layout.backupDir(player, TAG, "1");
+            Files.createDirectories(backup.resolve("config/nested"));
+            Files.move(player.resolve("config/nested/tracked.cfg"), backup.resolve("config/nested/tracked.cfg"));
+            TestFiles.write(player, "config/nested/player.cfg", "remaining local file");
+            TestFiles.write(backup, "config/nested/player.cfg", "previous local file");
+            TestFiles.write(player, "config/new/notes.txt", "remaining directory");
+            publish(publisher, "2", Map.of("config", TestFiles.bytes("now a file")));
+
+            update(player, "2");
+
+            assertEquals("now a file", Files.readString(player.resolve("config")));
+            assertEquals("release settings", Files.readString(backup.resolve("config/nested/tracked.cfg")));
+            assertEquals("remaining local file", Files.readString(backup.resolve("config/nested/player.cfg")));
+            assertEquals("remaining directory", Files.readString(backup.resolve("config/new/notes.txt")));
+            assertEquals("2", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
+            assertNothingStaged(player);
+        }
+    }
+
+    @Test
+    void aDirectoryBackupTypeConflictLeavesTheWorkspaceAndExistingBackupUntouched(@TempDir Path root)
+            throws IOException {
+        try (FakeS3 s3 = new FakeS3()) {
+            Path publisher = root.resolve("publisher");
+            TestWorkspace.configure(publisher, s3);
+            publish(publisher, "1", Map.of(
+                    "config/tracked.cfg", TestFiles.bytes("release settings"),
+                    "a-removed.txt", TestFiles.bytes("earlier deletion")));
+            Path player = root.resolve("player");
+            TestWorkspace.configure(player, s3);
+            update(player, "1");
+            TestFiles.write(player, "config/local/notes.txt", "local notes");
+            Path backup = Layout.backupDir(player, TAG, "1");
+            TestFiles.write(backup, "config/local", "existing backup file");
+            publish(publisher, "2", Map.of("config", TestFiles.bytes("now a file")));
+            int before = s3.requests().size();
+
+            UserError error = assertThrows(UserError.class, () -> update(player, "2"));
+
+            assertTrue(error.getMessage().contains("backup path conflict"), error.getMessage());
+            assertEquals("release settings", Files.readString(player.resolve("config/tracked.cfg")));
+            assertEquals("local notes", Files.readString(player.resolve("config/local/notes.txt")));
+            assertEquals("earlier deletion", Files.readString(player.resolve("a-removed.txt")));
+            assertEquals("existing backup file", Files.readString(backup.resolve("config/local")));
+            assertFalse(Files.exists(backup.resolve("config/tracked.cfg")));
+            assertFalse(Files.exists(Layout.releaseFile(player, TAG, "2")));
+            assertEquals("1", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
+            assertRequests(s3, before, List.of("GET " + key(ObjectKeys.release(TAG, "2")),
+                    "GET " + key(ObjectKeys.signature(TAG, "2"))));
+            assertNothingStaged(player);
+        }
+    }
+
+    @Test
     void aTamperedLatestReleaseLeavesTheAppliedReleaseAndPayloadUntouched(@TempDir Path root) throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             Path publisher = root.resolve("publisher");
@@ -339,7 +429,7 @@ class UpdateTest {
     }
 
     @Test
-    void anExplicitReleaseRollsBackFromKeptCopiesWithoutReadingLatestOrDownloadingChunks(@TempDir Path root)
+    void aDirectoryRollsBackFromKeptCopiesWithoutReadingLatestOrDownloadingChunks(@TempDir Path root)
             throws IOException {
         try (FakeS3 s3 = new FakeS3()) {
             Path publisher = root.resolve("publisher");
@@ -349,7 +439,7 @@ class UpdateTest {
             Path player = root.resolve("player");
             TestWorkspace.configure(player, s3);
             update(player, "1");
-            publish(publisher, "2", Map.of("mods/a.jar", TestFiles.bytes("new payload")));
+            publish(publisher, "2", Map.of("mods", TestFiles.bytes("replacement file")));
             update(player, "2");
             Manifest target = manifest(s3, "1");
             int before = s3.requests().size();
@@ -359,7 +449,7 @@ class UpdateTest {
             assertArrayEquals(original, Files.readAllBytes(player.resolve("mods/a.jar")));
             assertEquals("1", Pointer.read(Layout.currentFile(player, TAG)).releaseId());
             assertEquals(target, Manifest.read(Layout.releaseFile(player, TAG, "1")));
-            assertEquals("new payload", Files.readString(Layout.backupDir(player, TAG, "2").resolve("mods/a.jar")));
+            assertEquals("replacement file", Files.readString(Layout.backupDir(player, TAG, "2").resolve("mods")));
             assertRequests(s3, before, List.of("GET " + key(ObjectKeys.release(TAG, "1")),
                     "GET " + key(ObjectKeys.signature(TAG, "1")),
                     "GET " + key(ObjectKeys.index(target.files().get("mods/a.jar").indexId()))));
