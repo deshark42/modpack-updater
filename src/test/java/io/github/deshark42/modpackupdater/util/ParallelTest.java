@@ -1,8 +1,8 @@
 package io.github.deshark42.modpackupdater.util;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.deshark42.modpackupdater.UserError;
@@ -46,6 +46,16 @@ class ParallelTest {
     }
 
     @Test
+    void workersProcessAllItemsEvenWhenThereAreMoreItemsThanWorkers() {
+        List<Integer> items = List.of(1, 2, 3, 4, 5);
+        List<Integer> seen = Collections.synchronizedList(new ArrayList<>());
+
+        Parallel.forEach(items, 2, seen::add);
+
+        assertEquals(items, seen.stream().sorted().toList());
+    }
+
+    @Test
     void rethrowsTheFailureOfTheAction() {
         UserError original = new UserError("the action cannot run");
 
@@ -60,7 +70,9 @@ class ParallelTest {
     @Test
     void wrapsAFailureThatIsNotAUserError() {
         UserError error = assertThrows(UserError.class, () -> Parallel.forEach(List.of("a", "b"), 2, item -> {
-            throw new IllegalStateException("worker broke on " + item);
+            if (item.equals("a")) {
+                throw new IllegalStateException("worker broke on " + item);
+            }
         }));
 
         assertEquals("java.lang.IllegalStateException: worker broke on a", error.getMessage());
@@ -69,7 +81,7 @@ class ParallelTest {
     }
 
     @Test
-    void aFailedActionInterruptsWorkThatHasNotFinished() {
+    void aLaterFailureCancelsAnEarlierActionAndLeavesPendingItemsUntouched() {
         CountDownLatch workerStarted = new CountDownLatch(1);
         CountDownLatch workerStopped = new CountDownLatch(1);
         CountDownLatch neverReleased = new CountDownLatch(1);
@@ -77,10 +89,14 @@ class ParallelTest {
         List<String> completed = Collections.synchronizedList(new ArrayList<>());
         UserError original = new UserError("the first action failed");
 
-        UserError error = assertThrows(UserError.class, () -> Parallel.forEach(List.of("fails", "waits"), 2, item -> {
+        UserError error = assertThrows(UserError.class, () -> Parallel.forEach(List.of("waits", "fails", "pending"), 2, item -> {
             if (item.equals("fails")) {
                 assertTrue(await(workerStarted), "the waiting action starts before failure is injected");
                 throw original;
+            }
+            if (!item.equals("waits")) {
+                completed.add(item);
+                return;
             }
             workerStarted.countDown();
             try {

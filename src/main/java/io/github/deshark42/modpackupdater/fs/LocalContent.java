@@ -91,14 +91,14 @@ public final class LocalContent {
     /**
      * Splits the local files this run is about to change or delete, plus the copies an earlier run
      * kept under the target release, with the parameters the target chunk tables record, collecting
-     * every chunk the new release could reuse. The target path's current file is the first source; a
+     * only chunks needed to assemble the target files. The current file is the first source; a
      * missing or unreadable one falls back to the copy an interrupted earlier run may have left in
      * {@code backup/}. A path without a target table of its own - a deleted one, or a kept copy
      * addressed by its old path - is split with every chunking the run's target tables use. A copy
      * that is missing or cannot be read contributes nothing.
      */
     public static Reuse localChunks(Path workspace, Path backup, Plan plan, List<String> toFetch, String tag,
-            String targetId, Manifest target, Map<String, ChunkTable> tables, int concurrency) {
+            String targetId, Manifest target, Map<String, ChunkTable> tables, Set<String> needed, int concurrency) {
         Map<String, Local> existing = new ConcurrentHashMap<>();
         Set<Chunking> targetChunkings = new LinkedHashSet<>();
         for (ChunkTable table : tables.values()) {
@@ -112,11 +112,11 @@ public final class LocalContent {
         changing.addAll(plan.deleted());
         Parallel.forEach(changing, concurrency, path -> {
             List<Chunking> chunkings = chunkingsFor(path, target, tables, targetChunkings);
-            if (cutInto(SafePath.resolve(workspace, path), chunkings, existing)) {
+            if (cutInto(SafePath.resolve(workspace, path), chunkings, needed, existing)) {
                 read.incrementAndGet();
                 return;
             }
-            if (cutInto(SafePath.resolve(backup, path), chunkings, existing)) {
+            if (cutInto(SafePath.resolve(backup, path), chunkings, needed, existing)) {
                 read.incrementAndGet();
             }
         });
@@ -130,22 +130,25 @@ public final class LocalContent {
         }
         Parallel.forEach(keptCopies, concurrency, copy -> {
             String path = kept.relativize(copy).toString().replace('\\', '/');
-            if (cutInto(copy, chunkingsFor(path, target, tables, targetChunkings), existing)) {
+            if (cutInto(copy, chunkingsFor(path, target, tables, targetChunkings), needed, existing)) {
                 read.incrementAndGet();
             }
         });
         return new Reuse(existing, read.get());
     }
 
-    /** Splits one local file with every parameter given, adding the chunks found to {@code into}. */
-    private static boolean cutInto(Path file, List<Chunking> chunkings, Map<String, Local> into) {
+    private static boolean cutInto(Path file, List<Chunking> chunkings, Set<String> needed, Map<String, Local> into) {
         if (!Files.isRegularFile(file)) {
             return false;
         }
         Map<String, Local> found = new HashMap<>();
         try {
             for (Chunking chunking : chunkings) {
-                Chunker.split(file, chunking, cut -> found.putIfAbsent(cut.hash(), new Local(file, cut)));
+                Chunker.visitCuts(file, chunking, cut -> {
+                    if (needed.contains(cut.hash())) {
+                        found.putIfAbsent(cut.hash(), new Local(file, cut));
+                    }
+                });
             }
         } catch (UserError e) {
             return false; // a copy that cannot be read is as good as no copy at all

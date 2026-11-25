@@ -52,8 +52,10 @@ class LocalContentTest {
     }
 
     private static LocalContent.Reuse find(Path workspace, Plan plan) {
+        ChunkTable targetTable = table();
         return LocalContent.localChunks(workspace, Layout.backupDir(workspace, TAG, "1"), plan,
-                List.of(TARGET_PATH), TAG, "2", target(), Map.of(table().indexId(), table()), 2);
+                List.of(TARGET_PATH), TAG, "2", target(), Map.of(targetTable.indexId(), targetTable),
+                Set.copyOf(targetTable.chunks()), 2);
     }
 
     @Test
@@ -179,6 +181,20 @@ class LocalContentTest {
         assertEquals(copy, reuse.chunks().get(hash).file());
         assertArrayEquals(content(), Chunker.read(copy, reuse.chunks().get(hash).cut()));
         assertArrayEquals(content(), Files.readAllBytes(copy));
+    }
+
+    @Test
+    void onlyNeededChunksAreRetainedFromLocalSources(@TempDir Path workspace) throws IOException {
+        TestFiles.write(workspace, TARGET_PATH, content());
+        String unrelated = "mods/unrelated.jar";
+        TestFiles.write(workspace, unrelated, "payload absent from the release");
+        Plan plan = new Plan(List.of(TARGET_PATH), List.of(), List.of(unrelated), content().length);
+
+        LocalContent.Reuse reuse = find(workspace, plan);
+
+        assertEquals(Set.of(Sha256.ofBytes(content())), reuse.chunks().keySet());
+        assertEquals(2, reuse.files(), "both local candidates were read");
+        assertEquals("payload absent from the release", Files.readString(workspace.resolve(unrelated)));
     }
 
     @Test

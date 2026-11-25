@@ -3,7 +3,6 @@ package io.github.deshark42.modpackupdater.fs;
 import io.github.deshark42.modpackupdater.UserError;
 import io.github.deshark42.modpackupdater.model.ChunkTable;
 import io.github.deshark42.modpackupdater.model.Chunking;
-import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -54,37 +53,58 @@ public final class Chunker {
     public static Result split(Path file, Chunking chunking, Sink sink) {
         List<String> chunks = new ArrayList<>();
         MessageDigest whole = digest();
+        long size = scan(file, chunking, whole, cut -> {
+            chunks.add(cut.hash());
+            if (sink != null) {
+                sink.cut(cut);
+            }
+        });
+        return new Result(Sha256.hex(whole.digest()), new ChunkTable(chunking, size, chunks));
+    }
+
+    static void visitCuts(Path file, Chunking chunking, Sink sink) {
+        scan(file, chunking, null, sink);
+    }
+
+    private static long scan(Path file, Chunking chunking, MessageDigest whole, Sink sink) {
         MessageDigest chunk = digest();
-        byte[] current = new byte[chunking.max()];
-        long size = 0;
+        byte[] buffer = new byte[BUFFER];
         long start = 0;
         int held = 0;
         long rolling = 0;
         long mask = chunking.mask();
-        try (InputStream in = new BufferedInputStream(Files.newInputStream(file), BUFFER)) {
-            byte[] buffer = new byte[BUFFER];
+        int min = chunking.min();
+        int max = chunking.max();
+        try (InputStream in = Files.newInputStream(file)) {
             int read;
-            while ((read = in.read(buffer)) >= 0) {
+            while ((read = in.read(buffer)) != -1) {
+                if (whole != null) {
+                    whole.update(buffer, 0, read);
+                }
+                int segment = 0;
                 for (int i = 0; i < read; i++) {
-                    int value = buffer[i] & 0xff;
-                    current[held++] = buffer[i];
-                    rolling = (rolling << 1) + GEAR[value];
-                    if (held >= chunking.min() && ((rolling & mask) == 0 || held >= chunking.max())) {
-                        chunks.add(cut(whole, chunk, current, held, start, sink));
+                    rolling = (rolling << 1) + GEAR[buffer[i] & 0xff];
+                    held++;
+                    if (held >= min && ((rolling & mask) == 0 || held == max)) {
+                        chunk.update(buffer, segment, i + 1 - segment);
+                        sink.cut(new Cut(Sha256.hex(chunk.digest()), start, held));
                         start += held;
                         held = 0;
                         rolling = 0;
+                        segment = i + 1;
                     }
                 }
-                size += read;
+                if (segment < read) {
+                    chunk.update(buffer, segment, read - segment);
+                }
             }
             if (held > 0) {
-                chunks.add(cut(whole, chunk, current, held, start, sink));
+                sink.cut(new Cut(Sha256.hex(chunk.digest()), start, held));
             }
         } catch (IOException e) {
             throw new UserError("cannot read " + file + ": " + e.getMessage(), e);
         }
-        return new Result(Sha256.hex(whole.digest()), new ChunkTable(chunking, size, chunks));
+        return start + held;
     }
 
     /** Reads one cut back from the file it came from. */
@@ -103,18 +123,6 @@ public final class Chunker {
             throw new UserError("cannot read " + file + ": " + e.getMessage(), e);
         }
         return bytes;
-    }
-
-    private static String cut(MessageDigest whole, MessageDigest chunk, byte[] bytes, int length, long start,
-            Sink sink) {
-        whole.update(bytes, 0, length);
-        chunk.update(bytes, 0, length);
-        String hash = Sha256.hex(chunk.digest());
-        chunk.reset();
-        if (sink != null) {
-            sink.cut(new Cut(hash, start, length));
-        }
-        return hash;
     }
 
     private static MessageDigest digest() {

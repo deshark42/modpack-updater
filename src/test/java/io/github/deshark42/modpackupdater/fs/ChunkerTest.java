@@ -57,6 +57,23 @@ class ChunkerTest {
     }
 
     @Test
+    void aSmallFileCanUseTheLargestChunkLimit(@TempDir Path root) throws IOException {
+        byte[] content = TestFiles.bytes("small payload");
+        Path file = root.resolve("small.bin");
+        Files.write(file, content);
+        Chunking chunking = new Chunking(PARAMETERS.min(), PARAMETERS.avg(), Integer.MAX_VALUE);
+        List<Chunker.Cut> cuts = new ArrayList<>();
+
+        Chunker.Result result = Chunker.split(file, chunking, cuts::add);
+
+        String hash = Sha256.ofBytes(content);
+        assertEquals(List.of(new Chunker.Cut(hash, 0, content.length)), cuts);
+        assertEquals(content.length, result.table().size());
+        assertEquals(List.of(hash), result.table().chunks());
+        assertEquals(hash, result.hash());
+    }
+
+    @Test
     void aFileExactlyTheMinimumIsOneChunk(@TempDir Path root) throws IOException {
         TestFiles.write(root, "minimum.bin", TestFiles.random(PARAMETERS.min(), 21));
 
